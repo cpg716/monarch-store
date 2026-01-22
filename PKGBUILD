@@ -17,8 +17,18 @@ source=("https://github.com/cpg716/monarch-store/releases/download/$pkgver/MonAR
 sha256sums=('9a5ac0dc8918dfbc02b413cacc2330265f57cf2c89838607524c1d51a3c6824a')
 
 package() {
-  # Extract the .deb data archive
-  tar -xJf data.tar.xz -C "${pkgdir}"
+  # Extract the .deb file members
+  bsdtar -xf "MonARCH.Store_${pkgver}_amd64.deb"
+  
+  # Extract the data archive to the package directory
+  # (Handling potential .xz, .zst, or .gz formats)
+  if [ -f data.tar.xz ]; then
+    tar -xJf data.tar.xz -C "${pkgdir}"
+  elif [ -f data.tar.zst ]; then
+    tar -xaf data.tar.zst -C "${pkgdir}"
+  elif [ -f data.tar.gz ]; then
+    tar -xzf data.tar.gz -C "${pkgdir}"
+  fi
   
   # Ensure the binary is executable
   chmod +x "${pkgdir}/usr/bin/monarch-store"
