@@ -71,7 +71,7 @@ async fn install_package(
                 }
 
                 match found {
-                    Some(h) => (h.to_string(), vec!["-S", "--noconfirm", "--", &name]),
+                    Some(h) => (h.to_string(), vec!["-Sy", "--noconfirm", "--", &name]),
                     None => {
                         let _ = app.emit(
                             "install-output",
@@ -88,12 +88,12 @@ async fn install_package(
                 if password.is_none() {
                     (
                         "/usr/bin/pkexec".to_string(),
-                        vec!["/usr/bin/pacman", "-S", "--noconfirm", "--", &name],
+                        vec!["/usr/bin/pacman", "-Sy", "--noconfirm", "--", &name],
                     )
                 } else {
                     (
                         "/usr/bin/sudo".to_string(),
-                        vec!["-S", "/usr/bin/pacman", "-S", "--noconfirm", "--", &name],
+                        vec!["-S", "/usr/bin/pacman", "-Sy", "--noconfirm", "--", &name],
                     )
                 }
             }
