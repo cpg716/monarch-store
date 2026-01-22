@@ -40,3 +40,4 @@ src-tauri/icons/*
 *.rpm
 *.AppImage
 *.tar.gz
+src-tauri/Cargo.lock
