@@ -93,7 +93,7 @@ async fn install_package(
                 } else {
                     (
                         "/usr/bin/sudo".to_string(),
-                        vec!["-S", "pacman", "-S", "--noconfirm", "--", &name],
+                        vec!["-S", "/usr/bin/pacman", "-S", "--noconfirm", "--", &name],
                     )
                 }
             }
@@ -230,13 +230,13 @@ async fn uninstall_package(
         // Use pkexec for polkit authentication, or sudo if password provided
         let (binary, args) = if password.is_none() {
             (
-                "/usr/bin/pkexec",
+                "/usr/bin/pkexec".to_string(),
                 vec!["/usr/bin/pacman", "-Rns", "--noconfirm", "--", &name],
             )
         } else {
             (
-                "/usr/bin/sudo",
-                vec!["-S", "pacman", "-Rns", "--noconfirm", "--", &name],
+                "/usr/bin/sudo".to_string(),
+                vec!["-S", "/usr/bin/pacman", "-Rns", "--noconfirm", "--", &name],
             )
         };
 

@@ -5,5 +5,5 @@ fn main() {
     std::panic::set_hook(Box::new(|info| {
         println!("Panic: {:?}", info);
     }));
-    tauri_app_lib::run()
+    monarch_store_lib::run()
 }
