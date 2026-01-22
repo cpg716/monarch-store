@@ -1882,7 +1882,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        //.plugin(tauri_plugin_aptabase::Builder::new("A-EU-0000000000").build()) // Placeholder App Key - UNCOMMENT WITH REAL KEY
+        .plugin(tauri_plugin_aptabase::Builder::new("A-US-1496058535").build())
         .manage(repo_manager::RepoManager::new())
         .manage(chaotic_api::ChaoticApiClient::new())
         .manage(flathub_api::FlathubApiClient::new())

@@ -2207,7 +2207,7 @@ dependencies = [
 
 [[package]]
 name = "monarch-store"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "appstream",
  "base64 0.22.1",
