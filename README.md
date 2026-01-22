@@ -62,7 +62,17 @@ To run the application from source or contribute:
    npm run tauri dev
    ```
 
-## 🏗️ Architecture
+## � Running MonARCH Store
+
+Once installed via the AUR or `makepkg`, you can launch MonARCH Store in two ways:
+
+1. **Application Menu**: Search for **"MonARCH Store"** in your desktop environment's app launcher (GNOME, KDE, XFCE, etc.).
+2. **Terminal**: Run the following command:
+   ```bash
+   monarch-store
+   ```
+
+## �🏗️ Architecture
 
 Check out our [System Architecture](docs/ARCHITECTURE.md) to learn about the interaction between the Rust backend, React frontend, and our hybrid review pipeline.
 
