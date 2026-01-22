@@ -27,21 +27,37 @@ Built with the speed of **Rust** (Tauri v2) and the flexibility of **React**, it
     - **Glassmorphism**: Modern, translucent UI components.
     - **Rich Media**: High-quality icons, screenshots, and descriptions.
 
-## 🚀 Getting Started
+## 🚀 Installation
 
-### Installation
+### 1. From the AUR (Recommended)
+Once submitted, you can install `monarch-store` using your favorite AUR helper:
 
-**Manual Build:**
-1. Clone the repo:
+```bash
+yay -S monarch-store
+```
+
+### 2. Manual Installation (PKGBUILD)
+If you want to install the latest release manually using the provided `PKGBUILD`:
+
+```bash
+git clone https://github.com/cpg716/monarch-store.git
+cd monarch-store
+makepkg -si
+```
+
+### 3. Development Build
+To run the application from source or contribute:
+
+1. **Clone the repo:**
    ```bash
    git clone https://github.com/cpg716/monarch-store.git
    cd monarch-store
    ```
-2. Install dependencies:
+2. **Install dependencies:**
    ```bash
    npm install
    ```
-3. Run in dev mode:
+3. **Run in dev mode:**
    ```bash
    npm run tauri dev
    ```
