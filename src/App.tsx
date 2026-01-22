@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from "@tauri-apps/api/core";
+import { trackEvent } from '@aptabase/tauri';
 import { ArrowLeft, Filter, Heart } from 'lucide-react';
 import { useFavorites } from './hooks/useFavorites';
 import Sidebar from './components/Sidebar';
@@ -189,6 +190,7 @@ function App() {
       try {
         const results = await invoke<Package[]>('search_packages', { query: searchQuery });
         setPackages(results);
+        trackEvent('search', { query: searchQuery, result_count: results.length });
       } catch (e) {
         console.error("Search failed", e);
       } finally {

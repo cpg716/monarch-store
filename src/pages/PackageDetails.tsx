@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { clsx } from 'clsx';
 import { useFavorites } from '../hooks/useFavorites';
 import { getPackageReviews, submitReview, Review as ServiceReview, RatingSummary } from '../services/reviewService';
+import { trackEvent } from '@aptabase/tauri';
 
 interface AppMetadata {
     name: string;
@@ -197,6 +198,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
             setReviews(fetchedReviews);
             setRating(summary);
 
+            trackEvent('review_submitted', { package: pkg.name, rating: reviewRating });
             alert("Review submitted!");
         } catch (e) {
             alert("Failed to submit review: " + String(e));
@@ -236,6 +238,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
         if (selectedSource === 'aur') {
             setShowInstallConfirm(true);
         } else {
+            trackEvent('install_clicked', { package: pkg.name, source: selectedSource });
             setShowInstallMonitor(true);
         }
     };
@@ -815,6 +818,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
                                     </button>
                                     <button
                                         onClick={() => {
+                                            trackEvent('install_clicked', { package: pkg.name, source: 'aur' });
                                             setShowInstallConfirm(false);
                                             setShowInstallMonitor(true);
                                         }}
