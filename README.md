@@ -8,7 +8,7 @@ MonARCH Store is designed to make package management on Arch-based systems (Arch
 
 ## ✨ Features
 
-*   **🔍 Unified Search**: Search across **Official Repos**, **AUR**, **Chaotic-AUR**, and **Flathub** instantly.
+*   **🔍 Unified Search**: Search across **Official Repos**, **AUR**, and **Chaotic-AUR** instantly.
 *   **⚡ Blazing Fast**: 
     *   **Chaotic-AUR Integration**: Automatically prefers pre-compiled binaries over building from source when available.
     *   **Smart Caching**: Local metadata caching for sub-millisecond search results.
