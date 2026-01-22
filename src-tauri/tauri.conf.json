@@ -35,9 +35,9 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/YOUR_GITHUB_USER/monarch-store/releases/latest/download/latest.json"
+        "https://github.com/cpg716/monarch-store/releases/latest/download/latest.json"
       ],
-      "pubkey": "YOUR_PUBLIC_KEY_HERE"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE0QzQxRDI5NUFCMDE2MEUKUldRT0ZyQmFLUjNFRlBtUzlMMDUwSndGWHpSdldUL0IyLys1L0N4MmFmRTlmaUV5S0lRSmtwbVYK"
     }
   }
 }
