@@ -4,7 +4,18 @@
 
 MonARCH Store is designed to make package management on Arch-based systems (Arch, EndeavourOS, CachyOS, Garuda, etc.) beautiful, fast, and accessible. It unifies **Official Distribution Repositories**, **AUR**, and **Chaotic-AUR** into a single, cohesive experience.
 
-![Screenshot](screenshot.png)
+![MonARCH Store Dashboard](screenshots/home.png)
+
+## 📸 Gallery
+
+<p align="center">
+  <img src="screenshots/browse.png" width="45%" alt="Browse Categories">
+  <img src="screenshots/library.png" width="45%" alt="Installed Library">
+</p>
+<p align="center">
+  <img src="screenshots/settings.png" width="45%" alt="Settings Dashboard">
+  <img src="screenshots/loading.png" width="45%" alt="Repository Sync">
+</p>
 
 ## ✨ Features
 
