@@ -4,6 +4,7 @@ import {
     Trash2, ShieldCheck, Activity, Package, ArrowUp, ArrowDown, RefreshCw, Lock, Clock, ChevronDown, Sparkles
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import { clsx } from 'clsx';
 import { motion } from 'framer-motion';
 
@@ -17,6 +18,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
     const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
 
     const [isOptimizing, setIsOptimizing] = useState(false);
+    const [pkgVersion, setPkgVersion] = useState("0.0.0");
     const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
         return localStorage.getItem('notifications-enabled') !== 'false';
     });
@@ -65,6 +67,9 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
 
     // Load Initial State
     useEffect(() => {
+        // 0. Get Version
+        getVersion().then(setPkgVersion).catch(console.error);
+
         // 1. Check AUR
         invoke<boolean>('is_aur_enabled').then(setIsAurEnabled).catch(console.error);
 
@@ -681,9 +686,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
 
                 {/* Footer Info */}
                 <div className="text-center text-app-muted text-xs pt-12 pb-8 border-t border-app-border/20">
-                    <p className="flex items-center justify-center gap-2 font-medium">
-                        <Info size={14} className="opacity-50" /> MonARCH Store v0.1.0-alpha • Licensed under MIT • Powered by Chaotic-AUR
-                    </p>
+                    <Info size={14} className="opacity-50" /> MonARCH Store v{pkgVersion} • Licensed under MIT • Powered by Chaotic-AUR
                 </div>
             </div >
         </div >
