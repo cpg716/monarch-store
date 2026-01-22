@@ -1,94 +1,83 @@
 # 🦋 MonARCH Store
 
-**MonARCH Store** is a high-performance, premium software store designed specifically for Arch Linux. 
+**A modern, premium software store for Arch Linux, built with Tauri v2, React, and Rust.**
 
-Built with the speed of **Rust** (Tauri v2) and the flexibility of **React**, it provides a seamless, unified interface for browsing and installing applications from:
-- 🚀 **Chaotic-AUR** (Pre-built binaries - *Prioritized for speed*)
-- 📦 **Official Repositories** (Core, Extra, Multilib)
-- 🛠️ **Arch User Repository (AUR)** (Community contributions)
-- 🧪 **CachyOS / Garuda / Endeavour / Manjaro** (Distro-specific repos)
+MonARCH Store is designed to make package management on Arch-based systems (Arch, EndeavourOS, CachyOS, Garuda, etc.) beautiful, fast, and accessible. It unifies Official Repos, AUR, Chaotic-AUR, and Flatpaks into a single, cohesive experience.
 
-![MonARCH Store Screenshot](https://raw.githubusercontent.com/cpg716/monarch-store/main/public/screenshot.png)
+![Screenshot](screenshot.png)
 
 ## ✨ Features
 
-- **⚡ Blazing Fast**: 
-    - **Binary First**: Prioritizes pre-built binaries (Chaotic-AUR) to save compilation time and system resources.
-    - **Smart Caching**: Persistent local caching for Repo DBs and AppStream metadata.
-- **⭐ Hybrid Review System**:
-    - **ODRS Support**: Global reviews from the Open Desktop Rating System (used by GNOME/KDE).
-    - **MonArch Community**: Custom Supabase-powered reviews for AUR packages without official IDs.
-- **🔍 Universal Search & Deduplication**:
-    - Instantly searches across all enabled repositories.
-    - Intelligent **App ID Mapping** merges identical apps (e.g. `brave-bin` and `brave`) into a single high-quality view.
-- **🔄 Auto-Updates**:
-    - Built-in updater powered by **GitHub Releases**.
-- **🎨 Premium Design**:
-    - **Glassmorphism**: Modern, translucent UI components.
-    - **Rich Media**: High-quality icons, screenshots, and descriptions.
+*   **🔍 Unified Search**: Search across **Official Repos**, **AUR**, **Chaotic-AUR**, and **Flathub** instantly.
+*   **⚡ Blazing Fast**: 
+    *   **Chaotic-AUR Integration**: Automatically prefers pre-compiled binaries over building from source when available.
+    *   **Smart Caching**: Local metadata caching for sub-millisecond search results.
+*   **⭐ Hybrid Community Reviews**: 
+    *   **ODRS Integration**: See global ratings for official Linux apps.
+    *   **Community Reviews**: Submit and read reviews for AUR packages (powered by Supabase).
+*   **� Analytics**: Privacy-friendly usage stats (install trends, top searches) powered by Aptabase.
+*   **🛡️ Safety First**:
+    *   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
+    *   **Out-of-Date Warnings**: Visual alerts for flagged packages.
+*   **🎨 Premium UI**: Glassmorphism design, smooth animations, and dark mode optimization.
+*   **🛠️ Advanced Management**:
+    *   Manage Repositories (enable/disable Chaotic, Multilib, etc.).
+    *   orphan cleaner.
+    *   System Update manager.
 
 ## 🚀 Installation
 
-### 1. From the AUR (Recommended)
-Once submitted, you can install `monarch-store` using your favorite AUR helper:
+### Pre-requisites
+*   Arch Linux (or derivative).
+*   `paru` or `yay` (optional, for AUR helper support, defaults to manual `makepkg` logic if missing, but helper recommended).
 
+### Install via PKGBUILD (Recommended)
+Coming soon to AUR!
+
+### Manual Build
 ```bash
-yay -S monarch-store
-```
-
-### 2. Manual Installation (PKGBUILD)
-If you want to install the latest release manually using the provided `PKGBUILD`:
-
-```bash
+# 1. Clone the repo
 git clone https://github.com/cpg716/monarch-store.git
 cd monarch-store
-sudo pacman -Sy
-makepkg -si
+
+# 2. Install dependencies
+npm install
+
+# 3. Run in Development Mode
+npm run tauri dev
+
+# 4. Build Release
+npm run tauri build
 ```
 
-### 3. Development Build
-To run the application from source or contribute:
+## ☁️ Backend Configuration (Optional)
 
-1. **Clone the repo:**
-   ```bash
-   git clone https://github.com/cpg716/monarch-store.git
-   cd monarch-store
-   ```
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-3. **Run in dev mode:**
-   ```bash
-   npm run tauri dev
-   ```
+To enable **Community Reviews**, you need to connect your own Supabase instance.
+*By default, the app uses read-only public keys. To host your own:*
 
-## � Running MonARCH Store
-
-Once installed via the AUR or `makepkg`, you can launch MonARCH Store in two ways:
-
-1. **Application Menu**: Search for **"MonARCH Store"** in your desktop environment's app launcher (GNOME, KDE, XFCE, etc.).
-2. **Terminal**: Run the following command:
-   ```bash
-   monarch-store
-   ```
-
-## �🏗️ Architecture
-
-Check out our [System Architecture](docs/ARCHITECTURE.md) to learn about the interaction between the Rust backend, React frontend, and our hybrid review pipeline.
+1.  Create a **Supabase** project.
+2.  Run the following SQL in your Supabase SQL Editor:
+    ```sql
+    create table reviews (
+      id bigint generated by default as identity primary key,
+      package_name text not null,
+      user_name text not null default 'Anonymous',
+      rating int not null check (rating >= 1 and rating <= 5),
+      comment text,
+      created_at timestamp with time zone default timezone('utc'::text, now()) not null
+    );
+    alter table reviews enable row level security;
+    create policy "Public Read" on reviews for select using (true);
+    create policy "Public Insert" on reviews for insert with check (true);
+    ```
+3.  Update `src/services/reviewService.ts` with your **Project URL** and **Anon Key**.
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+We welcome contributions! Please follow the standard fork-and-pull request workflow.
 
-## 📜 License
+*   **Frontend**: React, TailwindCSS, Framer Motion.
+*   **Backend**: Rust (Tauri commands).
 
-This project is licensed under the [MIT License](LICENSE).
-
-## ❤️ Credits
-
-Powered by:
-- [Tauri](https://tauri.app/)
-- [Chaotic-AUR](https://aur.chaotic.cx/)
-- [Supabase](https://supabase.com/)
-- [ODRS](https://odrs.gnome.org/)
+## 📄 License
+MIT License.
