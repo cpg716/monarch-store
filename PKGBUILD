@@ -1,5 +1,5 @@
 # Maintainer: cpg716 <cpg716@github.com>
-pkgname=monarch-store-bin
+pkgname=monarch-store
 _pkgname=monarch-store
 pkgver=0.2.0
 pkgrel=1
