@@ -2,7 +2,7 @@
 
 **A modern, premium software store for Arch Linux, built with Tauri v2, React, and Rust.**
 
-MonARCH Store is designed to make package management on Arch-based systems (Arch, EndeavourOS, CachyOS, Garuda, etc.) beautiful, fast, and accessible. It unifies Official Repos, AUR, Chaotic-AUR, and Flatpaks into a single, cohesive experience.
+MonARCH Store is designed to make package management on Arch-based systems (Arch, EndeavourOS, CachyOS, Garuda, etc.) beautiful, fast, and accessible. It unifies **Official Distribution Repositories**, **AUR**, and **Chaotic-AUR** into a single, cohesive experience.
 
 ![Screenshot](screenshot.png)
 
