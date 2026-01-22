@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Server, Database, Download } from 'lucide-react';
+import logo from '../assets/logo.png';
 
 const LOADING_TIPS = [
     "Syncing with Arch Linux mirrors...",
@@ -35,7 +36,7 @@ export default function LoadingScreen() {
                     <div className="absolute inset-[-30%] bg-gradient-to-br from-blue-500/40 via-violet-500/30 to-cyan-500/40 blur-3xl rounded-full animate-pulse" />
                     <div className="relative z-10 w-28 h-28 flex items-center justify-center">
                         <img
-                            src="/src/assets/logo.png"
+                            src={logo}
                             alt="MonARCH"
                             className="w-full h-full object-contain animate-pulse drop-shadow-2xl"
                         />

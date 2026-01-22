@@ -4,6 +4,7 @@ import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Server, Zap, Data
 import { useTheme } from '../hooks/useTheme';
 import { invoke } from '@tauri-apps/api/core';
 import { clsx } from 'clsx';
+import logoSmall from '../assets/logo_small.png';
 
 interface OnboardingModalProps {
     onComplete: () => void;
@@ -54,7 +55,7 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             title: "Welcome to MonARCH",
             subtitle: "The ultimate store for Arch Linux.",
             color: "bg-blue-600",
-            icon: <img src="/src/assets/logo_small.png" alt="MonARCH" className="w-32 h-32 object-contain drop-shadow-2xl" />
+            icon: <img src={logoSmall} alt="MonARCH" className="w-32 h-32 object-contain drop-shadow-2xl" />
         },
         // Step 1: Arch Official (The Foundation)
         {

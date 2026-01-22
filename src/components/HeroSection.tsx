@@ -1,4 +1,4 @@
-
+import logoFull from '../assets/logo_full.png';
 
 export default function HeroSection() {
 
@@ -20,7 +20,7 @@ export default function HeroSection() {
                 {/* Left: Impactful Logo */}
                 <div className="flex-shrink-0 animate-fade-in-up" style={{ animationDelay: '0.1s' }}>
                     <img
-                        src="/src/assets/logo_full.png"
+                        src={logoFull}
                         alt="MonARCH Store"
                         className="h-24 object-contain"
                         style={{
