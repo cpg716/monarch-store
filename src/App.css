@@ -12,6 +12,22 @@
   --color-app-hover: var(--app-hover-bg);
 }
 
+@keyframes flap {
+
+  0%,
+  100% {
+    transform: scaleX(1);
+  }
+
+  50% {
+    transform: scaleX(0.6);
+  }
+}
+
+.butterfly-icon {
+  animation: flap 2s ease-in-out infinite;
+}
+
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
