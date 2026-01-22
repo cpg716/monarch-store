@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MonARCH Store",
+  "version": "0.2.0",
+  "identifier": "com.monarch.store",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "MonARCH Store",
+        "width": 1100,
+        "height": 750
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: https://* data:; connect-src 'self' https://aur.archlinux.org https://v4.chaotic.cx https://api.github.com https://flathub.org; style-src 'self' 'unsafe-inline'; font-src 'self' asset:;"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/YOUR_GITHUB_USER/monarch-store/releases/latest/download/latest.json"
+      ],
+      "pubkey": "YOUR_PUBLIC_KEY_HERE"
+    }
+  }
+}

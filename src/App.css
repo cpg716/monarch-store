@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+@theme {
+  --color-app-bg: var(--app-bg);
+  --color-app-fg: var(--app-fg);
+  --color-app-sidebar: var(--app-sidebar);
+  --color-app-card: var(--app-card);
+  --color-app-border: var(--app-border);
+  --color-app-muted: var(--app-muted);
+  --color-app-accent: var(--app-accent);
+  --color-app-subtle: var(--app-subtle-bg);
+  --color-app-hover: var(--app-hover-bg);
+}
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+
+  /* Enhanced Light Mode - Clean, Modern, High Contrast */
+  --app-bg: #f8fafc;
+  --app-fg: #0f172a;
+  --app-sidebar: #e2e8f0;
+  --app-card: #ffffff;
+  --app-border: rgba(0, 0, 0, 0.15);
+  --app-muted: #64748b;
+  --app-accent: #3b82f6;
+  /* Light mode specific utilities */
+  --app-subtle-bg: rgba(0, 0, 0, 0.04);
+  --app-hover-bg: rgba(0, 0, 0, 0.08);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Native-feeling Dark Mode (Adwaita Dark inspired) */
+    --app-bg: #0f0f0f;
+    --app-fg: #f1f1f1;
+    --app-sidebar: #1a1a1a;
+    --app-card: #252525;
+    --app-border: rgba(255, 255, 255, 0.1);
+    --app-muted: #a1a1a1;
+    --app-subtle-bg: rgba(255, 255, 255, 0.05);
+    --app-hover-bg: rgba(255, 255, 255, 0.1);
+  }
+}
+
+/* Explicit Theme Overrides */
+.theme-light {
+  --app-bg: #f8fafc;
+  --app-fg: #0f172a;
+  --app-sidebar: #e2e8f0;
+  --app-card: #ffffff;
+  --app-border: rgba(0, 0, 0, 0.15);
+  --app-muted: #64748b;
+  --app-subtle-bg: rgba(0, 0, 0, 0.04);
+  --app-hover-bg: rgba(0, 0, 0, 0.08);
+}
+
+.theme-dark {
+  --app-bg: #0f0f0f;
+  --app-fg: #f1f1f1;
+  --app-sidebar: #1a1a1a;
+  --app-card: #252525;
+  --app-border: rgba(255, 255, 255, 0.1);
+  --app-muted: #a1a1a1;
+  --app-subtle-bg: rgba(255, 255, 255, 0.05);
+  --app-hover-bg: rgba(255, 255, 255, 0.1);
+}
+
+/* Light Mode Color Overrides - make light colors darker for readability */
+.theme-light .text-green-300,
+.theme-light .text-green-400,
+.theme-light .text-green-500,
+.theme-light .text-green-600 {
+  color: #15803d !important;
+  /* green-700 */
+}
+
+.theme-light .text-purple-300,
+.theme-light .text-purple-400,
+.theme-light .text-purple-500,
+.theme-light .text-purple-600,
+.theme-light .text-purple-700 {
+  color: #6b21a8 !important;
+  /* purple-800 */
+}
+
+.theme-light .text-blue-300,
+.theme-light .text-blue-400,
+.theme-light .text-blue-500 {
+  color: #1d4ed8 !important;
+  /* blue-700 */
+}
+
+.theme-light .text-amber-300,
+.theme-light .text-amber-400,
+.theme-light .text-amber-500 {
+  color: #b45309 !important;
+  /* amber-700 */
+}
+
+.theme-light .text-red-300,
+.theme-light .text-red-400,
+.theme-light .text-red-500 {
+  color: #b91c1c !important;
+  /* red-700 */
+}
+
+.theme-light .text-yellow-300,
+.theme-light .text-yellow-400,
+.theme-light .text-yellow-500 {
+  color: #a16207 !important;
+  /* yellow-700 */
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.6s ease-out forwards;
+  opacity: 0;
+}
+
+@layer base {
+  body {
+    background-color: var(--app-bg);
+    color: var(--app-fg);
+    min-height: 100vh;
+    overflow: hidden;
+    transition: background-color 0.2s, color 0.2s;
+  }
+}

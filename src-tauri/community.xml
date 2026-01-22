@@ -1,0 +1,18 @@
+<?xml version="1.0" ?>
+<components version="0.14">
+  <component type="desktop-application">
+    <id>org.mozilla.firefox</id>
+    <pkgname>firefox</pkgname>
+    <name>Firefox</name>
+    <summary>Standalone web browser from mozilla.org</summary>
+    <icon type="cached" width="128" height="128">firefox.png</icon>
+    <icon type="remote">https://upload.wikimedia.org/wikipedia/commons/a/a0/Firefox_logo%2C_2019.svg</icon>
+  </component>
+  <component type="desktop-application">
+    <id>org.gimp.GIMP</id>
+    <pkgname>gimp</pkgname>
+    <name>GIMP</name>
+    <summary>GNU Image Manipulation Program</summary>
+    <icon type="remote">https://upload.wikimedia.org/wikipedia/commons/4/45/The_GIMP_icon_-_gnome.svg</icon>
+  </component>
+</components>

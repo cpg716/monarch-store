@@ -1,0 +1,41 @@
+# Maintainer: MonARCH Team <monarch@example.com>
+pkgname=monarch-store
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A high-performance, premium software store for Arch Linux (Tauri based)"
+arch=('x86_64')
+url="https://github.com/monarch-store/monarch-store"
+license=('MIT')
+depends=('webkit2gtk' 'gtk3' 'libappindicator-gtk3' 'curl' 'wget')
+makedepends=('npm' 'cargo' 'git')
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+build() {
+	cd "$pkgname"
+	npm install
+	npm run tauri build
+}
+
+package() {
+	cd "$pkgname"
+	
+	# Install the binary
+	install -Dm755 "src-tauri/target/release/monarch-store" "$pkgdir/usr/bin/$pkgname"
+	
+	# Install the icon
+	install -Dm644 "src-tauri/icons/128x128.png" "$pkgdir/usr/share/icons/hicolor/128x128/apps/$pkgname.png"
+	
+	# Install the desktop file
+	# (Assuming one is generated or we create one here)
+	mkdir -p "$pkgdir/usr/share/applications"
+	cat > "$pkgdir/usr/share/applications/$pkgname.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=MonARCH Store
+Comment=High-performance software store for Arch Linux
+Exec=$pkgname
+Icon=$pkgname
+Categories=System;
+EOF
+}
