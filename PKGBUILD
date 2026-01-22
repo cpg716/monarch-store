@@ -21,7 +21,6 @@ package() {
   bsdtar -xf "MonARCH.Store_${pkgver}_amd64.deb"
   
   # Extract the data archive to the package directory
-  # (Handling potential .xz, .zst, or .gz formats)
   if [ -f data.tar.xz ]; then
     tar -xJf data.tar.xz -C "${pkgdir}"
   elif [ -f data.tar.zst ]; then
@@ -29,7 +28,15 @@ package() {
   elif [ -f data.tar.gz ]; then
     tar -xzf data.tar.gz -C "${pkgdir}"
   fi
+
+  # Rename the desktop file to a standard name without spaces
+  if [ -f "${pkgdir}/usr/share/applications/MonARCH Store.desktop" ]; then
+    mv "${pkgdir}/usr/share/applications/MonARCH Store.desktop" \
+       "${pkgdir}/usr/share/applications/monarch-store.desktop"
+  fi
   
-  # Ensure the binary is executable
-  chmod +x "${pkgdir}/usr/bin/monarch-store"
+  # Fix permissions: 755 for directories and binaries, 644 for files
+  find "${pkgdir}/usr" -type d -exec chmod 755 {} +
+  find "${pkgdir}/usr/bin" -type f -exec chmod 755 {} +
+  find "${pkgdir}/usr/share" -type f -exec chmod 644 {} +
 }
