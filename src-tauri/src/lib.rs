@@ -14,6 +14,7 @@ mod utils;
 // use metadata::{AppStreamLoader, MetadataState};
 use chaotic_api::{ChaoticApiClient, ChaoticPackage, InfraStats};
 mod repo_setup; // [NEW]
+use base64::prelude::*;
 use repo_manager::RepoManager;
 use serde::Serialize;
 use std::process::{Command, Stdio}; // Keep Stdio
@@ -1521,19 +1522,24 @@ fn get_demo_updates() -> Vec<PendingUpdate> {
 /// Get icon path for a package - checks local icons first
 #[tauri::command]
 async fn get_package_icon(pkg_name: String) -> Result<Option<String>, String> {
-    // Check if we have a local icon in the icons directory
-    let icon_patterns = [
-        format!("icons/{}_*.png", pkg_name),
-        format!("icons/{}*.png", pkg_name),
-    ];
+    // Check if we have a local icon in the cache directory
+    let icons_dir = metadata::get_icons_dir();
 
-    // Try to find matching icon file
-    for _pattern in &icon_patterns {
-        if let Ok(entries) = std::fs::read_dir("src-tauri/icons") {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with(&pkg_name) && name.ends_with(".png") {
-                    return Ok(Some(format!("/src-tauri/icons/{}", name)));
+    // Pattern matching logic
+    if let Ok(entries) = std::fs::read_dir(&icons_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name_os) = path.file_name() {
+                let name = name_os.to_string_lossy();
+                // Simple prefix match like before: "firefox_*.png" or "firefox.png"
+                if (name.starts_with(&pkg_name) && name.ends_with(".png"))
+                    && (name == format!("{}.png", pkg_name)
+                        || name.starts_with(&format!("{}_", pkg_name)))
+                {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        let encoded = BASE64_STANDARD.encode(&bytes);
+                        return Ok(Some(format!("data:image/png;base64,{}", encoded)));
+                    }
                 }
             }
         }

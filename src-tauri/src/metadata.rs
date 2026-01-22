@@ -218,7 +218,7 @@ impl AppStreamLoader {
             Icon::Cached { path, .. } => {
                 // Check extracted 'icons/' dir first
                 let filename = path.file_name()?;
-                let local_path = std::path::Path::new("icons").join(filename);
+                let local_path = get_icons_dir().join(filename);
 
                 if let Ok(bytes) = std::fs::read(&local_path) {
                     let mime = if local_path.extension().is_some_and(|e| e == "svg") {
@@ -362,8 +362,11 @@ pub fn sanitize_xml(content: &str) -> String {
 }
 
 // Download logic
-pub async fn download_and_cache_appstream(interval_hours: u64) -> Result<PathBuf, String> {
-    let target_path = PathBuf::from("extra_v5.xml");
+pub async fn download_and_cache_appstream(
+    interval_hours: u64,
+    base_dir: &PathBuf,
+) -> Result<PathBuf, String> {
+    let target_path = base_dir.join("extra_v5.xml");
 
     // Check if cache is fresh
     if target_path.exists() {
@@ -418,7 +421,8 @@ pub async fn download_and_cache_appstream(interval_hours: u64) -> Result<PathBuf
     let mut found_xml = false;
 
     // Create icons directory early
-    let _ = std::fs::create_dir_all("icons");
+    let icons_dir = base_dir.join("icons");
+    let _ = std::fs::create_dir_all(&icons_dir);
 
     for entry in archive.entries().map_err(|e| e.to_string())? {
         let mut entry = entry.map_err(|e| e.to_string())?;
@@ -436,7 +440,7 @@ pub async fn download_and_cache_appstream(interval_hours: u64) -> Result<PathBuf
         {
             // Extract icons - match "icons/" anywhere in path
             let file_name = path.file_name().unwrap();
-            let icon_target = std::path::Path::new("icons").join(file_name);
+            let icon_target = icons_dir.join(file_name);
             if let Ok(mut out_file) = std::fs::File::create(&icon_target) {
                 let _ = std::io::copy(&mut entry, &mut out_file);
             }
@@ -459,12 +463,25 @@ pub async fn download_and_cache_appstream(interval_hours: u64) -> Result<PathBuf
     Err("Could not find extra.xml.gz in package".to_string())
 }
 
+pub fn get_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("monarch-store")
+}
+
+pub fn get_icons_dir() -> PathBuf {
+    get_cache_dir().join("icons")
+}
+
 pub struct MetadataState(pub Mutex<AppStreamLoader>);
 
 impl MetadataState {
     pub async fn init(&self, interval_hours: u64) {
         if cfg!(target_os = "macos") {
-            match download_and_cache_appstream(interval_hours).await {
+            let cache_dir = get_cache_dir();
+            std::fs::create_dir_all(&cache_dir).ok();
+
+            match download_and_cache_appstream(interval_hours, &cache_dir).await {
                 Ok(path) => match Collection::from_path(path.clone()) {
                     Ok(col) => {
                         println!("Loaded AppStream data from {:?}", path);
