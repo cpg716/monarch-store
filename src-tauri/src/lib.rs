@@ -61,25 +61,22 @@ async fn install_package(
         // 1. Determine Helper/Binary
         let (binary, args) = match source {
             models::PackageSource::Aur => {
-                let helpers = ["paru", "yay", "aura"];
+                let helpers = ["/usr/bin/paru", "/usr/bin/yay", "/usr/bin/aura"];
                 let mut found = None;
                 for h in helpers {
-                    if tokio::process::Command::new("which")
-                        .arg(h)
-                        .output()
-                        .await
-                        .map(|o| o.status.success())
-                        .unwrap_or(false)
-                    {
+                    if std::path::Path::new(h).exists() {
                         found = Some(h);
                         break;
                     }
                 }
+
                 match found {
-                    Some(h) => (h, vec!["-S", "--noconfirm", "--", &name]),
+                    Some(h) => (h.to_string(), vec!["-S", "--noconfirm", "--", &name]),
                     None => {
-                        let _ =
-                            app.emit("install-output", "Error: No AUR helper (paru/yay) found.");
+                        let _ = app.emit(
+                            "install-output",
+                            "Error: No AUR helper (paru/yay) found in /usr/bin/.",
+                        );
                         let _ = app.emit("install-complete", "failed");
                         return;
                     }
@@ -89,15 +86,23 @@ async fn install_package(
                 // For official/chaotic, use pkexec if available for a native prompt,
                 // fallback to sudo if password was provided in the UI box.
                 if password.is_none() {
-                    ("pkexec", vec!["pacman", "-S", "--noconfirm", "--", &name])
+                    (
+                        "/usr/bin/pkexec".to_string(),
+                        vec!["/usr/bin/pacman", "-S", "--noconfirm", "--", &name],
+                    )
                 } else {
                     (
-                        "sudo",
+                        "/usr/bin/sudo".to_string(),
                         vec!["-S", "pacman", "-S", "--noconfirm", "--", &name],
                     )
                 }
             }
         };
+
+        let _ = app.emit(
+            "install-output",
+            format!("Executing: {} {:?}", binary, args),
+        );
 
         // Cache sudo creds if needed (for yay/paru)
         if matches!(source, models::PackageSource::Aur) && password.is_some() {
@@ -224,13 +229,21 @@ async fn uninstall_package(
     tauri::async_runtime::spawn(async move {
         // Use pkexec for polkit authentication, or sudo if password provided
         let (binary, args) = if password.is_none() {
-            ("pkexec", vec!["pacman", "-Rns", "--noconfirm", "--", &name])
+            (
+                "/usr/bin/pkexec",
+                vec!["/usr/bin/pacman", "-Rns", "--noconfirm", "--", &name],
+            )
         } else {
             (
-                "sudo",
+                "/usr/bin/sudo",
                 vec!["-S", "pacman", "-Rns", "--noconfirm", "--", &name],
             )
         };
+
+        let _ = app.emit(
+            "install-output",
+            format!("Executing Uninstaller: {} {:?}", binary, args),
+        );
 
         let mut child = tokio::process::Command::new(binary);
         for arg in &args {
