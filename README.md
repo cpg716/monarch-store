@@ -8,22 +8,36 @@ MonARCH Store is designed to make package management on Arch-based systems (Arch
 
 ## ✨ Features
 
-*   **🔍 Unified Search**: Search across **Official Repos**, **AUR**, and **Chaotic-AUR** instantly.
-*   **⚡ Blazing Fast**: 
-    *   **Chaotic-AUR Integration**: Automatically prefers pre-compiled binaries over building from source when available.
-    *   **Smart Caching**: Local metadata caching for sub-millisecond search results.
-*   **⭐ Hybrid Community Reviews**: 
-    *   **ODRS Integration**: See global ratings for official Linux apps.
-    *   **Community Reviews**: Submit and read reviews for AUR packages (powered by Supabase).
-*   **� Analytics**: Privacy-friendly usage stats (install trends, top searches) powered by Aptabase.
-*   **🛡️ Safety First**:
-    *   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
-    *   **Out-of-Date Warnings**: Visual alerts for flagged packages.
-*   **🎨 Premium UI**: Glassmorphism design, smooth animations, and dark mode optimization.
-*   **🛠️ Advanced Management**:
-    *   Manage Repositories (enable/disable Chaotic, Multilib, etc.).
-    *   orphan cleaner.
-    *   System Update manager.
+### 🌪️ Chaotic-AUR: A Game Changer
+We don't just "support" Chaotic-AUR — **we prioritize it.**
+*   **Zero-Compile Updates**: Automatic preference for pre-built binaries from the Chaotic-AUR infrastructure.
+*   **Massive Library**: Access thousands of pre-compiled AUR packages without waiting hours for local compilation.
+
+### 🧠 Intelligent Package Merging
+Stop guessing which "firefox" is the right one. MonARCH intelligently merges results from all sources into a single, clean view:
+*   **Smart Resolution**: If a package exists in Official Repos, Chaotic-AUR, and AUR, we automatically serve the fastest/safest option (Official/Chaotic) while keeping the AUR version available as a fallback.
+*   **De-Duplication**: Clean, unified search results without clutter.
+
+### 🐧 Optimized for Your Distro
+*   **CachyOS Optimized**: Fully compatible with CachyOS's `x86-64-v3`/`v4` optimized repositories for maximum performance.
+*   **Manjaro Tested**: Verified stable on Manjaro's branch structure.
+*   **Universal Arch Support**: Works seamlessly on EndeavourOS, Garuda, and vanilla Arch.
+
+### 🛠️ Graphical "No-Terminal" AUR Builder
+Building from the AUR shouldn't require a CLI degree.
+*   **One-Click Build**: Click install, and we handle the `makepkg` magic, dependency resolution, and `sudo` handling in the background.
+*   **Visual Feedback**: Beautiful, real-time progress bars instead of scrolling text.
+
+### ⭐ Hybrid Community Reviews
+*   **ODRS Integration**: See global ratings for official Linux apps.
+*   **Community Reviews**: Submit and read reviews for AUR packages (powered by Supabase).
+
+### 📊 Analytics
+Privacy-friendly usage stats (install trends, top searches) powered by Aptabase.
+
+### 🛡️ Safety First
+*   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
+*   **Out-of-Date Warnings**: Visual alerts for flagged packages.
 
 ## 🚀 Installation
 
