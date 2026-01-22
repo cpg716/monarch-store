@@ -37,5 +37,8 @@ commands.allow = [
     "perform_system_update",
     "fetch_pkgbuild",
     "get_orphans",
-    "remove_orphans"
+    "get_orphans",
+    "remove_orphans",
+    "check_repo_status",
+    "enable_repo"
 ]

@@ -13,6 +13,7 @@ mod utils;
 // use models::Package;
 // use metadata::{AppStreamLoader, MetadataState};
 use chaotic_api::{ChaoticApiClient, ChaoticPackage, InfraStats};
+mod repo_setup; // [NEW]
 use repo_manager::RepoManager;
 use serde::Serialize;
 use std::process::{Command, Stdio}; // Keep Stdio
@@ -1945,7 +1946,9 @@ pub fn run() {
             perform_system_update,
             fetch_pkgbuild,
             get_orphans,
-            remove_orphans
+            remove_orphans,
+            repo_setup::check_repo_status, // [NEW]
+            repo_setup::enable_repo,       // [NEW]
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

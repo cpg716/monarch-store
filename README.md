@@ -42,6 +42,7 @@ If you want to install the latest release manually using the provided `PKGBUILD`
 ```bash
 git clone https://github.com/cpg716/monarch-store.git
 cd monarch-store
+sudo pacman -Sy
 makepkg -si
 ```
 

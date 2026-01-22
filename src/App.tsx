@@ -21,6 +21,7 @@ import './App.css';
 import LoadingScreen from './components/LoadingScreen';
 import PackageCardSkeleton from './components/PackageCardSkeleton';
 import OnboardingModal from './components/OnboardingModal';
+import RepoSetupModal from './components/RepoSetupModal';
 
 // Full pool of "Essentials" - Popular proprietary/chaotic apps
 const ESSENTIALS_POOL = [
@@ -92,6 +93,8 @@ function App() {
   const [searchRepoFilter, setSearchRepoFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'best_match' | 'name' | 'updated'>('best_match');
   const [enabledRepos, setEnabledRepos] = useState<{ name: string; enabled: boolean; source: string }[]>([]);
+  // Repo Setup Logic
+  const [missingRepo, setMissingRepo] = useState<string | null>(null);
 
   // Sorting Logic Helper
   const sortPackages = (pkgs: Package[], criterion: 'best_match' | 'name' | 'updated') => {
@@ -164,6 +167,17 @@ function App() {
     };
 
     initInfo();
+
+    // Check for Critical Repos (Chaotic-AUR)
+    invoke<boolean>('check_repo_status', { name: 'chaotic-aur' })
+      .then(exists => {
+        if (!exists) {
+          // Delay slightly to not conflict with onboarding or initial painting
+          setTimeout(() => setMissingRepo('Chaotic-AUR'), 1000);
+        }
+      })
+      .catch(console.error);
+
   }, [fetchInfraStats]);
 
   // Reset selection when searching or changing tabs
@@ -465,6 +479,18 @@ function App() {
 
       {/* Onboarding Modal */}
       {showOnboarding && <OnboardingModal onComplete={handleOnboardingComplete} />}
+
+      {/* Repo Setup Modal */}
+      <RepoSetupModal
+        repoName={missingRepo || ''}
+        isOpen={!!missingRepo && !showOnboarding} // Don't show if onboarding is active
+        onClose={() => setMissingRepo(null)}
+        onSuccess={() => {
+          setMissingRepo(null);
+          // Trigger a re-sync or page reload to pick up new packages?
+          window.location.reload(); // Simplest way to ensure everything re-inits correctly
+        }}
+      />
     </div>
   );
 }
