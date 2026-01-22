@@ -8,7 +8,7 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "default",
+    "app-commands",
     "notification:default"
   ]
 }
