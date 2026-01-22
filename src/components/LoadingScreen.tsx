@@ -14,6 +14,7 @@ const LOADING_TIPS = [
 ];
 
 export default function LoadingScreen() {
+    console.log("LoadingScreen mounted");
     const [tipIndex, setTipIndex] = useState(0);
 
     // Rotate tips every 2 seconds
@@ -38,7 +39,7 @@ export default function LoadingScreen() {
                         <img
                             src={logo}
                             alt="MonARCH"
-                            className="w-full h-full object-contain animate-pulse drop-shadow-2xl"
+                            className="w-full h-full object-contain animate-flap drop-shadow-2xl"
                         />
                     </div>
                 </div>

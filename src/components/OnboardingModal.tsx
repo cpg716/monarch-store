@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Server, Zap, Database, Globe, Lock } from 'lucide-react';
+import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Server, Zap, Database, Globe, Lock, Cpu, AlertTriangle, Terminal, RefreshCw } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
 import { invoke } from '@tauri-apps/api/core';
 import { clsx } from 'clsx';
@@ -16,6 +16,7 @@ interface RepoFamily {
     description: string;
     enabled: boolean;
     icon: any;
+    members: string[]; // Added missing interface property
 }
 
 export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
@@ -25,18 +26,21 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
     const [isSaving, setIsSaving] = useState(false);
     const [repoFamilies, setRepoFamilies] = useState<RepoFamily[]>([]);
 
+    // Chaotic Setup State
+    const [missingChaotic, setMissingChaotic] = useState<boolean>(false);
+    const [chaoticStatus, setChaoticStatus] = useState<"idle" | "checking" | "enabling" | "success" | "error">("checking");
+    const [chaoticLogs, setChaoticLogs] = useState<string[]>([]);
+
     // Initial Load
     useEffect(() => {
         // Load global AUR state
         invoke<boolean>('is_aur_enabled').then(setAurEnabled).catch(console.error);
 
         // Define Repo Families for Step 4
-        // In a real scenario we might sync this with backend state, but for onboarding defaults we can start fresh or sync.
-        // Let's sync with backend state to be safe.
         invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states').then(backendRepos => {
             const families = [
-                { id: 'cachyos', name: 'CachyOS', description: 'Performance optimized (x86_64-v3/v4)', members: ['cachyos', 'cachyos-v3'], icon: Zap },
-                { id: 'manjaro', name: 'Manjaro', description: 'Stable & Tested updates', members: ['manjaro-core', 'manjaro-extra'], icon: Database },
+                { id: 'cachyos', name: 'CachyOS', description: 'Performance optimized (x86_64-v3/v4)', members: ['cachyos', 'cachyos-v3', 'cachyos-core-v3', 'cachyos-extra-v3', 'cachyos-v4', 'cachyos-core-v4', 'cachyos-extra-v4', 'cachyos-znver4'], icon: Zap },
+                { id: 'manjaro', name: 'Manjaro', description: 'Stable & Tested updates', members: ['manjaro-core', 'manjaro-extra', 'manjaro-multilib'], icon: Database },
                 { id: 'garuda', name: 'Garuda', description: 'Gaming & Performance focus', members: ['garuda'], icon: Server },
                 { id: 'endeavouros', name: 'EndeavourOS', description: 'Minimalist & Lightweight', members: ['endeavouros'], icon: Globe },
             ];
@@ -47,7 +51,32 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             });
             setRepoFamilies(mapped);
         }).catch(console.error);
+
+        // Check Chaotic Status
+        invoke<boolean>('check_repo_status', { name: 'chaotic-aur' })
+            .then(exists => {
+                setMissingChaotic(!exists);
+                setChaoticStatus(exists ? 'success' : 'idle');
+            })
+            .catch(err => {
+                console.error(err);
+                setChaoticStatus('error');
+            });
     }, []);
+
+    const enableChaotic = async () => {
+        setChaoticStatus("enabling");
+        setChaoticLogs(prev => [...prev, "Requesting root privileges..."]);
+        try {
+            const res = await invoke<string>("enable_repo", { name: "chaotic-aur" });
+            setChaoticLogs(prev => [...prev, res, "Setup complete!"]);
+            setChaoticStatus("success");
+            setMissingChaotic(false);
+        } catch (e: any) {
+            setChaoticLogs(prev => [...prev, `Error: ${e}`]);
+            setChaoticStatus("error");
+        }
+    };
 
     const steps = [
         // Step 0: Welcome & Chaotic-AUR (The "Why")
@@ -110,15 +139,26 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
         setIsSaving(true);
         try {
             // 1. Apply AUR setting
-            if (aurEnabled) {
-                await invoke('enable_aur');
-            } else {
-                await invoke('disable_aur');
-            }
+            await invoke('set_aur_enabled', { enabled: aurEnabled });
 
             // 2. Apply Repo Families
             for (const fam of repoFamilies) {
+                // Toggle family logic (backend might just use enable/disable toggle)
+                // But for setup, we want to run enable_repo if it's enabled and wasn't before?
+                // Actually, `toggle_repo_family` handles enabling/disabling in the app state.
+                // WE ALSO need to run `enable_repo` (system setup) if they enabled it.
                 await invoke('toggle_repo_family', { family: fam.name, enabled: fam.enabled });
+
+                if (fam.enabled) {
+                    try {
+                        // We use fam.id which matches the key in repo_setup.rs (cachyos, garuda, etc)
+                        // But repo_setup expects "cachyos", "garuda".
+                        await invoke('enable_repo', { name: fam.id });
+                    } catch (e) {
+                        console.error(`Failed to enable ${fam.name}:`, e);
+                        // We continue even if one fails
+                    }
+                }
             }
 
             // Artificial delay for smooth UX
@@ -231,6 +271,58 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                                     <p className="text-xs text-app-muted italic">
                                         We automatically check Chaotic-AUR first for any package you request.
                                     </p>
+
+                                    {/* Chaotic Status / Action Area */}
+                                    <div className="pt-2">
+                                        {chaoticStatus === 'checking' && (
+                                            <div className="flex items-center gap-2 text-app-muted text-sm">
+                                                <RefreshCw size={14} className="animate-spin" /> Checking system status...
+                                            </div>
+                                        )}
+
+                                        {chaoticStatus === 'success' && !missingChaotic && (
+                                            <div className="bg-green-500/10 border border-green-500/20 p-3 rounded-xl flex items-center gap-3 text-green-500 text-sm font-bold">
+                                                <Check size={18} /> System Configured & Ready
+                                            </div>
+                                        )}
+
+                                        {(chaoticStatus === 'idle' || chaoticStatus === 'error' || chaoticStatus === 'enabling') && missingChaotic && (
+                                            <div className="space-y-3 bg-app-card border border-app-border p-4 rounded-xl shadow-inner">
+                                                <div className="flex items-start gap-3">
+                                                    <AlertTriangle className="text-orange-500 shrink-0 mt-0.5" size={18} />
+                                                    <div>
+                                                        <h4 className="text-sm font-bold text-app-fg">Setup Required</h4>
+                                                        <p className="text-xs text-app-muted">The Chaotic-AUR repository is missing. Enable it to access pre-built binaries.</p>
+                                                    </div>
+                                                </div>
+
+                                                {/* Logs */}
+                                                {(chaoticStatus === 'enabling' || chaoticLogs.length > 0) && (
+                                                    <div className="h-24 overflow-auto bg-black/50 rounded-lg p-3 font-mono text-[10px] text-white/70">
+                                                        {chaoticLogs.map((l, i) => (
+                                                            <div key={i} className="mb-1"><span className="text-purple-400 mr-1">➜</span>{l}</div>
+                                                        ))}
+                                                        {chaoticStatus === 'enabling' && <span className="animate-pulse">_</span>}
+                                                    </div>
+                                                )}
+
+                                                <button
+                                                    onClick={enableChaotic}
+                                                    disabled={chaoticStatus === 'enabling'}
+                                                    className={clsx(
+                                                        "w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all",
+                                                        chaoticStatus === 'enabling' ? "bg-app-fg/10 text-app-muted" : "bg-purple-600 text-white hover:bg-purple-500 shadow-lg"
+                                                    )}
+                                                >
+                                                    {chaoticStatus === 'enabling' ? (
+                                                        <> <Terminal size={16} className="animate-pulse" /> Configuring...</>
+                                                    ) : (
+                                                        <> <Cpu size={16} /> Auto-Configure Now</>
+                                                    )}
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
                                 </motion.div>
                             )}
 

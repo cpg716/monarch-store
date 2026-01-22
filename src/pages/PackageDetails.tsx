@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { ArrowLeft, Download, Globe, Calendar, User, Zap, Package as PackageIcon, AlertTriangle, Star, MessageSquare, ChevronDown, X, ChevronLeft, ChevronRight, Code, Loader2, Heart } from 'lucide-react';
 import { Package } from '../components/PackageCard';
 import InstallMonitor from '../components/InstallMonitor';
+import RepoSetupModal from '../components/RepoSetupModal';
 import { invoke } from '@tauri-apps/api/core';
 import { clsx } from 'clsx';
 import { useFavorites } from '../hooks/useFavorites';
@@ -70,6 +71,8 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
     // Install Flow State
     const [showInstallMonitor, setShowInstallMonitor] = useState(false);
     const [showInstallConfirm, setShowInstallConfirm] = useState(false);
+    const [showRepoSetup, setShowRepoSetup] = useState(false);
+    const [missingRepoId, setMissingRepoId] = useState<string>("");
 
     // PKGBUILD Viewer State
     const [showPkgbuild, setShowPkgbuild] = useState(false);
@@ -217,7 +220,19 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
     };
 
     // Handle install button click - shows confirmation for AUR packages
-    const handleInstallClick = () => {
+    const handleInstallClick = async () => {
+        // Pre-flight check: Is the repo actually backend-enabled?
+        try {
+            const isSetup = await invoke<boolean>('check_repo_status', { name: selectedSource });
+            if (!isSetup) {
+                setMissingRepoId(selectedSource);
+                setShowRepoSetup(true);
+                return;
+            }
+        } catch (e) {
+            console.error("Failed to check repo status:", e);
+        }
+
         if (selectedSource === 'aur') {
             setShowInstallConfirm(true);
         } else {
@@ -803,15 +818,28 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
                                             setShowInstallConfirm(false);
                                             setShowInstallMonitor(true);
                                         }}
-                                        className="flex-1 px-4 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold transition-all"
+                                        className="flex-1 px-4 py-3 rounded-xl bg-amber-500 text-white font-bold shadow-lg shadow-amber-900/20 active:scale-95 transition-all"
                                     >
-                                        Install Anyway
+                                        Install Now
                                     </button>
                                 </div>
                             </div>
                         </div>
                     </div>
                 )}
+
+                {/* Repo Setup Modal (Fallback) */}
+                <RepoSetupModal
+                    repoName={missingRepoId.charAt(0).toUpperCase() + missingRepoId.slice(1)}
+                    repoId={missingRepoId}
+                    isOpen={showRepoSetup}
+                    onClose={() => setShowRepoSetup(false)}
+                    onSuccess={() => {
+                        setShowRepoSetup(false);
+                        // Re-trigger install after success
+                        handleInstallClick();
+                    }}
+                />
             </div>
         </div>
     );

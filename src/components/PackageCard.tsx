@@ -10,7 +10,7 @@ export interface Package {
     display_name?: string;
     description: string;
     version: string;
-    source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour';
+    source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour' | 'manjaro';
     maintainer?: string;
     votes?: number;
     url?: string; // Upstream URL
@@ -129,17 +129,10 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
                         )}
                     </div>
                     <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                            <h3 className="font-bold text-lg leading-tight group-hover:text-blue-500 transition-colors line-clamp-1 text-app-fg truncate pr-1">
+                        <div className="flex flex-col">
+                            <h3 className="font-bold text-lg leading-tight group-hover:text-blue-500 transition-colors line-clamp-2 text-app-fg break-words">
                                 {pkg.display_name || pkg.name}
                             </h3>
-                            {rating && rating.count > 0 && (
-                                <div className="flex items-center gap-1 bg-app-subtle px-1.5 py-0.5 rounded text-[10px] font-bold text-yellow-500">
-                                    <span>★</span>
-                                    <span>{rating.average.toFixed(1)}</span>
-                                    <span className="text-app-muted font-normal">({rating.count})</span>
-                                </div>
-                            )}
                         </div>
                         {pkg.display_name && pkg.display_name.toLowerCase() !== pkg.name.toLowerCase() && (
                             <span className="text-[10px] text-app-muted font-mono opacity-70 block truncate">
@@ -162,11 +155,20 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
                             <ShieldCheck size={10} /> Chaotic
                         </div>
                     )}
-                    {chaoticInfo && chaoticInfo.lastUpdated && (
-                        <span className="flex items-center gap-1 text-[10px] text-app-muted bg-app-subtle px-2 py-0.5 rounded">
-                            Built {new Date(chaoticInfo.lastUpdated).toLocaleDateString()}
-                        </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                        {rating && rating.count > 0 && typeof rating.average === 'number' && (
+                            <div className="flex items-center gap-1 bg-yellow-500/10 px-1.5 py-0.5 rounded text-[10px] font-bold text-yellow-500 border border-yellow-500/20">
+                                <span>★</span>
+                                <span>{rating.average.toFixed(1)}</span>
+                                <span className="opacity-60 font-normal">({rating.count})</span>
+                            </div>
+                        )}
+                        {chaoticInfo && chaoticInfo.lastUpdated && (
+                            <span className="flex items-center gap-1 text-[10px] text-app-muted bg-app-subtle px-2 py-0.5 rounded">
+                                {new Date(chaoticInfo.lastUpdated).toLocaleDateString()}
+                            </span>
+                        )}
+                    </div>
                 </div>
                 <div className="flex items-center gap-2 relative z-10 self-end">
                     <button

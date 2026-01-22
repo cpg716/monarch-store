@@ -194,17 +194,22 @@ async fn install_package(
                     .notification()
                     .builder()
                     .title(if success {
-                        "Installation Complete"
+                        "✨ MonArch: Installation Complete"
                     } else {
-                        "Installation Failed"
+                        "❌ MonArch: Installation Failed"
                     })
                     .body(format!(
-                        "Package '{}' has {}",
+                        "{} '{}' {}",
+                        if success {
+                            "Successfully installed"
+                        } else {
+                            "Failed to install"
+                        },
                         name,
                         if success {
-                            "been successfully installed."
+                            "from chosen repositories."
                         } else {
-                            "failed to install."
+                            "due to a system error."
                         }
                     ))
                     .show();
@@ -310,18 +315,13 @@ async fn uninstall_package(
                     .notification()
                     .builder()
                     .title(if success {
-                        "Uninstall Complete"
+                        "✨ MonArch: Uninstall Complete"
                     } else {
-                        "Uninstall Failed"
+                        "❌ MonArch: Uninstall Failed"
                     })
                     .body(format!(
-                        "Package '{}' has {}",
-                        name,
-                        if success {
-                            "been successfully removed."
-                        } else {
-                            "failed to uninstall."
-                        }
+                        "Successfully removed '{}' and its unneeded dependencies.",
+                        name
                     ))
                     .show();
             }
@@ -346,12 +346,21 @@ async fn search_aur(query: String) -> Result<Vec<models::Package>, String> {
 
 #[tauri::command]
 async fn trigger_repo_sync(
+    app: tauri::AppHandle,
     state: tauri::State<'_, RepoManager>,
     sync_interval_hours: Option<u64>,
 ) -> Result<String, String> {
     // Default to 24h if not provided (e.g. from legacy calls), but frontend should provide it
     let interval = sync_interval_hours.unwrap_or(24);
-    state.sync_all(false, interval).await // False = Smart Sync
+
+    // 1. Sync Repos
+    let repo_result = state.sync_all(false, interval).await?;
+
+    // 2. Refresh Metadata (AppStream)
+    let state_meta = app.state::<metadata::MetadataState>();
+    state_meta.init(interval).await;
+
+    Ok(repo_result)
 }
 
 #[tauri::command]
@@ -392,7 +401,7 @@ async fn clear_cache(
     state_repo.sync_all(true, 0).await?; // Force re-download (interval 0 is ignored when force=true)
 
     // 4. Clear Metadata (AppStream) - Force reload
-    state_meta.init().await;
+    state_meta.init(0).await;
 
     // 5. Clear Download Cache (basic implementation)
     // Safest is to just try to remove the ~/.cache/monarch-store/downloads if it exists
@@ -1622,7 +1631,7 @@ async fn perform_system_update(
         serde_json::json!({
             "phase": "starting",
             "progress": 0,
-            "message": "Preparing system update..."
+            "message": "Initializing MonArch System Update..."
         }),
     );
 
@@ -1903,9 +1912,9 @@ pub fn run() {
                     Err(e) => println!("Startup Sync Failed (Chaotic): {}", e),
                 }
 
-                // 3. Init Metadata (AppStream)
+                // 3. Init Metadata (AppStream) - Default 24h for initial backend setup
                 let state_meta = handle.state::<metadata::MetadataState>();
-                state_meta.init().await;
+                state_meta.init(24).await;
             });
             Ok(())
         })

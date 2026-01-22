@@ -152,6 +152,24 @@
   opacity: 0;
 }
 
+@keyframes flap {
+
+  0%,
+  100% {
+    transform: scaleX(1);
+    filter: brightness(1);
+  }
+
+  50% {
+    transform: scaleX(0.6);
+    filter: brightness(1.2);
+  }
+}
+
+.animate-flap {
+  animation: flap 0.6s ease-in-out infinite;
+}
+
 @layer base {
   body {
     background-color: var(--app-bg);

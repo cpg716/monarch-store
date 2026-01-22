@@ -80,7 +80,11 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                 'CachyOS': {
                     name: 'CachyOS',
                     description: 'Performance-optimized packages (auto-selects best for your CPU)',
-                    members: ['cachyos', 'cachyos-v3', 'cachyos-core', 'cachyos-v4'],
+                    members: [
+                        'cachyos', 'cachyos-v3', 'cachyos-core-v3', 'cachyos-extra-v3',
+                        'cachyos-v4', 'cachyos-core-v4', 'cachyos-extra-v4',
+                        'cachyos-znver4', 'cachyos-core-znver4', 'cachyos-extra-znver4'
+                    ],
                 },
                 'Manjaro': {
                     name: 'Manjaro',
@@ -143,6 +147,18 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
             try {
                 // Use toggle_repo_family to enable/disable all variants at once
                 await invoke('toggle_repo_family', { family: repo.name, enabled: newEnabled });
+
+                // If enabling, also run the system setup
+                if (newEnabled) {
+                    try {
+                        // repo.id matches keys in repo_setup.rs (e.g. 'cachyos', 'garuda')
+                        await invoke('enable_repo', { name: repo.id });
+                    } catch (err) {
+                        console.error("Failed to setup repo:", err);
+                        alert(`Repo setup failed: ${err}`);
+                        // Revert? Nah, keep the toggle on but maybe warn.
+                    }
+                }
 
                 // Trigger a background sync and refresh counts
                 invoke('trigger_repo_sync').finally(() => {
@@ -467,6 +483,14 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                             const newState = !isAurEnabled;
                                             setIsAurEnabled(newState);
                                             await invoke('set_aur_enabled', { enabled: newState });
+                                            if (newState) {
+                                                try {
+                                                    await invoke('enable_repo', { name: 'aur' });
+                                                } catch (err) {
+                                                    console.error("Failed to setup AUR prerequisites:", err);
+                                                    alert(`AUR setup failed: ${err}`);
+                                                }
+                                            }
                                         }}
                                         className={clsx(
                                             "w-12 h-7 rounded-full p-1 transition-all relative",
@@ -661,7 +685,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                         <Info size={14} className="opacity-50" /> MonARCH Store v0.1.0-alpha • Licensed under MIT • Powered by Chaotic-AUR
                     </p>
                 </div>
-            </div>
+            </div >
         </div >
     );
 }

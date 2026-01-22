@@ -41,38 +41,132 @@ pub async fn fetch_repo_packages(
 
     let bytes = if is_fresh {
         // Load from disk
-        // println!("Loading {} from cache", repo_name);
         std::fs::read(&cache_path).map_err(|e| e.to_string())?
     } else {
-        // Download
+        // Download with Fallback
         let client = Client::builder()
-            .user_agent("AURStore/0.1.0 (Tauri; Arch Linux)")
-            .timeout(std::time::Duration::from_secs(60))
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+            .timeout(std::time::Duration::from_secs(30))
+            .http1_only() // Force HTTP/1.1 to avoid ALPN issues on Mac
+            .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
+            .pool_idle_timeout(Some(std::time::Duration::from_secs(60)))
+            .default_headers({
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8".parse().unwrap());
+                headers.insert(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.5".parse().unwrap());
+                headers.insert(reqwest::header::CONNECTION, "keep-alive".parse().unwrap());
+                headers
+            })
             .build()
             .unwrap_or_else(|_| Client::new());
 
-        let target_url = if mirror_url.ends_with(".db") || mirror_url.ends_with(".db.tar.gz") {
-            mirror_url.to_string()
-        } else {
-            format!("{}/{}.db", mirror_url.trim_end_matches('/'), repo_name)
-        };
+        // Define potential mirror rotations based on repo source
+        let mut mirrors_to_try = vec![mirror_url.to_string()];
 
-        let resp = client
-            .get(&target_url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !resp.status().is_success() {
-            return Err(format!("Failed to fetch DB: {}", resp.status()));
+        if mirror_url.contains("cachyos.org") || mirror_url.contains("soulharsh007.dev") {
+            // CachyOS Mirror Rotation
+            let alternates = [
+                "https://cdn77.cachyos.org",
+                "https://cdn.cachyos.org",
+                "https://us.cachyos.org",
+                "https://mirror.cachyos.org",
+                "https://at.cachyos.org",
+                "https://de-nue.soulharsh007.dev/cachyos",
+                "https://us-mnz.soulharsh007.dev/cachyos",
+                "https://mirror.lesviallon.fr/cachy",
+            ];
+            for alt in alternates {
+                if !mirror_url.starts_with(alt) {
+                    if let Some(path_index) = mirror_url.find("/repo/") {
+                        let path = &mirror_url[path_index..];
+                        mirrors_to_try.push(format!("{}{}", alt, path));
+                    }
+                }
+            }
+        } else if mirror_url.contains("manjaro") {
+            // Manjaro Mirror Rotation
+            let alternates = [
+                "https://mirror.easyname.at/manjaro",
+                "https://mirror.dkm.cz/manjaro",
+                "https://manjaro.lucassymons.net",
+                "https://ftp.gwdg.de/pub/linux/manjaro",
+                "https://mirror.init7.net/manjaro",
+            ];
+            for alt in alternates {
+                if !mirror_url.starts_with(alt) {
+                    if let Some(path_index) = mirror_url.find("/stable/") {
+                        let path = &mirror_url[path_index..];
+                        mirrors_to_try.push(format!("{}{}", alt, path));
+                    }
+                }
+            }
+        } else if mirror_url.contains("endeavouros") {
+            // EndeavourOS Mirror Rotation
+            let alternates = [
+                "https://mirror.moson.org/endeavouros",
+                "https://mirror.alpix.eu/endeavouros",
+                "https://ca.mirror.babylonix.io/endeavouros",
+                "https://mirror.jingk.ai/endeavouros",
+            ];
+            for alt in alternates {
+                if !mirror_url.starts_with(alt) {
+                    if let Some(path_index) = mirror_url.find("/repo/") {
+                        let path = &mirror_url[path_index..];
+                        mirrors_to_try.push(format!("{}{}", alt, path));
+                    }
+                }
+            }
         }
 
-        let data = resp.bytes().await.map_err(|e| e.to_string())?;
+        let mut last_err = String::new();
+        let mut success_data = None;
 
-        // Save to cache
-        let _ = std::fs::write(&cache_path, &data);
+        for (i, url) in mirrors_to_try.iter().enumerate() {
+            if i > 0 {
+                // println!("Retrying with mirror: {}", url);
+            }
 
-        data.to_vec()
+            match client.get(url).send().await {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        match resp.bytes().await {
+                            Ok(data) => {
+                                success_data = Some(data.to_vec());
+                                break;
+                            }
+                            Err(e) => {
+                                let err = format!("Bytes error from {}: {}", url, e);
+                                println!("{}", err);
+                                last_err = err;
+                            }
+                        }
+                    } else {
+                        let err = format!("HTTP {} from {}", resp.status(), url);
+                        println!("{}", err);
+                        last_err = err;
+                    }
+                }
+                Err(e) => {
+                    let err = format!("Request error from {}: {}", url, e);
+                    println!("{}", err);
+                    last_err = err;
+                }
+            }
+        }
+
+        match success_data {
+            Some(data) => {
+                // Save to cache
+                let _ = std::fs::write(&cache_path, &data);
+                data
+            }
+            None => {
+                return Err(format!(
+                    "All mirrors failed for {}: {}",
+                    repo_name, last_err
+                ))
+            }
+        }
     };
 
     // Decompress bytes (bytes is Vec<u8> or Bytes)

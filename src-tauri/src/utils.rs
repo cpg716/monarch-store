@@ -120,6 +120,25 @@ pub fn is_cpu_v4_compatible() -> bool {
     check_cpu_flags(&required_flags)
 }
 
+// Checks if the CPU is Zen 4 or Zen 5 (optimized)
+pub fn is_cpu_znver4_compatible() -> bool {
+    if !is_cpu_v4_compatible() {
+        return false;
+    }
+
+    // Check for Zen vendor and specific features if possible
+    // For now, CachyOS uses v4 dbs for znver4 mostly, but we can detect "AuthenticAMD" + "avx512f"
+    if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
+        let is_amd = content.contains("AuthenticAMD");
+        let has_avx512 = content.contains("avx512f");
+        let is_zen4 = content.contains("model name")
+            && (content.contains("7000") || content.contains("8000") || content.contains("9000"));
+
+        return is_amd && has_avx512 && is_zen4;
+    }
+    false
+}
+
 fn check_cpu_flags(required: &[&str]) -> bool {
     if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
         if let Some(flags_line) = content

@@ -291,7 +291,10 @@ impl AppStreamLoader {
 }
 
 pub fn sanitize_xml(content: &str) -> String {
-    let mut content = content
+    // Strip null bytes immediately
+    let mut content = content.replace('\0', "");
+
+    content = content
         .replace("type=\"service\"", "type=\"console-application\"")
         .replace("type=\"web-application\"", "type=\"console-application\"");
 
@@ -359,19 +362,44 @@ pub fn sanitize_xml(content: &str) -> String {
 }
 
 // Download logic
-pub async fn download_and_cache_appstream() -> Result<PathBuf, String> {
+pub async fn download_and_cache_appstream(interval_hours: u64) -> Result<PathBuf, String> {
     let target_path = PathBuf::from("extra_v5.xml");
+
+    // Check if cache is fresh
     if target_path.exists() {
-        let content = std::fs::read_to_string(&target_path).map_err(|e| e.to_string())?;
+        let is_fresh = if let Ok(metadata) = std::fs::metadata(&target_path) {
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(elapsed) = modified.elapsed() {
+                    let max_age = interval_hours * 3600;
+                    elapsed.as_secs() < max_age
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
-        // Basic check if already sanitized or needs it
-        if content.contains("type=\"service\"") || content.contains("type=\"web-application\"") {
-            println!("Sanitizing existing AppStream XML...");
-            let sanitized = sanitize_xml(&content);
-            std::fs::write(&target_path, sanitized).map_err(|e| e.to_string())?;
+        if is_fresh {
+            let content = std::fs::read_to_string(&target_path).map_err(|e| e.to_string())?;
+
+            // Basic check if already sanitized or needs it
+            if content.contains("type=\"service\"") || content.contains("type=\"web-application\"")
+            {
+                println!("Sanitizing existing AppStream XML...");
+                let sanitized = sanitize_xml(&content);
+                std::fs::write(&target_path, sanitized).map_err(|e| e.to_string())?;
+            }
+
+            return Ok(target_path);
+        } else {
+            println!(
+                "AppStream cache expired ({}h interval), re-downloading...",
+                interval_hours
+            );
         }
-
-        return Ok(target_path);
     }
 
     println!("Downloading Arch AppStream data...");
@@ -434,12 +462,12 @@ pub async fn download_and_cache_appstream() -> Result<PathBuf, String> {
 pub struct MetadataState(pub Mutex<AppStreamLoader>);
 
 impl MetadataState {
-    pub async fn init(&self) {
+    pub async fn init(&self, interval_hours: u64) {
         if cfg!(target_os = "macos") {
-            match download_and_cache_appstream().await {
+            match download_and_cache_appstream(interval_hours).await {
                 Ok(path) => match Collection::from_path(path.clone()) {
                     Ok(col) => {
-                        println!("Loaded downloaded AppStream data from {:?}", path);
+                        println!("Loaded AppStream data from {:?}", path);
                         let mut loader = self.0.lock().unwrap();
                         loader.set_collection(col);
                     }

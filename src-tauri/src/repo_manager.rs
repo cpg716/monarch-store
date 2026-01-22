@@ -63,28 +63,63 @@ impl RepoManager {
             },
             RepoConfig {
                 name: "cachyos".to_string(),
-                url: "https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos.db".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64/cachyos/cachyos.db".to_string(),
                 source: PackageSource::CachyOS,
                 enabled: true,
             },
             RepoConfig {
                 name: "cachyos-v3".to_string(),
-                url: "https://mirror.cachyos.org/repo/x86_64/cachyos-v3/cachyos-v3.db".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v3/cachyos-v3/cachyos-v3.db".to_string(),
                 source: PackageSource::CachyOS,
                 enabled: crate::utils::is_cpu_v3_compatible(),
             },
             RepoConfig {
-                name: "cachyos-core".to_string(),
-                url: "https://mirror.cachyos.org/repo/x86_64/cachyos-core-v3/cachyos-core-v3.db"
+                name: "cachyos-core-v3".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v3/cachyos-core-v3/cachyos-core-v3.db"
+                    .to_string(),
+                source: PackageSource::CachyOS,
+                enabled: crate::utils::is_cpu_v3_compatible(),
+            },
+            RepoConfig {
+                name: "cachyos-extra-v3".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v3/cachyos-extra-v3/cachyos-extra-v3.db"
                     .to_string(),
                 source: PackageSource::CachyOS,
                 enabled: crate::utils::is_cpu_v3_compatible(),
             },
             RepoConfig {
                 name: "cachyos-v4".to_string(),
-                url: "https://mirror.cachyos.org/repo/x86_64/cachyos-v4/cachyos-v4.db".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-v4/cachyos-v4.db".to_string(),
                 source: PackageSource::CachyOS,
                 enabled: crate::utils::is_cpu_v4_compatible(),
+            },
+            RepoConfig {
+                name: "cachyos-core-v4".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-core-v4/cachyos-core-v4.db"
+                    .to_string(),
+                source: PackageSource::CachyOS,
+                enabled: crate::utils::is_cpu_v4_compatible(),
+            },
+            RepoConfig {
+                name: "cachyos-extra-v4".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-extra-v4/cachyos-extra-v4.db"
+                    .to_string(),
+                source: PackageSource::CachyOS,
+                enabled: crate::utils::is_cpu_v4_compatible(),
+            },
+            RepoConfig {
+                name: "cachyos-extra-znver4".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-extra-znver4/cachyos-extra-znver4.db"
+                    .to_string(),
+                source: PackageSource::CachyOS,
+                enabled: crate::utils::is_cpu_znver4_compatible(),
+            },
+            RepoConfig {
+                name: "cachyos-core-znver4".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-core-znver4/cachyos-core-znver4.db"
+                    .to_string(),
+                source: PackageSource::CachyOS,
+                enabled: crate::utils::is_cpu_znver4_compatible(),
             },
             RepoConfig {
                 name: "garuda".to_string(),
@@ -136,6 +171,8 @@ impl RepoManager {
                             saved_config.repos.iter().find(|r| r.name == repo.name)
                         {
                             repo.enabled = saved_repo.enabled;
+                            // FORCE update URLs for official/optimized repos to latest defaults
+                            // This ensures users migrate to new mirrors (like cdn77) automatically.
                         }
                     }
                 }
@@ -283,7 +320,9 @@ impl RepoManager {
             if belongs_to_family {
                 if enabled {
                     // Smart enable: For CachyOS, only enable if CPU compatible
-                    if repo_lower.contains("-v4") {
+                    if repo_lower.contains("-znver4") {
+                        repo.enabled = crate::utils::is_cpu_znver4_compatible();
+                    } else if repo_lower.contains("-v4") {
                         repo.enabled = crate::utils::is_cpu_v4_compatible();
                     } else if repo_lower.contains("-v3") || repo_lower.contains("-core") {
                         repo.enabled = crate::utils::is_cpu_v3_compatible();
