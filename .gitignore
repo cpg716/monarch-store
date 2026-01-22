@@ -34,3 +34,9 @@ src-tauri/icons/*
 !src-tauri/icons/android/
 !src-tauri/icons/ios/
 !src-tauri/icons/StoreLogo.png
+
+# Packages
+*.deb
+*.rpm
+*.AppImage
+*.tar.gz
