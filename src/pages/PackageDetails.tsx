@@ -53,7 +53,6 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
     const [chaoticInfo, setChaoticInfo] = useState<ChaoticPackage | null>(null);
     const [rating, setRating] = useState<RatingSummary | null>(null);
     const [reviews, setReviews] = useState<ServiceReview[]>([]);
-    const [isLoadingReviews, setIsLoadingReviews] = useState(false);
 
     // Removed localReviews state as it is merged in reviewService
 
@@ -160,7 +159,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
 
     useEffect(() => {
         const fetchReviews = async () => {
-            setIsLoadingReviews(true);
+            // setIsLoadingReviews(true);
             try {
                 // Determine ID to use (prefer AppStream ID if available, else pkg name)
                 const lookupId = fullMeta?.app_id || pkg.app_id || pkg.name;
@@ -173,7 +172,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
             } catch (e) {
                 console.error("Failed to load reviews", e);
             } finally {
-                setIsLoadingReviews(false);
+                // setIsLoadingReviews(false);
             }
         };
 

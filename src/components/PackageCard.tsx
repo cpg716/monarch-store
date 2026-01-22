@@ -22,6 +22,7 @@ export interface Package {
     num_votes?: number;
     icon?: string;
     app_id?: string;
+    screenshots?: string[];
 }
 
 interface PackageCardProps {

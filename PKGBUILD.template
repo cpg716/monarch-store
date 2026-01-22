@@ -1,0 +1,28 @@
+# Maintainer: cpg716 <cpg716@github.com>
+pkgname=monarch-store-bin
+_pkgname=monarch-store
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="A modern, high-performance software store for Arch Linux based distributions."
+arch=('x86_64')
+url="https://github.com/cpg716/monarch-store"
+license=('MIT')
+depends=('gtk3' 'webkit2gtk' 'libappindicator-gtk3' 'librsvg')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+options=('!strip')
+
+# The source will point to the GitHub Release artifacts
+# Once the build finishes, we fill in the hashes below
+source=("https://github.com/cpg716/monarch-store/releases/download/v$pkgver/monarch-store_${pkgver}_amd64.deb")
+sha256sums=('SKIP') # Replace with actual hash from GitHub Release
+
+package() {
+  # Extract the .deb (which is just a compressed archive)
+  # Tauri builds .deb files by default on Ubuntu-based CI
+  # Note: PKGBUILD is usually run in a clean directory
+  tar -xJf data.tar.xz -C "${pkgdir}"
+  
+  # Ensure correct permissions
+  chmod -R 755 "${pkgdir}/usr"
+}
