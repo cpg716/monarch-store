@@ -59,6 +59,7 @@ pub async fn get_app_reviews(app_id: &str) -> Result<Vec<Review>, String> {
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
 
     if !resp.status().is_success() {
+        println!("ODRS Error: {} returned {}", url, resp.status());
         return Ok(vec![]);
     }
 

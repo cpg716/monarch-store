@@ -592,6 +592,36 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                 <Trash2 size={22} className="text-app-muted" /> System Maintenance
                             </h2>
                             <div className="bg-app-card/30 border border-app-border/50 rounded-3xl p-8 h-full space-y-6">
+                                {/* Repair Config */}
+                                <div className="flex items-center justify-between pb-6 border-b border-app-border/30">
+                                    <div className="max-w-[60%]">
+                                        <h3 className="text-base font-bold text-app-fg text-red-400">System Repair</h3>
+                                        <p className="text-xs text-app-muted mt-1 leading-relaxed">
+                                            Reset <code className="bg-app-subtle px-1 rounded">/etc/pacman.conf</code> to defaults. Use this if official repositories stop working.
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={async () => {
+                                            if (confirm("DANGER: This will reset /etc/pacman.conf to defaults and wipe all custom repo configs. You will need to re-enable them. Continue?")) {
+                                                setIsOptimizing(true);
+                                                try {
+                                                    await invoke('reset_pacman_conf');
+                                                    success("System config reset to defaults.");
+                                                    // Trigger a sync after reset
+                                                    await invoke('trigger_repo_sync');
+                                                } catch (e) {
+                                                    error(`Reset failed: ${e}`);
+                                                } finally {
+                                                    setIsOptimizing(false);
+                                                }
+                                            }
+                                        }}
+                                        disabled={isOptimizing}
+                                        className="h-9 px-4 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 font-bold text-xs transition-all"
+                                    >
+                                        Repair Config
+                                    </button>
+                                </div>
                                 {/* Disk Cleanup */}
                                 <div className="flex items-center justify-between">
                                     <div className="max-w-[60%]">

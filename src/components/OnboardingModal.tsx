@@ -141,23 +141,23 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             // 1. Apply AUR setting
             await invoke('set_aur_enabled', { enabled: aurEnabled });
 
-            // 2. Apply Repo Families
+            // 2. Apply Repo Families (BATCHED)
+            const reposToEnable: string[] = [];
             for (const fam of repoFamilies) {
-                // Toggle family logic (backend might just use enable/disable toggle)
-                // But for setup, we want to run enable_repo if it's enabled and wasn't before?
-                // Actually, `toggle_repo_family` handles enabling/disabling in the app state.
-                // WE ALSO need to run `enable_repo` (system setup) if they enabled it.
+                // Update internal state
                 await invoke('toggle_repo_family', { family: fam.name, enabled: fam.enabled });
-
                 if (fam.enabled) {
-                    try {
-                        // We use fam.id which matches the key in repo_setup.rs (cachyos, garuda, etc)
-                        // But repo_setup expects "cachyos", "garuda".
-                        await invoke('enable_repo', { name: fam.id });
-                    } catch (e) {
-                        console.error(`Failed to enable ${fam.name}:`, e);
-                        // We continue even if one fails
-                    }
+                    reposToEnable.push(fam.id);
+                }
+            }
+
+            if (reposToEnable.length > 0) {
+                try {
+                    // Single call, single password prompt
+                    await invoke('enable_repos_batch', { names: reposToEnable });
+                } catch (e) {
+                    console.error("Batch setup failed:", e);
+                    // Do not block completion, but maybe toast?
                 }
             }
 

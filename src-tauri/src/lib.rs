@@ -20,6 +20,7 @@ use serde::Serialize;
 use std::process::{Command, Stdio}; // Keep Stdio
 use tauri::Emitter; // Fix: Use Emitter trait for emit()
 use tauri::Manager;
+use tauri_plugin_aptabase::EventTracker;
 use tokio::io::{AsyncBufReadExt, BufReader}; // Use async reader
 
 #[derive(Serialize)]
@@ -52,6 +53,187 @@ async fn get_system_info() -> Result<SystemInfo, String> {
     Ok(SystemInfo { kernel, de, distro })
 }
 
+async fn audit_aur_builder_deps(app: &tauri::AppHandle) -> Result<(), String> {
+    let has_git = Command::new("which")
+        .arg("git")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let has_base_devel = Command::new("pacman")
+        .args(["-Qq", "base-devel"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !has_git || !has_base_devel {
+        let _ = app.emit(
+            "install-output",
+            "Installing build dependencies (git, base-devel)...",
+        );
+
+        // Install missing deps
+        let script = String::from("#!/bin/bash\npacman -Sy --needed --noconfirm git base-devel\n");
+
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let temp_dir = std::env::temp_dir();
+        let script_path = temp_dir.join("monarch_dep_install.sh");
+        {
+            let mut file = std::fs::File::create(&script_path).map_err(|e| e.to_string())?;
+            file.write_all(script.as_bytes())
+                .map_err(|e| e.to_string())?;
+            let mut perms = file.metadata().map_err(|e| e.to_string())?.permissions();
+            perms.set_mode(0o755);
+            file.set_permissions(perms).map_err(|e| e.to_string())?;
+        }
+
+        let output = Command::new("pkexec")
+            .arg(&script_path)
+            .output()
+            .map_err(|e| format!("Failed to run dependency installer: {}", e))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "Failed to install build dependencies: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn build_aur_package(
+    app: &tauri::AppHandle,
+    name: &str,
+    password: &Option<String>,
+) -> Result<(), String> {
+    let _ = app.emit(
+        "install-output",
+        format!("Starting native build for {}", name),
+    );
+
+    // 0. Ensure deps (git, base-devel)
+    audit_aur_builder_deps(app).await?;
+
+    // 1. Create temp build dir
+    let temp_dir = std::env::temp_dir().join(format!("monarch_build_{}", name));
+    if temp_dir.exists() {
+        std::fs::remove_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+
+    // 2. Git Clone
+    let _ = app.emit("install-output", "Cloning AUR repository...");
+    let clone_status = tokio::process::Command::new("git")
+        .arg("clone")
+        .arg(format!("https://aur.archlinux.org/{}.git", name))
+        .arg(&temp_dir)
+        .status()
+        .await
+        .map_err(|e| format!("Git clone failed: {}", e))?;
+
+    if !clone_status.success() {
+        return Err("Git clone failed".to_string());
+    }
+
+    // 3. Makepkg
+    let _ = app.emit(
+        "install-output",
+        "Building package (this may take a while)...",
+    );
+
+    // We need to run makepkg as a non-root user (which we are), but it needs sudo for -i (install)
+    // We can't easily pipe password to makepkg's internal sudo call.
+    // Strategy: Build only (-s), then install result with pacman -U.
+
+    let build_status = tokio::process::Command::new("makepkg")
+        .arg("-s") // Sync deps
+        .arg("--noconfirm")
+        .current_dir(&temp_dir)
+        .status()
+        .await
+        .map_err(|e| format!("Makepkg failed: {}", e))?;
+
+    if !build_status.success() {
+        return Err("Build failed. Check dependencies.".to_string());
+    }
+
+    // 4. Find the built package
+    let mut built_pkg = None;
+    if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(ext) = path.extension() {
+                let ext_str = ext.to_string_lossy();
+                if ext_str == "zst" || ext_str == "xz" {
+                    // pkg.tar.zst or pkg.tar.xz
+                    built_pkg = Some(path);
+                    break;
+                }
+            }
+        }
+    }
+
+    let pkg_path = built_pkg.ok_or("Could not find built package archive")?;
+    let _ = app.emit(
+        "install-output",
+        format!("Installing built package: {:?}", pkg_path),
+    );
+
+    // 5. Install with pacman -U (using pkexec or sudo)
+    let (binary, args) = if password.is_none() {
+        (
+            "/usr/bin/pkexec".to_string(),
+            vec![
+                "/usr/bin/pacman".to_string(),
+                "-U".to_string(),
+                "--noconfirm".to_string(),
+                "--".to_string(),
+                pkg_path.to_string_lossy().to_string(),
+            ],
+        )
+    } else {
+        (
+            "/usr/bin/sudo".to_string(),
+            vec![
+                "-S".to_string(),
+                "/usr/bin/pacman".to_string(),
+                "-U".to_string(),
+                "--noconfirm".to_string(),
+                "--".to_string(),
+                pkg_path.to_string_lossy().to_string(),
+            ],
+        )
+    };
+
+    let mut child = tokio::process::Command::new(binary);
+    for arg in &args {
+        child.arg(arg);
+    }
+
+    if password.is_some() {
+        child.stdin(std::process::Stdio::piped());
+    }
+
+    let mut child_proc = child.spawn().map_err(|e| e.to_string())?;
+
+    if let Some(pwd) = password {
+        if let Some(mut stdin) = child_proc.stdin.take() {
+            let _ =
+                tokio::io::AsyncWriteExt::write_all(&mut stdin, format!("{}\n", pwd).as_bytes())
+                    .await;
+        }
+    }
+
+    let status = child_proc.wait().await.map_err(|e| e.to_string())?;
+
+    if !status.success() {
+        return Err("Failed to install built package".to_string());
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn install_package(
     app: tauri::AppHandle,
@@ -61,6 +243,34 @@ async fn install_package(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn(async move {
         // 1. Determine Helper/Binary
+        let native_builder_needed = match source {
+            models::PackageSource::Aur => {
+                let helpers = ["/usr/bin/paru", "/usr/bin/yay", "/usr/bin/aura"];
+                let mut found = None;
+                for h in helpers {
+                    if std::path::Path::new(h).exists() {
+                        found = Some(h);
+                        break;
+                    }
+                }
+                found.is_none()
+            }
+            _ => false,
+        };
+
+        if native_builder_needed {
+            match build_aur_package(&app, &name, &password).await {
+                Ok(_) => {
+                    let _ = app.emit("install-complete", "success");
+                }
+                Err(e) => {
+                    let _ = app.emit("install-output", format!("Build Error: {}", e));
+                    let _ = app.emit("install-complete", "failed");
+                }
+            }
+            return;
+        }
+
         let (binary, args) = match source {
             models::PackageSource::Aur => {
                 let helpers = ["/usr/bin/paru", "/usr/bin/yay", "/usr/bin/aura"];
@@ -72,14 +282,11 @@ async fn install_package(
                     }
                 }
 
+                // Fallback to native (should cover above check, but safe logic)
                 match found {
                     Some(h) => (h.to_string(), vec!["-Sy", "--noconfirm", "--", &name]),
                     None => {
-                        let _ = app.emit(
-                            "install-output",
-                            "Error: No AUR helper (paru/yay) found in /usr/bin/.",
-                        );
-                        let _ = app.emit("install-complete", "failed");
+                        // This path shouldn't be reached due to native_builder_needed check
                         return;
                     }
                 }
@@ -1890,6 +2097,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_aptabase::Builder::new("A-EU-3907248034").build())
         .manage(repo_manager::RepoManager::new())
         .manage(chaotic_api::ChaoticApiClient::new())
         .manage(flathub_api::FlathubApiClient::new())
@@ -1898,6 +2106,7 @@ pub fn run() {
         )))
         .manage(ScmState(scm_api::ScmClient::new())) // Initialize SCM Client
         .setup(|app| {
+            let _ = app.track_event("app_started", None);
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state_repo = handle.state::<RepoManager>();
@@ -1964,8 +2173,17 @@ pub fn run() {
             get_orphans,
             remove_orphans,
             repo_setup::check_repo_status, // [NEW]
-            repo_setup::enable_repo,       // [NEW]
+            repo_setup::enable_repo,
+            repo_setup::enable_repos_batch,
+            repo_setup::reset_pacman_conf, // [NEW]
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|handler, event| match event {
+            tauri::RunEvent::Exit { .. } => {
+                let _ = handler.track_event("app_exited", None);
+                handler.flush_events_blocking();
+            }
+            _ => {}
+        });
 }
