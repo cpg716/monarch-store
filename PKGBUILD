@@ -1,13 +1,13 @@
 # Maintainer: cpg716 <cpg716@github.com>
 pkgname=monarch-store
 _pkgname=monarch-store
-pkgver=0.2.16
+pkgver=0.2.17
 pkgrel=1
 pkgdesc="A modern, high-performance software store for Arch Linux based distributions."
 arch=('x86_64')
 url="https://github.com/cpg716/monarch-store"
 license=('MIT')
-depends=('gtk3' 'webkit2gtk-4.1' 'libappindicator-gtk3' 'librsvg')
+depends=('gtk3' 'webkit2gtk-4.1' 'libappindicator-gtk3' 'librsvg' 'polkit')
 provides=("$_pkgname")
 conflicts=("$_pkgname")
 options=('!strip')
