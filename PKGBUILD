@@ -1,7 +1,7 @@
 # Maintainer: cpg716 <cpg716@github.com>
 pkgname=monarch-store
 _pkgname=monarch-store
-pkgver=0.2.17
+pkgver=0.2.18
 pkgrel=1
 pkgdesc="A modern, high-performance software store for Arch Linux based distributions."
 arch=('x86_64')
