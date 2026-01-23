@@ -46,9 +46,15 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
                      rm -f /etc/pacman.d/cachyos-mirrorlist
                      exit 1
                 fi
+                
+                # PREPEND known good CDN mirror to ensure reliability
+                # This fixes issues where the first mirror in the list (e.g. nl.cachyos.org) is down
+                echo "Prepending reliable CDN mirror..."
+                sed -i '1s/^/## Priority Mirror\nServer = https:\/\/cdn77.cachyos.org\/repo\/$arch\/$repo\n\n/' /etc/pacman.d/cachyos-mirrorlist
             else
                 echo "ERROR: Failed to download CachyOS mirrorlist."
-                exit 1
+                # Fallback: Create a minimal mirrorlist with just the CDN
+                echo "Server = https://cdn77.cachyos.org/repo/$arch/$repo" > /etc/pacman.d/cachyos-mirrorlist
             fi
 
             # 4. Configure Pacman
@@ -184,9 +190,19 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
             fi
             pacman-key --lsign-key 279E7CF5D8D56EC8
 
+            # Use robust list of mirrors instead of single hardcoded 404
             if ! grep -q "\[manjaro-core\]" /etc/pacman.conf; then
-                echo -e "\n[manjaro-core]\nSigLevel = PackageRequired\nServer = https://mirror.dkm.cz/manjaro/stable/core/\$arch" >> /etc/pacman.conf
-                echo -e "\n[manjaro-extra]\nSigLevel = PackageRequired\nServer = https://mirror.dkm.cz/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
+                echo -e "\n[manjaro-core]\nSigLevel = PackageRequired" >> /etc/pacman.conf
+                echo "Server = https://mirror.easyname.at/manjaro/stable/core/\$arch" >> /etc/pacman.conf
+                echo "Server = https://mirrors.gigenet.com/manjaro/stable/core/\$arch" >> /etc/pacman.conf
+                echo "Server = https://mirror.dkm.cz/manjaro/stable/core/\$arch" >> /etc/pacman.conf
+                echo "Server = https://ftp.gwdg.de/pub/linux/manjaro/stable/core/\$arch" >> /etc/pacman.conf
+                
+                echo -e "\n[manjaro-extra]\nSigLevel = PackageRequired" >> /etc/pacman.conf
+                echo "Server = https://mirror.easyname.at/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
+                echo "Server = https://mirrors.gigenet.com/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
+                echo "Server = https://mirror.dkm.cz/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
+                echo "Server = https://ftp.gwdg.de/pub/linux/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
             fi
             
             pacman -Sy
