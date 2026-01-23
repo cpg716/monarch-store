@@ -107,13 +107,20 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
             pacman-key --lsign-key 428F7ECC9E192215
             
             # Bootstrap mirrorlist
-            curl -s "https://mirror.alpix.eu/endeavouros/repo/endeavouros/x86_64/endeavouros-mirrorlist" -o /etc/pacman.d/endeavouros-mirrorlist
-            
-            if ! grep -q "\[endeavouros\]" /etc/pacman.conf; then
-                echo -e "\n[endeavouros]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/endeavouros-mirrorlist" >> /etc/pacman.conf
+            MIRRORLIST_URL="https://raw.githubusercontent.com/endeavouros-team/PKGBUILDS/master/endeavouros-mirrorlist/endeavouros-mirrorlist"
+            curl -f -s "$MIRRORLIST_URL" -o /etc/pacman.d/endeavouros-mirrorlist || echo "Failed to download mirrorlist"
+
+            if [ -s /etc/pacman.d/endeavouros-mirrorlist ] && ! grep -q "Failed to download mirrorlist" /etc/pacman.d/endeavouros-mirrorlist; then
+                if ! grep -q "\[endeavouros\]" /etc/pacman.conf; then
+                    echo -e "\n[endeavouros]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/endeavouros-mirrorlist" >> /etc/pacman.conf
+                fi
+                pacman -Sy
+                pacman -S endeavouros-keyring endeavouros-mirrorlist --noconfirm
+            else
+                echo "Failed to download valid EndeavourOS mirrorlist. Aborting setup."
+                rm -f /etc/pacman.d/endeavouros-mirrorlist
+                exit 1
             fi
-            pacman -Sy
-            pacman -S endeavouros-keyring endeavouros-mirrorlist --noconfirm
             "#
         }
         "manjaro" => {
