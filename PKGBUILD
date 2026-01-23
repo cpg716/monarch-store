@@ -13,8 +13,8 @@ conflicts=("$_pkgname")
 options=('!strip')
 
 # Download the .deb from your GitHub release
-source=("https://github.com/cpg716/monarch-store/releases/download/$pkgver/MonARCH.Store_${pkgver}_amd64.deb")
-sha256sums=('0f657b41ab9884e980db1bff26f51f891ef63b079d42b7eb6a3596fda5e4e6a0')
+source=("https://github.com/cpg716/monarch-store/releases/download/${pkgver}/MonARCH.Store_${pkgver}_amd64.deb")
+sha256sums=('1c6d5e3c2d904ffc4ecdb9a0564c32d65f40d0dcd6a92f57d01179992a1a0284')
 
 package() {
   # Extract the .deb file members
