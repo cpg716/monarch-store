@@ -1303,7 +1303,9 @@ pub struct PendingUpdate {
 #[tauri::command]
 async fn get_installed_packages() -> Result<Vec<InstalledPackage>, String> {
     // Try to run pacman -Q (only works on Arch)
-    let output = Command::new("pacman").args(["-Qi"]).output();
+    // Use -Qei to get info (-i) but ONLY for explicitly installed packages (-e)
+    // This hides dependencies and system libs from the UI
+    let output = Command::new("pacman").args(["-Qei"]).output();
 
     match output {
         Ok(out) if out.status.success() => {

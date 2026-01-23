@@ -9,6 +9,7 @@ import { clsx } from 'clsx';
 import { motion } from 'framer-motion';
 
 import { useTheme } from '../hooks/useTheme';
+import { useToast } from '../context/ToastContext';
 
 interface SettingsPageProps {
     onRestartOnboarding?: () => void;
@@ -16,6 +17,7 @@ interface SettingsPageProps {
 
 export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps) {
     const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
+    const { success, error } = useToast();
 
     const [isOptimizing, setIsOptimizing] = useState(false);
     const [pkgVersion, setPkgVersion] = useState("0.0.0");
@@ -23,6 +25,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
         return localStorage.getItem('notifications-enabled') !== 'false';
     });
     const [systemInfo, setSystemInfo] = useState<{ kernel: string, de: string, distro: string } | null>(null);
+
     // const [healthStatus, setHealthStatus] = useState<'healthy' | 'maintenance'>('healthy');
 
 
@@ -160,7 +163,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                         await invoke('enable_repo', { name: repo.id });
                     } catch (err) {
                         console.error("Failed to setup repo:", err);
-                        alert(`Repo setup failed: ${err}`);
+                        error(`Repo setup failed: ${err}`);
                         // Revert? Nah, keep the toggle on but maybe warn.
                     }
                 }
@@ -183,9 +186,9 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
         setIsOptimizing(true);
         try {
             const result = await invoke<string>('optimize_system');
-            alert(result);
+            success(result);
         } catch (e) {
-            alert(`Optimization failed: ${e}`);
+            error(`Optimization failed: ${e}`);
         } finally {
             setIsOptimizing(false);
         }
@@ -199,11 +202,11 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
         setIsOptimizing(true); // Reuse loading state
         try {
             const result = await invoke<string>('clear_cache');
-            alert(result);
+            success(result);
             // Optionally reload window to force fresh state?
             // window.location.reload(); 
         } catch (e) {
-            alert(`Cache wipe failed: ${e}`);
+            error(`Cache wipe failed: ${e}`);
         } finally {
             setIsOptimizing(false);
         }
@@ -493,7 +496,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                                     await invoke('enable_repo', { name: 'aur' });
                                                 } catch (err) {
                                                     console.error("Failed to setup AUR prerequisites:", err);
-                                                    alert(`AUR setup failed: ${err}`);
+                                                    error(`AUR setup failed: ${err}`);
                                                 }
                                             }
                                         }}
@@ -620,15 +623,15 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                                 try {
                                                     const orphans = await invoke<string[]>('get_orphans');
                                                     if (orphans.length === 0) {
-                                                        alert("No orphan packages found. Your system is clean.");
+                                                        success("No orphan packages found. Your system is clean.");
                                                     } else {
                                                         if (confirm(`Found ${orphans.length} orphans:\n${orphans.slice(0, 5).join(', ')}${orphans.length > 5 ? '...' : ''}\n\nRemove them?`)) {
                                                             await invoke('remove_orphans', { orphans });
-                                                            alert(`Successfully removed ${orphans.length} packages.`);
+                                                            success(`Successfully removed ${orphans.length} packages.`);
                                                         }
                                                     }
                                                 } catch (e) {
-                                                    alert(`Failed: ${e}`);
+                                                    error(`Failed: ${e}`);
                                                 } finally {
                                                     setIsOptimizing(false);
                                                 }

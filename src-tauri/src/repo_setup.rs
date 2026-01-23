@@ -22,7 +22,10 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
             r#"
             pacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com
             pacman-key --lsign-key F3B607488DB35A47
-            pacman -U 'https://cdn77.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst' 'https://cdn77.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst' --noconfirm
+            
+            if ! grep -q "\[cachyos\]" /etc/pacman.conf; then
+                echo -e "\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist" >> /etc/pacman.conf
+            fi
         "#,
         );
 
@@ -56,7 +59,18 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
             "#);
         }
 
-        cachy_script.push_str("pacman -Sy\n");
+        // Install mirrors and keyring from the newly added repo
+        // We use curl to fetch the mirrorlist first because we can't sync without it
+        cachy_script.push_str(r#"
+            curl -s "https://mirror.cachyos.org/cachyos-mirrorlist" -o /etc/pacman.d/cachyos-mirrorlist
+            # Copy for variants
+            cp /etc/pacman.d/cachyos-mirrorlist /etc/pacman.d/cachyos-v3-mirrorlist
+            cp /etc/pacman.d/cachyos-mirrorlist /etc/pacman.d/cachyos-v4-mirrorlist
+            
+            pacman -Sy
+            pacman -S cachyos-keyring cachyos-mirrorlist --noconfirm
+        "#);
+
         return run_pkexec_script(&cachy_script, name).await;
     }
 
@@ -65,11 +79,16 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
             r#"
             pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com
             pacman-key --lsign-key 3056513887B78AEB
-            pacman -U 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst' --noconfirm
+            
+            # Bootstrap mirrorlist
+            curl -s "https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst" -o /tmp/chaotic-mirrorlist.pkg.tar.zst
+            tar -I zstd -xf /tmp/chaotic-mirrorlist.pkg.tar.zst -C /etc/pacman.d/ --strip-components=1 etc/pacman.d/chaotic-mirrorlist
+
             if ! grep -q "\[chaotic-aur\]" /etc/pacman.conf; then
                 echo -e "\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist" >> /etc/pacman.conf
             fi
             pacman -Sy
+            pacman -S chaotic-keyring chaotic-mirrorlist --noconfirm
             "#
         }
         "garuda" => {
@@ -86,11 +105,15 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
             r#"
             pacman-key --recv-keys 428F7ECC9E192215 --keyserver keyserver.ubuntu.com
             pacman-key --lsign-key 428F7ECC9E192215
-            pacman -U 'https://mirror.alpix.eu/endeavouros/repo/endeavouros/x86_64/endeavouros-keyring-20230523-1-any.pkg.tar.zst' 'https://mirror.alpix.eu/endeavouros/repo/endeavouros/x86_64/endeavouros-mirrorlist-20240105-1-any.pkg.tar.zst' --noconfirm
+            
+            # Bootstrap mirrorlist
+            curl -s "https://mirror.alpix.eu/endeavouros/repo/endeavouros/x86_64/endeavouros-mirrorlist" -o /etc/pacman.d/endeavouros-mirrorlist
+            
             if ! grep -q "\[endeavouros\]" /etc/pacman.conf; then
                 echo -e "\n[endeavouros]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/endeavouros-mirrorlist" >> /etc/pacman.conf
             fi
             pacman -Sy
+            pacman -S endeavouros-keyring endeavouros-mirrorlist --noconfirm
             "#
         }
         "manjaro" => {
@@ -120,30 +143,55 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
 }
 
 async fn run_pkexec_script(script: &str, name: &str) -> Result<String, String> {
-    // Add a header to the script for logging/transparency
+    use std::fs::File;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    // Create a temporary script file
+    let temp_dir = std::env::temp_dir();
+    let script_path = temp_dir.join(format!("monarch_setup_{}.sh", name));
+
+    // Add header and shebang
     let full_script = format!(
-        r#"
+        r#"#!/bin/bash
+        set -e
         echo "--- MonArch Repo Setup: {} ---"
         {}
         "#,
         name, script
     );
 
+    // Write script to file
+    {
+        let mut file = File::create(&script_path)
+            .map_err(|e| format!("Failed to create temp script: {}", e))?;
+        file.write_all(full_script.as_bytes())
+            .map_err(|e| format!("Failed to write temp script: {}", e))?;
+
+        // Make executable (755)
+        let mut perms = file
+            .metadata()
+            .map_err(|e| format!("Failed to get metadata: {}", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        file.set_permissions(perms)
+            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+    }
+
+    // Execute via pkexec
+    // We point directly to the script path
     let output = Command::new("pkexec")
-        .arg("/bin/sh")
-        .arg("-c")
-        .arg(&full_script)
+        .arg(script_path.to_str().unwrap())
         .output()
         .map_err(|e| format!("Process Error: {}", e))?;
 
+    // Cleanup (best effort)
+    let _ = std::fs::remove_file(script_path);
+
     if output.status.success() {
-        Ok(format!("Successfully configured {}.", name))
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!(
-            "Failed to configure {}: {}",
-            name,
-            stderr.lines().next().unwrap_or("Unknown Error")
-        ))
+        let err = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Setup Failed: {}", err))
     }
 }
