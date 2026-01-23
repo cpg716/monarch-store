@@ -1,7 +1,7 @@
 # Maintainer: cpg716 <cpg716@github.com>
 pkgname=monarch-store
 _pkgname=monarch-store
-pkgver=0.2.21
+pkgver=0.2.22
 pkgrel=1
 pkgdesc="A modern, high-performance software store for Arch Linux based distributions."
 arch=('x86_64')
@@ -14,7 +14,7 @@ options=('!strip')
 
 # Download the .deb from your GitHub release
 source=("https://github.com/cpg716/monarch-store/releases/download/$pkgver/MonARCH.Store_${pkgver}_amd64.deb")
-sha256sums=('SKIP')
+sha256sums=('0f657b41ab9884e980db1bff26f51f891ef63b079d42b7eb6a3596fda5e4e6a0')
 
 package() {
   # Extract the .deb file members
