@@ -20,7 +20,7 @@ use serde::Serialize;
 use std::process::{Command, Stdio}; // Keep Stdio
 use tauri::Emitter; // Fix: Use Emitter trait for emit()
 use tauri::Manager;
-use tauri_plugin_aptabase::EventTracker;
+// use tauri_plugin_aptabase::EventTracker;
 use tokio::io::{AsyncBufReadExt, BufReader}; // Use async reader
 
 #[derive(Serialize)]
@@ -2097,7 +2097,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_aptabase::Builder::new("A-EU-3907248034").build())
+        // .plugin(tauri_plugin_aptabase::Builder::new("A-EU-3907248034").build())
         .manage(repo_manager::RepoManager::new())
         .manage(chaotic_api::ChaoticApiClient::new())
         .manage(flathub_api::FlathubApiClient::new())
@@ -2106,7 +2106,7 @@ pub fn run() {
         )))
         .manage(ScmState(scm_api::ScmClient::new())) // Initialize SCM Client
         .setup(|app| {
-            let _ = app.track_event("app_started", None);
+            // let _ = app.track_event("app_started", None);
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state_repo = handle.state::<RepoManager>();
@@ -2179,10 +2179,10 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|handler, event| match event {
+        .run(|_handler, event| match event {
             tauri::RunEvent::Exit { .. } => {
-                let _ = handler.track_event("app_exited", None);
-                handler.flush_events_blocking();
+                // let _ = handler.track_event("app_exited", None);
+                // handler.flush_events_blocking();
             }
             _ => {}
         });
