@@ -5,7 +5,6 @@ use tauri::command;
 pub fn check_repo_status(name: &str) -> bool {
     let conf = std::fs::read_to_string("/etc/pacman.conf").unwrap_or_default();
     let target = format!("[{}]", name.to_lowercase());
-    // Check if repo exists and is NOT commented out
     conf.lines().any(|l| {
         let trimmed = l.trim();
         trimmed.starts_with(&target) && !trimmed.starts_with('#')
@@ -16,19 +15,20 @@ pub fn check_repo_status(name: &str) -> bool {
 pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, String> {
     let name_lower = name.to_lowercase();
 
-    // We handle CachyOS separately since it needs dynamic script building
+    // CachyOS Setup
     if name_lower == "cachyos" {
         let mut cachy_script = String::from(
             r#"
-            # CachyOS Setup
+            echo "--- CachyOS Setup ---"
+            
             # 1. Receiver Key
-            echo "Attempting to receive CachyOS key..."
+            echo "Receiving CachyOS keys..."
             if pacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com; then
                 echo "Key received from ubuntu keyserver."
             elif pacman-key --recv-keys F3B607488DB35A47 --keyserver pgp.mit.edu; then
                 echo "Key received from mit keyserver."
             else
-                echo "ERROR: Failed to receive CachyOS key from all keyservers."
+                echo "ERROR: Failed to receive CachyOS key."
                 exit 1
             fi
 
@@ -38,12 +38,27 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
                 exit 1
             fi
             
+            # 3. Fetch Mirrorlist (Robustly)
+            echo "Fetching CachyOS mirrorlist..."
+            if curl -f -s -L "https://mirror.cachyos.org/cachyos-mirrorlist" -o /etc/pacman.d/cachyos-mirrorlist; then
+                if [ ! -s /etc/pacman.d/cachyos-mirrorlist ]; then
+                     echo "ERROR: Downloaded CachyOS mirrorlist is empty."
+                     rm -f /etc/pacman.d/cachyos-mirrorlist
+                     exit 1
+                fi
+            else
+                echo "ERROR: Failed to download CachyOS mirrorlist."
+                exit 1
+            fi
+
+            # 4. Configure Pacman
             if ! grep -q "\[cachyos\]" /etc/pacman.conf; then
                 echo -e "\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist" >> /etc/pacman.conf
             fi
         "#,
         );
 
+        // Add CPU-specific optimized repos
         if crate::utils::is_cpu_v3_compatible() {
             cachy_script.push_str(r#"
                 if ! grep -q "\[cachyos-v3\]" /etc/pacman.conf; then
@@ -74,26 +89,25 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
             "#);
         }
 
-        // Install mirrors and keyring from the newly added repo
-        // We use curl to fetch the mirrorlist first because we can't sync without it
-        cachy_script.push_str(r#"
-            curl -s "https://mirror.cachyos.org/cachyos-mirrorlist" -o /etc/pacman.d/cachyos-mirrorlist
-            # Copy for variants
+        // 5. Finalize Install
+        cachy_script.push_str(
+            r#"
             cp /etc/pacman.d/cachyos-mirrorlist /etc/pacman.d/cachyos-v3-mirrorlist
             cp /etc/pacman.d/cachyos-mirrorlist /etc/pacman.d/cachyos-v4-mirrorlist
             
-            echo "Syncing pacman (1/2)..."
+            echo "Syncing pacman..."
             if ! pacman -Sy; then
                  echo "ERROR: pacman -Sy failed."
                  exit 1
             fi
             
-            echo "Installing keyring package..."
+            echo "Installing CachyOS keyring..."
             if ! pacman -S cachyos-keyring cachyos-mirrorlist --noconfirm; then
-                 echo "ERROR: Failed to install cachyos-keyring package."
+                 echo "ERROR: Failed to install cachyos-keyring."
                  exit 1
             fi
-        "#);
+        "#,
+        );
 
         return run_pkexec_script(&cachy_script, name).await;
     }
@@ -101,48 +115,36 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
     let script = match name_lower.as_str() {
         "chaotic-aur" | "chaotic" => {
             r#"
-            echo "Receive Chaotic-AUR keys..."
-            if pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com; then
-                 echo "Received from ubuntu."
-            elif pacman-key --recv-key 3056513887B78AEB --keyserver pgp.mit.edu; then
-                 echo "Received from mit."
-            else
-                 echo "ERROR: Failed to receive Chaotic-AUR key."
-                 exit 1
-            fi
+            echo "--- Chaotic-AUR Setup ---"
+            echo "Receiving Chaotic-AUR keys..."
+            pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com || pacman-key --recv-key 3056513887B78AEB --keyserver pgp.mit.edu
 
             if ! pacman-key --lsign-key 3056513887B78AEB; then
                  echo "ERROR: Failed to lsign Chaotic-AUR key."
                  exit 1
             fi
             
-            # Bootstrap mirrorlist
-            curl -s "https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst" -o /tmp/chaotic-mirrorlist.pkg.tar.zst
-            tar -I zstd -xf /tmp/chaotic-mirrorlist.pkg.tar.zst -C /etc/pacman.d/ --strip-components=1 etc/pacman.d/chaotic-mirrorlist
+            echo "Installing Keyring and Mirrorlist..."
+            if ! pacman -U 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst' --noconfirm; then
+                echo "ERROR: Failed to install keyring/mirrorlist packages."
+                exit 1
+            fi
 
             if ! grep -q "\[chaotic-aur\]" /etc/pacman.conf; then
                 echo -e "\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist" >> /etc/pacman.conf
             fi
             
+            echo "Syncing Repos..."
             pacman -Sy
-            pacman -S chaotic-keyring chaotic-mirrorlist --noconfirm
             "#
         }
         "garuda" => {
             r#"
-            echo "Receive Garuda keys..."
-            if pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com; then
-                 echo "Received from ubuntu."
-            elif pacman-key --recv-key 3056513887B78AEB --keyserver pgp.mit.edu; then
-                 echo "Received from mit."
-            else
-                 echo "ERROR: Failed to receive Garuda key."
-                 exit 1
-            fi
-
-            if ! pacman-key --lsign-key 3056513887B78AEB; then
-                 echo "ERROR: Failed to lsign Garuda key."
-                 exit 1
+            echo "--- Garuda Setup ---"
+            if [ ! -f /etc/pacman.d/chaotic-mirrorlist ]; then
+                echo "WARNING: /etc/pacman.d/chaotic-mirrorlist missing. Fetching..."
+                curl -f -s -L "https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst" -o /tmp/chaotic-mirrorlist.pkg.tar.zst
+                pacman -U /tmp/chaotic-mirrorlist.pkg.tar.zst --noconfirm
             fi
 
             if ! grep -q "\[garuda\]" /etc/pacman.conf; then
@@ -153,61 +155,63 @@ pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, S
         }
         "endeavouros" => {
             r#"
-            echo "Receive EndeavourOS keys..."
-            if pacman-key --recv-keys 428F7ECC9E192215 --keyserver keyserver.ubuntu.com; then
-                 echo "Received from ubuntu."
-            elif pacman-key --recv-keys 428F7ECC9E192215 --keyserver pgp.mit.edu; then
-                 echo "Received from mit."
-            else
-                 echo "ERROR: Failed to receive EndeavourOS key from any keyserver."
-                 exit 1
-            fi
+            echo "--- EndeavourOS Setup ---"
+            echo "Receiving keys..."
+            pacman-key --recv-keys 428F7ECC9E192215 --keyserver keyserver.ubuntu.com || pacman-key --recv-keys 428F7ECC9E192215 --keyserver pgp.mit.edu
+            pacman-key --lsign-key 428F7ECC9E192215
 
-            if ! pacman-key --lsign-key 428F7ECC9E192215; then
-                 echo "ERROR: Failed to lsign EndeavourOS key."
-                 exit 1
-            fi
-            
-            # Bootstrap mirrorlist
-            MIRRORLIST_URL="https://raw.githubusercontent.com/endeavouros-team/PKGBUILDS/master/endeavouros-mirrorlist/endeavouros-mirrorlist"
-            curl -f -s "$MIRRORLIST_URL" -o /etc/pacman.d/endeavouros-mirrorlist || echo "Failed to download mirrorlist"
-
-            if [ -s /etc/pacman.d/endeavouros-mirrorlist ] && ! grep -q "Failed to download mirrorlist" /etc/pacman.d/endeavouros-mirrorlist; then
-                if ! grep -q "\[endeavouros\]" /etc/pacman.conf; then
-                    echo -e "\n[endeavouros]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/endeavouros-mirrorlist" >> /etc/pacman.conf
-                fi
-                echo "Syncing pacman..."
-                pacman -Sy
-                echo "Installing keyring..."
-                pacman -S endeavouros-keyring endeavouros-mirrorlist --noconfirm
-            else
-                echo "ERROR: Failed to download valid EndeavourOS mirrorlist."
-                rm -f /etc/pacman.d/endeavouros-mirrorlist
+            echo "Fetching Mirrorlist..."
+            if ! curl -f -s -L "https://raw.githubusercontent.com/endeavouros-team/PKGBUILDS/master/endeavouros-mirrorlist/endeavouros-mirrorlist" -o /etc/pacman.d/endeavouros-mirrorlist; then
+                echo "ERROR: Failed to download mirrorlist."
                 exit 1
             fi
+
+            if ! grep -q "\[endeavouros\]" /etc/pacman.conf; then
+                echo -e "\n[endeavouros]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/endeavouros-mirrorlist" >> /etc/pacman.conf
+            fi
+            
+            pacman -Sy
+            pacman -S endeavouros-keyring endeavouros-mirrorlist --noconfirm
             "#
         }
         "manjaro" => {
             r#"
+            echo "--- Manjaro Setup ---"
+            echo "Receiving Manjaro Build Server key..."
+            if ! pacman-key --recv-keys 279E7CF5D8D56EC8 --keyserver keyserver.ubuntu.com; then
+                echo "ERROR: Failed to receive Manjaro key."
+                exit 1
+            fi
+            pacman-key --lsign-key 279E7CF5D8D56EC8
+
             if ! grep -q "\[manjaro-core\]" /etc/pacman.conf; then
                 echo -e "\n[manjaro-core]\nSigLevel = PackageRequired\nServer = https://mirror.dkm.cz/manjaro/stable/core/\$arch" >> /etc/pacman.conf
                 echo -e "\n[manjaro-extra]\nSigLevel = PackageRequired\nServer = https://mirror.dkm.cz/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
             fi
+            
             pacman -Sy
+            if pacman -S manjaro-keyring --noconfirm; then
+                pacman-key --populate manjaro
+            fi
             "#
         }
         "aur" => {
             r#"
-             # AUR requires base-devel and git
-             pacman -S --needed base-devel git --noconfirm
+            echo "--- AUR Setup ---"
+            echo "Syncing repositories..."
+            if ! pacman -Sy; then
+                echo "ERROR: Failed to sync repositories."
+                exit 1
+            fi
+            
+            echo "Installing build tools..."
+            if ! pacman -S --needed base-devel git --noconfirm; then
+                echo "ERROR: Failed to install base-devel or git."
+                exit 1
+            fi
              "#
         }
-        _ => {
-            return Err(format!(
-                "Automatic setup for '{}' is not yet implemented.",
-                name
-            ))
-        }
+        _ => return Err(format!("Setup for '{}' is not implemented.", name)),
     };
 
     run_pkexec_script(script, name).await
@@ -218,51 +222,39 @@ async fn run_pkexec_script(script: &str, name: &str) -> Result<String, String> {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 
-    // Create a temporary script file
     let temp_dir = std::env::temp_dir();
     let script_path = temp_dir.join(format!("monarch_setup_{}.sh", name));
 
-    // Add header and shebang
+    // Added set -e for safety
     let full_script = format!(
         r#"#!/bin/bash
         set -e
-        echo "--- MonArch Repo Setup: {} ---"
-        {}
-        "#,
-        name, script
+        {}"#,
+        script
     );
 
-    // Write script to file
     {
-        let mut file = File::create(&script_path)
-            .map_err(|e| format!("Failed to create temp script: {}", e))?;
+        let mut file = File::create(&script_path).map_err(|e| e.to_string())?;
         file.write_all(full_script.as_bytes())
-            .map_err(|e| format!("Failed to write temp script: {}", e))?;
-
-        // Make executable (755)
-        let mut perms = file
-            .metadata()
-            .map_err(|e| format!("Failed to get metadata: {}", e))?
-            .permissions();
+            .map_err(|e| e.to_string())?;
+        let mut perms = file.metadata().map_err(|e| e.to_string())?.permissions();
         perms.set_mode(0o755);
-        file.set_permissions(perms)
-            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+        file.set_permissions(perms).map_err(|e| e.to_string())?;
     }
 
-    // Execute via pkexec
-    // We point directly to the script path
     let output = Command::new("pkexec")
         .arg(script_path.to_str().unwrap())
         .output()
         .map_err(|e| format!("Process Error: {}", e))?;
 
-    // Cleanup (best effort)
     let _ = std::fs::remove_file(script_path);
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
-        let err = String::from_utf8_lossy(&output.stderr);
-        Err(format!("Setup Failed: {}", err))
+        Err(format!(
+            "Setup Failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
