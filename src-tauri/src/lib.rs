@@ -122,6 +122,39 @@ async fn build_aur_package(
     }
     std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
+    // 1. Create temp build dir
+    let temp_dir = std::env::temp_dir().join(format!("monarch_build_{}", name));
+    if temp_dir.exists() {
+        std::fs::remove_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+
+    // 1.5. Force DB Sync (Fix for Manjaro/Arch "databases not found" error)
+    let _ = app.emit("install-output", "Syncing package databases...");
+
+    let sync_cmd = if let Some(pwd) = password {
+        std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!("echo '{}' | sudo -S pacman -Sy --noconfirm", pwd),
+            ])
+            .output()
+    } else {
+        std::process::Command::new("pkexec")
+            .args(["pacman", "-Sy", "--noconfirm"])
+            .output()
+    };
+
+    match sync_cmd {
+        Ok(o) if !o.status.success() => {
+            let _ = app.emit("install-output", "⚠ DB Sync warning (continuing)...");
+        }
+        Err(_) => {
+            let _ = app.emit("install-output", "⚠ DB Sync failed to run (continuing)...");
+        }
+        _ => {}
+    }
+
     // 2. Git Clone
     let _ = app.emit("install-output", "Cloning AUR repository...");
     let clone_status = tokio::process::Command::new("git")
@@ -2097,7 +2130,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        // .plugin(tauri_plugin_aptabase::Builder::new("A-EU-3907248034").build())
+        .plugin(tauri_plugin_aptabase::Builder::new("A-EU-3907248034").build())
         .manage(repo_manager::RepoManager::new())
         .manage(chaotic_api::ChaoticApiClient::new())
         .manage(flathub_api::FlathubApiClient::new())
@@ -2106,11 +2139,22 @@ pub fn run() {
         )))
         .manage(ScmState(scm_api::ScmClient::new())) // Initialize SCM Client
         .setup(|app| {
-            // let _ = app.track_event("app_started", None);
+            println!("App Setup Started");
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                println!("Async Setup Started");
+                // Track start event asynchronously to avoid blocking main thread
+                // Use a block to capture the result simply
+                {
+                    use tauri_plugin_aptabase::EventTracker;
+                    if let Err(e) = handle.track_event("app_started", None) {
+                        eprintln!("Failed to track app_started: {}", e);
+                    }
+                }
+
                 let state_repo = handle.state::<RepoManager>();
                 let state_chaotic = handle.state::<ChaoticApiClient>();
+                println!("States retrieved");
 
                 // 1. Sync Repos
                 // Default startup sync (Smart Sync, 3h interval default)
@@ -2181,6 +2225,8 @@ pub fn run() {
         .expect("error while running tauri application")
         .run(|_handler, event| match event {
             tauri::RunEvent::Exit { .. } => {
+                println!("App Exiting...");
+                // use tauri_plugin_aptabase::EventTracker;
                 // let _ = handler.track_event("app_exited", None);
                 // handler.flush_events_blocking();
             }

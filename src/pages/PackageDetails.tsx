@@ -162,26 +162,30 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
 
 
     useEffect(() => {
+        let isMounted = true;
+
         const fetchReviews = async () => {
             // setIsLoadingReviews(true);
             try {
                 // Determine ID to use (prefer AppStream ID if available, else pkg name)
                 const lookupId = fullMeta?.app_id || pkg.app_id || pkg.name;
-                console.log(`[PackageDetails] Loading reviews for ${pkg.name}. Lookup ID: ${lookupId}`);
-                console.log("[PackageDetails] FullMeta:", fullMeta);
+                // console.log(`[PackageDetails] Loading reviews for ${pkg.name}. Lookup ID: ${lookupId}`);
 
                 const { reviews: fetchedReviews, summary } = await getPackageReviews(pkg.name, lookupId);
-                setReviews(fetchedReviews);
-                setRating(summary);
+
+                if (isMounted) {
+                    setReviews(fetchedReviews);
+                    setRating(summary);
+                }
             } catch (e) {
                 console.error("Failed to load reviews", e);
-            } finally {
-                // setIsLoadingReviews(false);
             }
         };
 
         fetchReviews();
-    }, [pkg.name, fullMeta]);
+
+        return () => { isMounted = false; };
+    }, [pkg.name, fullMeta?.app_id]); // Depend on ID specifically, not whole object to reduce churn
 
     const handleReviewSubmit = async () => {
         try {

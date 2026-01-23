@@ -40,5 +40,8 @@ commands.allow = [
     "get_orphans",
     "remove_orphans",
     "check_repo_status",
-    "enable_repo"
+    "check_repo_status",
+    "enable_repo",
+    "reset_pacman_conf",
+    "enable_repos_batch"
 ]

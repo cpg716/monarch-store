@@ -81,6 +81,8 @@ fn get_repo_script(name: &str) -> String {
                 echo "Key received."
             elif pacman-key --recv-keys F3B607488DB35A47 --keyserver pgp.mit.edu; then
                 echo "Key received."
+            elif pacman-key --recv-keys F3B607488DB35A47 --keyserver hkps://keys.openpgp.org; then
+                echo "Key received."
             else
                 echo "ERROR: Failed to receive CachyOS key."
                 exit 1
@@ -116,12 +118,20 @@ fn get_repo_script(name: &str) -> String {
             fi
             
             pacman -S cachyos-keyring cachyos-mirrorlist --noconfirm || true
+            
+            # 5. Re-apply Priority Mirror (as package install overwrites it)
+            if [ -f /etc/pacman.d/cachyos-mirrorlist ]; then
+                # Ensure we don't double add if it's already there
+                if ! grep -q "cdn77.cachyos.org" /etc/pacman.d/cachyos-mirrorlist | head -n 1; then
+                    sed -i '1s/^/## Priority Mirror\nServer = https:\/\/cdn77.cachyos.org\/repo\/$arch\/$repo\n\n/' /etc/pacman.d/cachyos-mirrorlist
+                fi
+            fi
             "#
         }
         "chaotic-aur" | "chaotic" => {
             r#"
             echo "--- Chaotic-AUR Setup ---"
-            pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com || pacman-key --recv-key 3056513887B78AEB --keyserver pgp.mit.edu
+            pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com || pacman-key --recv-key 3056513887B78AEB --keyserver pgp.mit.edu || pacman-key --recv-key 3056513887B78AEB --keyserver hkps://keys.openpgp.org
             pacman-key --lsign-key 3056513887B78AEB
             
             pacman -U 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst' --noconfirm
@@ -134,20 +144,33 @@ fn get_repo_script(name: &str) -> String {
         "garuda" => {
             r#"
             echo "--- Garuda Setup ---"
+            
+            # 1. Chaotic-AUR is a prerequisite for Garuda
             if [ ! -f /etc/pacman.d/chaotic-mirrorlist ]; then
-                curl -f -s -L "https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst" -o /tmp/chaotic-mirrorlist.pkg.tar.zst
-                pacman -U /tmp/chaotic-mirrorlist.pkg.tar.zst --noconfirm
+                # Reuse Chaotic Setup Logic (inlined for safety)
+                pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com || pacman-key --recv-key 3056513887B78AEB --keyserver hkps://keys.openpgp.org
+                pacman-key --lsign-key 3056513887B78AEB
+                pacman -U 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst' --noconfirm
             fi
 
+            # 2. Add [garuda] repo
             if ! grep -q "\[garuda\]" /etc/pacman.conf; then
+                # We try to use the geo mirror, fallback to chaotic-mirrorlist inclusion if needed
                 echo -e "\n[garuda]\nInclude = /etc/pacman.d/chaotic-mirrorlist" >> /etc/pacman.conf
+                echo "Server = https://geo.mirror.garudalinux.org/repos/\$repo/\$arch" >> /etc/pacman.conf
+                echo "Server = https://remote.garudalinux.org/\$repo/\$arch" >> /etc/pacman.conf
             fi
+            
+            # 3. Install Garuda Keyring (from chaotic or garuda repo)
+            pacman -Sy --noconfirm
+            pacman -S garuda-keyring --noconfirm || echo "Warning: garuda-keyring not found yet."
+            pacman-key --populate garuda || true
             "#
         }
         "endeavouros" => {
             r#"
             echo "--- EndeavourOS Setup ---"
-            pacman-key --recv-keys 428F7ECC9E192215 --keyserver keyserver.ubuntu.com || pacman-key --recv-keys 428F7ECC9E192215 --keyserver pgp.mit.edu
+            pacman-key --recv-keys 428F7ECC9E192215 --keyserver keyserver.ubuntu.com || pacman-key --recv-keys 428F7ECC9E192215 --keyserver pgp.mit.edu || pacman-key --recv-keys 428F7ECC9E192215 --keyserver hkps://keys.openpgp.org
             pacman-key --lsign-key 428F7ECC9E192215
 
             curl -f -s -L "https://raw.githubusercontent.com/endeavouros-team/PKGBUILDS/master/endeavouros-mirrorlist/endeavouros-mirrorlist" -o /etc/pacman.d/endeavouros-mirrorlist
@@ -157,6 +180,33 @@ fn get_repo_script(name: &str) -> String {
             fi
             pacman -S endeavouros-keyring endeavouros-mirrorlist --noconfirm || true
             "#
+        }
+        "arch" | "official" => {
+             r#"
+             echo "--- Arch Official Repos Setup ---"
+             # 1. Core
+             if ! grep -q "\[core\]" /etc/pacman.conf; then
+                 echo -e "\n[core]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
+             fi
+             # 2. Extra (includes community now)
+             if ! grep -q "\[extra\]" /etc/pacman.conf; then
+                 echo -e "\n[extra]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
+             fi
+             # 3. Multilib (64-bit only)
+             if [ "$(uname -m)" = "x86_64" ]; then
+                 if ! grep -q "\[multilib\]" /etc/pacman.conf; then
+                     echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
+                 fi
+             fi
+             
+             # Ensure mirrorlist exists/is populated if empty? 
+             # For now, verify we have at least one valid mirror or restore default
+             if [ ! -s /etc/pacman.d/mirrorlist ]; then
+                 echo "Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch" > /etc/pacman.d/mirrorlist
+             fi
+             
+             pacman -Sy --noconfirm
+             "#
         }
         "manjaro" => {
             r#"
@@ -168,10 +218,14 @@ fn get_repo_script(name: &str) -> String {
                 echo -e "\n[manjaro-core]\nSigLevel = PackageRequired" >> /etc/pacman.conf
                 echo "Server = https://mirror.easyname.at/manjaro/stable/core/\$arch" >> /etc/pacman.conf
                 echo "Server = https://mirrors.gigenet.com/manjaro/stable/core/\$arch" >> /etc/pacman.conf
+                echo "Server = https://ftp.halifax.rwth-aachen.de/manjaro/stable/core/\$arch" >> /etc/pacman.conf
+                echo "Server = https://mirror.funami.org/manjaro/stable/core/\$arch" >> /etc/pacman.conf
                 
                 echo -e "\n[manjaro-extra]\nSigLevel = PackageRequired" >> /etc/pacman.conf
                 echo "Server = https://mirror.easyname.at/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
                 echo "Server = https://mirrors.gigenet.com/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
+                echo "Server = https://ftp.halifax.rwth-aachen.de/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
+                echo "Server = https://mirror.funami.org/manjaro/stable/extra/\$arch" >> /etc/pacman.conf
             fi
             
             pacman -S manjaro-keyring --noconfirm || true
