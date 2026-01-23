@@ -32,7 +32,12 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
             const odrsRating: any = await invoke('get_app_rating', { appId: appStreamId });
             const odrsReviews: any[] = await invoke('get_app_reviews', { appId: appStreamId });
 
-            if (odrsRating || (odrsReviews && odrsReviews.length > 0)) {
+            // Only prioritize ODRS if it actually has content 
+            // (checking total > 0 to avoid overriding Supabase reviews with an empty ODRS sheet)
+            const hasOdrsRatings = odrsRating && odrsRating.total > 0;
+            const hasOdrsReviews = odrsReviews && odrsReviews.length > 0;
+
+            if (hasOdrsRatings || hasOdrsReviews) {
 
                 // Fallback: Calculate summary from reviews if rating API returned null
                 let average = odrsRating?.score ? odrsRating.score / 20 : 0;
@@ -78,30 +83,49 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
     // 1b. Fallback: Try ODRS with pkgName if appStreamId didn't work (or wasn't provided, though logic below handles that)
     // Only try if pkgName is different from appStreamId to avoid redundant call
     if (pkgName && pkgName !== appStreamId) {
-        try {
-            const odrsReviews: any[] = await invoke('get_app_reviews', { appId: pkgName });
-            if (odrsReviews && odrsReviews.length > 0) {
-                const count = odrsReviews.length;
-                const sum = odrsReviews.reduce((acc: any, r: any) => acc + (r.rating || 0), 0);
-                const average = (sum / count) / 20;
+        let odrsRating: any = null;
+        let odrsReviews: any[] = [];
 
-                return {
-                    reviews: odrsReviews.map((r: any) => ({
-                        id: r.review_id,
-                        userName: r.user_display || 'Anonymous',
-                        rating: (r.rating || 0) / 20,
-                        comment: r.description || r.summary,
-                        date: new Date(r.date_created * 1000),
-                        source: 'odrs'
-                    })),
-                    summary: {
-                        average,
-                        count,
-                        stars: {} // ODRS doesn't return stars breakdown for reviews-only fetch easily without rating api
+        // Fetch independently to ensure one 404 doesn't block the other
+        try { odrsRating = await invoke('get_app_rating', { appId: pkgName }); } catch (e) { }
+        try { odrsReviews = await invoke('get_app_reviews', { appId: pkgName }); } catch (e) { }
+
+        const hasOdrsRatings = odrsRating && odrsRating.total > 0;
+        const hasOdrsReviews = odrsReviews && odrsReviews.length > 0;
+
+        if (hasOdrsRatings || hasOdrsReviews) {
+            // Fallback: Calculate summary from reviews if rating API returned null
+            let average = odrsRating?.score ? odrsRating.score / 20 : 0;
+            let count = odrsRating?.total || 0;
+
+            if (count === 0 && odrsReviews.length > 0) {
+                count = odrsReviews.length;
+                const sum = odrsReviews.reduce((acc: any, r: any) => acc + (r.rating || 0), 0);
+                average = (sum / count) / 20;
+            }
+
+            return {
+                reviews: odrsReviews.map((r: any) => ({
+                    id: r.review_id,
+                    userName: r.user_display || 'Anonymous',
+                    rating: (r.rating || 0) / 20,
+                    comment: r.description || r.summary,
+                    date: new Date(r.date_created * 1000),
+                    source: 'odrs'
+                })),
+                summary: {
+                    average: average,
+                    count: count,
+                    stars: {
+                        1: odrsRating?.star1 || 0,
+                        2: odrsRating?.star2 || 0,
+                        3: odrsRating?.star3 || 0,
+                        4: odrsRating?.star4 || 0,
+                        5: odrsRating?.star5 || 0,
                     }
                 }
-            }
-        } catch (e) { /* ignore */ }
+            };
+        }
     }
 
     // 2. Fallback to Supabase (MonArch Community Reviews)

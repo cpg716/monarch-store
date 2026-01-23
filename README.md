@@ -75,6 +75,17 @@ npm run tauri dev
 npm run tauri build
 ```
 
+### 🛟 Troubleshooting
+
+If you encounter build errors on Arch Linux (e.g., `failed to run cargo metadata`), use our included fix script to verify your environment:
+
+```bash
+git pull origin main
+chmod +x arch_fix.sh
+./arch_fix.sh
+```
+This script installs missing build dependencies (like `webkit2gtk`) and cleans stale build artifacts.
+
 
 ## 🤝 Contributing
 
