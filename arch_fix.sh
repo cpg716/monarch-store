@@ -54,7 +54,7 @@ echo "📦 [4/7] Installing Build Tools (Node, Rust, WebKit)..."
 sudo pacman --config $TMP_CONF -S --needed --noconfirm \
     nodejs npm rust cargo webkit2gtk-4.1 base-devel \
     curl wget file openssl appmenu-gtk-module libappindicator-gtk3 \
-    librsvg libvips libicu
+    librsvg libvips icu
 
 # 5. Fix Source Code Blockers (index.html path)
 echo "🛠️  [5/7] Patching Source Code..."
