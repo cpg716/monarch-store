@@ -24,9 +24,6 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots", "blocking", "http2", "charset"] }
-# Force fix for Ring linker errors on some Linux distros
-ring = "1.0.0-alpha.2" # 1.0 alpha or 0.17.18? 0.17.18 is current stable fix.
-ring_0_17 = { package = "ring", version = "0.17.18" }
 tokio = { version = "1", features = ["full"] }
 appstream = "0.2.2"
 moka = { version = "0.12", features = ["future"] }
@@ -50,3 +47,7 @@ tauri-plugin-fs = "2.4.5"
 
 [dev-dependencies]
 tempfile = "3.24.0"
+
+[patch.crates-io]
+# Force ring to 0.17.18 to resolve linker symbol errors on Linux
+ring = { git = "https://github.com/briansmith/ring", tag = "0.17.18" }
