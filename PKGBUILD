@@ -29,12 +29,35 @@ package() {
     tar -xzf data.tar.gz -C "${pkgdir}"
   fi
 
-  # Rename the desktop file to a standard name without spaces
+  # 1. Standardize Binary Name (Rename whatever Tauri produced to monarch-store)
+  # Look in /usr/bin/ for anything and rename to monarch-store
+  if [ -d "${pkgdir}/usr/bin" ]; then
+    cd "${pkgdir}/usr/bin"
+    # Find any file that isn't monarch-store and rename it
+    # Tauri v2 often keeps spaces in binary names from productName
+    find . -maxdepth 1 -type f ! -name "monarch-store" -exec mv {} monarch-store \;
+    chmod +x monarch-store
+    cd - > /dev/null
+  fi
+
+  # 2. Standardize Desktop File
+  # Rename and then update internal fields to point to the new binary name
   if [ -f "${pkgdir}/usr/share/applications/MonARCH Store.desktop" ]; then
     mv "${pkgdir}/usr/share/applications/MonARCH Store.desktop" \
        "${pkgdir}/usr/share/applications/monarch-store.desktop"
   fi
+
+  if [ -f "${pkgdir}/usr/share/applications/monarch-store.desktop" ]; then
+    sed -i "s/^Exec=.*/Exec=monarch-store/" "${pkgdir}/usr/share/applications/monarch-store.desktop"
+    sed -i "s/^Icon=.*/Icon=monarch-store/" "${pkgdir}/usr/share/applications/monarch-store.desktop"
+  fi
   
+  # 3. Standardize Icon Name
+  if [ -f "${pkgdir}/usr/share/icons/hicolor/512x512/apps/MonARCH Store.png" ]; then
+    mv "${pkgdir}/usr/share/icons/hicolor/512x512/apps/MonARCH Store.png" \
+       "${pkgdir}/usr/share/icons/hicolor/512x512/apps/monarch-store.png"
+  fi
+
   # Fix permissions: 755 for directories and binaries, 644 for files
   find "${pkgdir}/usr" -type d -exec chmod 755 {} +
   find "${pkgdir}/usr/bin" -type f -exec chmod 755 {} +
