@@ -133,10 +133,15 @@ export function useSettings() {
         setRepos(prev => prev.map(r => r.id === id ? { ...r, enabled: newEnabled } : r));
 
         try {
+            // Soft Toggle: Updates UI state (repos.json) and clears cache (repo_manager.rs)
+            // Does NOT touch system config (no password required)
             await invoke('toggle_repo_family', { family: repo.name, enabled: newEnabled });
-            if (newEnabled) {
-                await invoke('enable_repo', { name: id });
-            }
+
+            // If enabling, we might want to check if system backend exists?
+            // But since Onboarding enables ALL, we assume it's there.
+            // If missing (e.g. manual delete), user can use "Repair Config" or we can lazy-load if query fails.
+            // For now, adhere to "Soft Disable" spec.
+
             await invoke('trigger_repo_sync');
             fetchRepoState();
         } catch (e) {

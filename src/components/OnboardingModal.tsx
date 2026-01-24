@@ -111,20 +111,25 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             await invoke("bootstrap_infrastructure");
             await invoke('set_aur_enabled', { enabled: aurEnabled });
 
-            const reposToEnable: string[] = [];
+            // 1. Update UI Preferences (repos.json)
+            // We just call toggle_repo_family for user choices to save them to JSON
             for (const fam of repoFamilies) {
                 await invoke('toggle_repo_family', { family: fam.name, enabled: fam.enabled });
-                if (fam.enabled) {
-                    reposToEnable.push(fam.id);
-                }
             }
 
-            if (reposToEnable.length > 0) {
-                try {
-                    await invoke('enable_repos_batch', { names: reposToEnable });
-                } catch (e) {
-                    console.error("Batch setup failed:", e);
-                }
+            // 2. System Level: Enable ALL known valid repos
+            // This ensures they are present in infrastructure so we don't need passwords later.
+            // Even if "disabled" in JSON, we want them enabled in System.
+            const allSupportedRepos = [
+                'cachyos', 'garuda', 'endeavouros', 'manjaro', 'chaotic-aur'
+            ];
+
+            try {
+                // This creates the .conf files for everything.
+                // Pacman will now track them, but Store UI filters them.
+                await invoke('enable_repos_batch', { names: allSupportedRepos });
+            } catch (e) {
+                console.error("System batch setup failed (non-fatal):", e);
             }
 
             await new Promise(r => setTimeout(r, 800));
@@ -143,6 +148,12 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             icon: <img src={logoSmall} alt="MonARCH" className="w-32 h-32 object-contain drop-shadow-2xl" />
         },
         {
+            title: "System Preparation",
+            subtitle: "Initializing secure keyrings & verifying environment.",
+            color: "bg-emerald-600",
+            icon: <ShieldCheck size={48} className="text-white" />
+        },
+        {
             title: "Software Sources",
             subtitle: "The bridge between Official & Community repos.",
             color: "bg-slate-700",
@@ -158,7 +169,7 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             title: "Community Power",
             subtitle: "The Arch User Repository (AUR).",
             color: "bg-amber-600",
-            icon: <ShieldCheck size={48} className="text-white" />
+            icon: <Lock size={48} className="text-white" />
         },
         {
             title: "Make it Yours",
@@ -171,6 +182,10 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
     const nextStep = () => {
         if (step < steps.length - 1) {
             setStep(step + 1);
+            // Proactive Check Trigger
+            if (step === 0) {
+                invoke('optimize_system').catch(console.error);
+            }
         } else {
             handleFinish();
         }
@@ -324,8 +339,53 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                                 </motion.div>
                             )}
 
-                            {/* STEP 1: Software Sources (Unified Architecture) */}
+                            {/* STEP 1: System Prep (Proactive Health Check) */}
                             {step === 1 && (
+                                <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
+                                    <div className="text-center">
+                                        <h3 className="text-2xl font-bold text-app-fg">Securing Your Environment</h3>
+                                        <p className="text-app-muted text-base">We are initializing the Pacman keyring to prevent signature errors.</p>
+                                    </div>
+
+                                    <div className="bg-emerald-500/10 border border-emerald-500/20 p-6 rounded-2xl flex flex-col items-center gap-4">
+                                        <div className="relative">
+                                            <div className="absolute inset-0 bg-emerald-500/20 rounded-full animate-ping" />
+                                            <ShieldCheck size={48} className="text-emerald-500 relative z-10" />
+                                        </div>
+                                        <div className="w-full space-y-2">
+                                            <div className="flex justify-between text-xs font-bold text-emerald-700">
+                                                <span>Optimizing Keyring...</span>
+                                                <span className="animate-pulse">Processing</span>
+                                            </div>
+                                            <div className="h-2 bg-emerald-500/10 rounded-full overflow-hidden">
+                                                <motion.div
+                                                    className="h-full bg-emerald-500"
+                                                    initial={{ width: "0%" }}
+                                                    animate={{ width: "100%" }}
+                                                    transition={{ duration: 2.5, ease: "easeInOut" }}
+                                                />
+                                            </div>
+                                        </div>
+                                        <p className="text-xs text-app-muted text-center max-w-xs">
+                                            Running: <code className="bg-app-fg/5 px-1 rounded">pacman-key --init && --populate</code>
+                                        </p>
+                                    </div>
+
+                                    <div className="bg-app-card border border-app-border p-4 rounded-xl flex items-start gap-3 shadow-sm">
+                                        <Check size={20} className="text-blue-500 shrink-0 mt-0.5" />
+                                        <div>
+                                            <h4 className="font-bold text-sm text-app-fg">Why this matters?</h4>
+                                            <p className="text-xs text-app-muted">
+                                                Arch Linux rolling releases rely on up-to-date PGP signatures.
+                                                This step ensures you won't face "Invalid Signature" errors when installing apps.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </motion.div>
+                            )}
+
+                            {/* STEP 2: Software Sources */}
+                            {step === 2 && (
                                 <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
                                     <h3 className="text-2xl font-bold text-app-fg">The Unified Architecture</h3>
                                     <p className="text-app-muted text-base leading-relaxed">
@@ -348,9 +408,9 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                                 </motion.div>
                             )}
 
-                            {/* STEP 2: Intelligent Config */}
-                            {step === 2 && (
-                                <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full max-w-lg space-y-4">
+                            {/* STEP 3: Intelligent Config */}
+                            {step === 3 && (
+                                <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full max-w-lg space-y-4">
                                     <div>
                                         <h3 className="text-2xl font-bold text-app-fg">Smart Configuration</h3>
                                         <p className="text-app-muted text-sm">We've pre-selected sources based on your architecture.</p>
@@ -375,8 +435,8 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                                 </motion.div>
                             )}
 
-                            {/* STEP 3: AUR */}
-                            {step === 3 && (
+                            {/* STEP 4: AUR */}
+                            {step === 4 && (
                                 <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
                                     <h3 className="text-2xl font-bold text-app-fg">Community Power (AUR)</h3>
                                     <div className="bg-amber-500/10 border border-amber-500/20 p-5 rounded-2xl">
@@ -390,9 +450,9 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                                 </motion.div>
                             )}
 
-                            {/* STEP 4: Aesthetics & Live Preview */}
-                            {step === 4 && (
-                                <motion.div key="step4" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full max-w-lg space-y-8">
+                            {/* STEP 5: Aesthetics & Live Preview */}
+                            {step === 5 && (
+                                <motion.div key="step5" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full max-w-lg space-y-8">
                                     <div className="text-center"><h3 className="text-2xl font-bold text-app-fg mb-1">Make it Yours</h3><p className="text-app-muted">Customize the look and feel of MonARCH.</p></div>
 
                                     {/* Live Preview Card */}

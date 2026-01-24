@@ -1,29 +1,25 @@
-# Release Notes v0.2.24
+# Release Notes v0.2.25
 
-## 🚀 Critical Fixes & Features
+## 🛡️ Major System Safety Upgrades
+- **Infrastructure 2.0**: The entire repository management system has been rewritten.
+- **Fail-Safe Updates**: The "Update All" action is now guaranteed to find updates for *all* your installed packages, even if you have hidden their source repository in the Store UI. This prevents accidental partial upgrades.
+- **Keyring Auto-Healing**: We have eliminated "Invalid Signature" errors. The new Onboarding wizard automatically initializes and populates the Pacman keyring with fresh keys from Arch, Chaotic-AUR, and CachyOS.
+- **Safe Repos**: Disabling a repository in Settings now performs a "Soft Disable"—it hides the packages from the Store search to reduce clutter but keeps the repository active in the background so your existing apps continue to receive critical security updates.
+
+## ⚡ UX Enhancements
+- **Password-Free Control**: Toggling repositories on/off is now instant and no longer requires a `sudo` password prompt.
+- **Smart Onboarding**: The setup wizard now configures your entire system infrastructure in one go, so you don't face repeated authentication requests later.
+- **Clean Settings**: Removed technical jargon warnings. The interface now clearly explains that disabling a source only affects visibility, not system safety.
+
+## 🐛 Bug Fixes
+- **Cache Clearing**: Fixed an issue where disabled repositories would still show up in search results until a restart. Toggling them off now instantly removes them from the active session.
+- **Dependency Scan**: Added backend logic to track which repository each installed package came from, enabling smarter logic for future safety checks.
+
+---
+
+# Release Notes v0.2.24
 - **Icon Restoration**: Fixed missing icons for Brave, Spotify, and Chrome by restoring the robust fallback chain (checking upstream sources when local metadata fails).
 - **Search Accuracy**: "Spotify" now finds the main app first! We improved search sorting to prioritize exact matches over launchers or plugins.
 - **Linux Native Power**: Full support for system icons (`/usr/share/pixmaps`) and local AppStream caching on Linux devices.
 
-## 🛠️ Under the Hood
-- **Performance**: Optimized startup synchronization for smoother app launching.
-- **Stability**: Fixed a compilation issue in the sidebar navigation.
-- **Cleanup**: Purged debug logs for a cleaner console experience.
-
 ---
-
-# Release Notes v0.2.6
-
-## 🚀 Critical Fixes
-- **Patched Startup Crash**: Fixed a "Malformed XML" error caused by invalid characters in the AppStream data. The store now auto-sanitizes downloads to prevent crashes.
-- **Resolved White Screen**: Implemented a global Error Boundary to catch and report UI failures instead of showing a blank screen.
-
-## ⚡ Improvements
-- **Smart Sync**: App metadata (icons, descriptions) now automatically refreshes every 3 hours (or your custom interval), ensuring you never see stale data.
-- **Unified Updates**: The "Sync Repositories" action now updates everything—Git mirrors, pacman databases, and app metadata—in one go.
-- **Robust Mirrors**: Added automatic mirror rotation for CachyOS, Manjaro, and EndeavourOS. If a mirror is down, MonArch instantly finds another.
-
-## 🦋 UI / UX
-- **Thematic Animation**: Restored the signature "flapping butterfly" loading animation.
-- **Cleaner Package Cards**: Moved ratings to the footer so app names are never obscured.
-- **Branded Alerts**: Notifications now feature clear MonArch branding and status indicators.

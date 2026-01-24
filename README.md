@@ -60,10 +60,7 @@ Privacy-friendly usage stats (install trends, top searches) powered by Aptabase.
 *   **Partial Upgrade Prevention**: We rigidly enforce `pacman -S` semantics to prevent breaking your system.
 
 ### ⚙️ Repository Configuration
-You can toggle specific repositories (CachyOS, Manjaro, Chaotic-AUR) directly in the app settings.
-
-> [!WARNING]
-> **Partial Upgrade Risk:** Disabling a repository that you previously installed packages from can lead to dependency breakages during updates. Ensure your active repositories match your installed software ecosystem.
+You can personalize your store experience by toggling specific repositories (CachyOS, Manjaro, Chaotic-AUR) in the settings. MonArch uses a **"Soft Disable"** architecture: disabling a repository hides it from search but keeps it active in the background for system updates, ensuring your installed apps always remain secure and up-to-date.
 
 ## 📘 Documentation
 - [Troubleshooting Guide](docs/TROUBLESHOOTING.md) - Fix GPG, Lock files, and Database issues.

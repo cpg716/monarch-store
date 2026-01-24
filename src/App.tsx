@@ -104,6 +104,33 @@ function App() {
     initInfo();
   }, [fetchInfraStats]);
 
+  // Migration: Infrastructure 2.0 (v0.2.25)
+  // Ensure existing users get the config fix without running onboarding
+  useEffect(() => {
+    const migrateInfra = async () => {
+      const migrated = localStorage.getItem('monarch_infra_2_0');
+      if (!migrated) {
+        console.log("Migrating to Infrastructure 2.0...");
+        try {
+          // 1. Run Bootstrap (Keyring, Modular Configs)
+          await invoke('bootstrap_infrastructure');
+
+          // 2. Enable All Supported Repos (System Level)
+          const allSupportedRepos = ['cachyos', 'garuda', 'endeavouros', 'manjaro', 'chaotic-aur'];
+          await invoke('enable_repos_batch', { names: allSupportedRepos });
+
+          // 3. Mark Complete
+          localStorage.setItem('monarch_infra_2_0', 'true');
+          console.log("Migration Complete");
+        } catch (e) {
+          console.error("Migration Failed (will retry next launch)", e);
+        }
+      }
+    };
+    // Helper to run after app load
+    setTimeout(migrateInfra, 2000);
+  }, []);
+
   useEffect(() => {
     if (searchQuery) setSelectedPackage(null);
   }, [searchQuery]);

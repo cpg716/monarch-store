@@ -300,19 +300,8 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                         </h2>
                         <div className="bg-app-card/30 border border-app-border/50 rounded-3xl overflow-hidden p-6 space-y-3">
                             <p className="text-sm text-app-muted mb-6 px-2">
-                                Define the order in which sources are searched. The top-most active repository is used as the primary binary source.
+                                Manage your software sources. Disabling a source here <strong className="text-app-fg">hides it from the Store</strong> but keeps it active in the system, so your installed apps <strong className="text-green-500">continue to update safely</strong>.
                             </p>
-
-                            <div className="mx-2 mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 flex gap-3 items-start">
-                                <div className="p-1 bg-amber-500/20 rounded-full text-amber-500 mt-0.5">
-                                    <div className="w-1.5 h-4 bg-current rounded-full mx-auto" />
-                                    <div className="w-1.5 h-1.5 bg-current rounded-full mx-auto mt-0.5" />
-                                </div>
-                                <div className="text-xs text-amber-600/90 leading-relaxed">
-                                    <strong>Partial Upgrade Risk:</strong> Avoid mixing too many optimize-focused repos (e.g., CachyOS + Manjaro).
-                                    Disabling a source after installing packages from it may break dependencies during system updates.
-                                </div>
-                            </div>
 
                             {repos.map((repo, idx) => (
                                 <div key={repo.id} className={clsx(
@@ -334,7 +323,33 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                     </div>
 
                                     <button
-                                        onClick={() => toggleRepo(repo.id)}
+                                        onClick={async () => {
+                                            if (repo.enabled) {
+                                                // Prevent accidental breakage
+                                                setIsOptimizing(true); // Show busy state if needed, or just block UI
+                                                try {
+                                                    const installed = await invoke<{ name: string, repository: string }[]>('get_installed_packages');
+                                                    const affected = installed.filter(p => p.repository === repo.name);
+
+                                                    if (affected.length > 0) {
+                                                        const names = affected.map(p => p.name).slice(0, 3).join(', ');
+                                                        const more = affected.length > 3 ? ` and ${affected.length - 3} others` : '';
+
+                                                        if (!confirm(`⚠️ CRITICAL WARNING:\n\nYou have ${affected.length} apps installed from "${repo.name}" (including ${names}${more}).\n\nIf you disable this repository, these apps will STOP UPDATING and might break.\n\nAre you absolutely sure?`)) {
+                                                            setIsOptimizing(false);
+                                                            return;
+                                                        }
+                                                    }
+                                                } catch (e) {
+                                                    console.error("Failed to check dependencies", e);
+                                                } finally {
+                                                    setIsOptimizing(false);
+                                                }
+                                                toggleRepo(repo.id);
+                                            } else {
+                                                toggleRepo(repo.id);
+                                            }
+                                        }}
                                         className={clsx(
                                             "w-12 h-7 rounded-full p-1 transition-all relative",
                                             repo.enabled ? "bg-app-accent" : "bg-app-subtle"

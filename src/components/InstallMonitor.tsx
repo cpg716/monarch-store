@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Terminal, CheckCircle2, XCircle, Loader2, Lock, Play, Minimize2, Maximize2 } from 'lucide-react';
+import { Terminal, CheckCircle2, XCircle, Loader2, Lock, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { clsx } from 'clsx';
@@ -95,6 +95,30 @@ export default function InstallMonitor({ pkg, onClose }: InstallMonitorProps) {
             </div>
         );
     }
+    const [isRepairing, setIsRepairing] = useState(false);
+    const [repairSuccess, setRepairSuccess] = useState(false);
+
+    // Heuristic Scan for Keyring Issues
+    const hasKeyringError = logs.some(l =>
+        l.includes("GPGME error") ||
+        l.includes("PGP signature") ||
+        l.includes("corrupted database") ||
+        l.includes("invalid or corrupted")
+    );
+
+    const handleRepair = async () => {
+        setIsRepairing(true);
+        setLogs(prev => [...prev, '\n--- STARTING AUTO-REPAIR ---', 'Re-initializing keyring...', 'Refreshing package keys...', 'This may take a minute...']);
+        try {
+            const result = await invoke<string>('optimize_system');
+            setLogs(prev => [...prev, result, '--- REPAIR COMPLETE ---', 'Please try installing again.']);
+            setRepairSuccess(true);
+        } catch (e) {
+            setLogs(prev => [...prev, `Repair Failed: ${e}`]);
+        } finally {
+            setIsRepairing(false);
+        }
+    };
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-app-bg/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -187,6 +211,28 @@ export default function InstallMonitor({ pkg, onClose }: InstallMonitorProps) {
                         <div className="flex-1 flex flex-col h-full bg-app-bg transition-colors">
                             {/* Progress Bar Area */}
                             <div className="bg-app-card p-6 border-b border-app-border">
+                                {hasKeyringError && status === 'error' && !repairSuccess && (
+                                    <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-between animate-in slide-in-from-top-2">
+                                        <div className="flex items-center gap-3">
+                                            <div className="p-2 bg-amber-500/20 rounded-lg text-amber-500">
+                                                <ShieldCheck size={18} />
+                                            </div>
+                                            <div>
+                                                <h4 className="font-bold text-amber-500 text-sm">Keyring Issue Detected</h4>
+                                                <p className="text-xs text-app-muted">Your system keys seem outdated or corrupted.</p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={handleRepair}
+                                            disabled={isRepairing}
+                                            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-lg shadow-amber-500/20"
+                                        >
+                                            {isRepairing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                                            {isRepairing ? "Fixing..." : "Auto-Repair"}
+                                        </button>
+                                    </div>
+                                )}
+
                                 <div className="flex justify-between text-sm text-app-muted mb-2">
                                     <span>Status: {status.toUpperCase()}</span>
                                     <span>{progress}%</span>
@@ -219,8 +265,16 @@ export default function InstallMonitor({ pkg, onClose }: InstallMonitorProps) {
                 </div>
 
                 {/* Footer Actions */}
-                {(status === 'success' || status === 'error') && (
-                    <div className="p-4 bg-app-fg/5 border-t border-app-border flex justify-end">
+                {(status === 'success' || (status === 'error' && !isRepairing)) && (
+                    <div className="p-4 bg-app-fg/5 border-t border-app-border flex justify-end gap-3">
+                        {status === 'error' && !hasKeyringError && (
+                            <button
+                                onClick={handleInstall}
+                                className="bg-app-accent hover:bg-app-accent/80 text-white px-6 py-2 rounded-lg font-medium transition-colors shadow-lg shadow-app-accent/20"
+                            >
+                                Retry
+                            </button>
+                        )}
                         <button
                             onClick={onClose}
                             className="bg-app-fg/10 hover:bg-app-fg/20 text-app-fg px-6 py-2 rounded-lg font-medium transition-colors"

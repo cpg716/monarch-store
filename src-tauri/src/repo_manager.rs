@@ -319,6 +319,13 @@ impl RepoManager {
             r.enabled = enabled;
         }
         drop(repos);
+
+        // Instant UI Update: Clear from cache if disabled
+        if !enabled {
+            let mut cache = self.cache.write().await;
+            cache.remove(name);
+        }
+
         self.save_config_async().await;
     }
 
@@ -327,6 +334,7 @@ impl RepoManager {
     pub async fn set_repo_family_state(&self, family: &str, enabled: bool) {
         let mut repos = self.repos.write().await;
         let family_lower = family.to_lowercase();
+        let mut affected_repos = Vec::new();
 
         for repo in repos.iter_mut() {
             let repo_lower = repo.name.to_lowercase();
@@ -355,11 +363,21 @@ impl RepoManager {
                     }
                 } else {
                     repo.enabled = false;
+                    affected_repos.push(repo.name.clone());
                 }
             }
         }
 
         drop(repos);
+
+        // Instant UI Update: Batch clear
+        if !affected_repos.is_empty() {
+            let mut cache = self.cache.write().await;
+            for name in affected_repos {
+                cache.remove(&name);
+            }
+        }
+
         self.save_config_async().await;
     }
 
