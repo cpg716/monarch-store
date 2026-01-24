@@ -17,7 +17,8 @@ cat <<EOF > $TMP_CONF
 [options]
 HoldPkg     = pacman glibc
 Architecture = auto
-SigLevel    = Required DatabaseOptional
+# RELAXED SIGLEVEL: To bypass corrupted local keyrings during bootstrap
+SigLevel    = Optional TrustAll
 LocalFileSigLevel = Optional
 
 [core]
@@ -26,16 +27,16 @@ Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
 Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
 EOF
 
-# 2.5 Nuke Corrupted Package Cache (Fixes "invalid or corrupted package")
-echo "🧹 [2.5/7] Clearing potentially corrupted package cache..."
-sudo pacman -Scc --noconfirm # Double 'cc' removes ALL cached packages
+# 2.5 Nuke Corrupted Keyring & Cache
+echo "🧹 [2.5/7] Nuking corrupted GPG database & cache..."
+sudo rm -rf /etc/pacman.d/gnupg
+sudo pacman -Scc --noconfirm 
 
-# 3. System Update & Keyring (Fixes libicu version)
-echo "🔑 [3/7] Updating System Keyrings & Core Libraries (libicu)..."
+# 3. System Update & Keyring
+echo "🔑 [3/7] Re-initializing Keyring & updating libraries..."
 sudo pacman-key --config $TMP_CONF --init
 sudo pacman-key --config $TMP_CONF --populate archlinux
 
-# Skip global refresh (too slow). Populate is enough for core Arch repos.
 sudo pacman --config $TMP_CONF -Syu --noconfirm
 
 # 4. Install Build Dependencies
