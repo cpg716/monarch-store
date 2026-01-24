@@ -146,7 +146,7 @@ function App() {
       }, 50);
     } else {
       setActiveTab(tab);
-      if (tab === 'explore') setSearchQuery('');
+      setSearchQuery(''); // Always clear search when switching tabs to ensure view changes
     }
   };
 

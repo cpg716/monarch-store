@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { LayoutGrid, Download, Settings, RefreshCw, Search, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
-import { useAppStore } from '../store/internal_store';
 import logoSmall from '../assets/logo_small.png';
 import { motion } from 'framer-motion';
 

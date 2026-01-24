@@ -1,3 +1,17 @@
+# Release Notes v0.2.24
+
+## 🚀 Critical Fixes & Features
+- **Icon Restoration**: Fixed missing icons for Brave, Spotify, and Chrome by restoring the robust fallback chain (checking upstream sources when local metadata fails).
+- **Search Accuracy**: "Spotify" now finds the main app first! We improved search sorting to prioritize exact matches over launchers or plugins.
+- **Linux Native Power**: Full support for system icons (`/usr/share/pixmaps`) and local AppStream caching on Linux devices.
+
+## 🛠️ Under the Hood
+- **Performance**: Optimized startup synchronization for smoother app launching.
+- **Stability**: Fixed a compilation issue in the sidebar navigation.
+- **Cleanup**: Purged debug logs for a cleaner console experience.
+
+---
+
 # Release Notes v0.2.6
 
 ## 🚀 Critical Fixes

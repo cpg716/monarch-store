@@ -51,7 +51,7 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
     const [chaoticInfo, setChaoticInfo] = useState<ChaoticPackage | null>(initialChaoticInfo || null);
 
     // Global Data Optimization (Source of Truth)
-    const { metadata } = usePackageMetadata(pkg.name, skipMetadataFetch);
+    const { metadata } = usePackageMetadata(pkg.name, pkg.url, skipMetadataFetch);
     const iconUrl = pkg.icon || metadata?.icon_url || null;
 
     // Unified Rating System (Source of Truth)

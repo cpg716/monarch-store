@@ -2,7 +2,7 @@
   "name": "monarch-store",
   "private": false,
   "license": "MIT",
-  "version": "0.3.0-rc3",
+  "version": "0.2.24",
   "type": "module",
   "scripts": {
     "dev": "vite",

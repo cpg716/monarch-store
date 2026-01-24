@@ -27,11 +27,17 @@ graph TD
 - **`mocks.rs`**: Test infrastructure providing `MockPackageManager` and `MockRepoClient` for safe, offline verification.
 
 ### Search & Priority Logic
-To ensure the best user experience, results are merged and sorted by **source reliability and speed**:
-1.  **Chaotic-AUR**: Handled first for binary availability.
-2.  **Official**: Core/Extra/Multilib.
-3.  **Distros**: Manjaro, Garuda, etc.
-4.  **AUR**: Absolute fallback.
+To ensure the best user experience, results are processed through a **Weighted Relevance Sort** (`utils::sort_packages_by_relevance`). This system prioritizes:
+1.  **Exact Matches**: `spotify` ranks higher than `spotify-launcher`.
+2.  **Source Reliability**: Official/Chaotic > AUR.
+3.  **Similarity**: Shorter names (closer to query) rank higher.
+
+**Fallback Chain (Icons & Metadata)**:
+If a package is found in a binary repo (e.g. Chaotic), metadata is enriched via a robust fallback chain:
+1.  **AppStream (Local Cache)**: Main source for official arch packages.
+2.  **Flathub API**: Used for AUR packages that lack AppStream data (e.g. `brave-bin`, `spotify`).
+3.  **System Heuristics**: Scans `/usr/share/pixmaps` for installed icons.
+4.  **Web Fallback**: Fetches Favicons or OpenGraph images from the upstream URL if all else fails.
 
 **Deduplication**: The backend uses **App ID** based merging. If multiple packages map to the same AppStream ID, they are presented as a single entry to avoid UI clutter. This logic resides in `utils::merge_and_deduplicate` for pure unit testing.
 

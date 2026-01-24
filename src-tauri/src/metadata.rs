@@ -148,28 +148,54 @@ impl AppStreamLoader {
 
         // 3. Search the icons directory for pattern match
         let icons_dir = get_icons_dir();
-        if let Ok(entries) = std::fs::read_dir(&icons_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(name_os) = path.file_name() {
-                    let name = name_os.to_string_lossy();
-                    // Match "firefox.png" or "firefox_*.png"
-                    if (name.starts_with(pkg_name)
-                        && (name.ends_with(".png") || name.ends_with(".svg")))
-                        && (name == format!("{}.png", pkg_name)
-                            || name == format!("{}.svg", pkg_name)
-                            || name.starts_with(&format!("{}_", pkg_name)))
-                    {
-                        if let Ok(bytes) = std::fs::read(&path) {
-                            let mime = if path.extension().is_some_and(|e| e == "svg") {
-                                "image/svg+xml"
-                            } else {
-                                "image/png"
-                            };
-                            let encoded = BASE64_STANDARD.encode(&bytes);
-                            return Some(format!("data:{};base64,{}", mime, encoded));
+
+        // Helper to check a dir for the icon
+        let check_dir = |dir: &PathBuf| -> Option<String> {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(name_os) = path.file_name() {
+                        let name = name_os.to_string_lossy();
+                        // Match "firefox.png" or "firefox_*.png"
+                        if (name.starts_with(pkg_name)
+                            && (name.ends_with(".png") || name.ends_with(".svg")))
+                            && (name == format!("{}.png", pkg_name)
+                                || name == format!("{}.svg", pkg_name)
+                                || name.starts_with(&format!("{}_", pkg_name)))
+                        {
+                            if let Ok(bytes) = std::fs::read(&path) {
+                                let mime = if path.extension().is_some_and(|e| e == "svg") {
+                                    "image/svg+xml"
+                                } else {
+                                    "image/png"
+                                };
+                                let encoded = BASE64_STANDARD.encode(&bytes);
+                                return Some(format!("data:{};base64,{}", mime, encoded));
+                            }
                         }
                     }
+                }
+            }
+            None
+        };
+
+        // 3a. Check Cache
+        if let Some(res) = check_dir(&icons_dir) {
+            return Some(res);
+        }
+
+        // 3b. Check System Search Paths (Linux)
+        let system_paths = [
+            PathBuf::from("/usr/share/pixmaps"),
+            PathBuf::from("/usr/share/icons/hicolor/128x128/apps"),
+            PathBuf::from("/usr/share/icons/hicolor/scalable/apps"),
+            PathBuf::from("/usr/share/icons/hicolor/48x48/apps"),
+        ];
+
+        for path in system_paths {
+            if path.exists() {
+                if let Some(res) = check_dir(&path) {
+                    return Some(res);
                 }
             }
         }
@@ -243,19 +269,10 @@ impl AppStreamLoader {
 
         #[allow(unused_assignments)]
         let icon_url = sorted_icons.iter().find_map(|icon| match icon {
-            Icon::Cached { path, width, .. } => {
+            Icon::Cached { path, .. } => {
                 // Check extracted 'icons/' dir first
                 let filename = path.file_name()?;
                 let local_path = get_icons_dir().join(filename);
-
-                if component.pkgname.as_deref() == Some("firefox") {
-                    println!(
-                        "DEBUG: Checking icon for firefox: {:?} -> Local: {:?} (Exists: {})",
-                        path,
-                        local_path,
-                        local_path.exists()
-                    );
-                }
 
                 if let Ok(bytes) = std::fs::read(&local_path) {
                     let mime = if local_path.extension().is_some_and(|e| e == "svg") {
@@ -265,13 +282,36 @@ impl AppStreamLoader {
                     };
                     let encoded = BASE64_STANDARD.encode(&bytes);
                     Some(format!("data:{};base64,{}", mime, encoded))
+                } else if path.is_absolute() && path.exists() {
+                    // Fallback: Check if the original path provided by AppStream is absolute and exists on filesystem (Linux system icons)
+                    if let Ok(bytes) = std::fs::read(path) {
+                        let mime = if path.extension().is_some_and(|e| e == "svg") {
+                            "image/svg+xml"
+                        } else {
+                            "image/png"
+                        };
+                        let encoded = BASE64_STANDARD.encode(&bytes);
+                        Some(format!("data:{};base64,{}", mime, encoded))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
             }
+
             Icon::Remote { url, .. } => Some(url.to_string()),
             _ => None,
         });
+
+        if let Some(pkg) = &component.pkgname {
+            if pkg.contains("brave") || pkg.contains("spotify") {
+                println!(
+                    "DEBUG: component_to_metadata '{}' -> Icon: {:?}",
+                    pkg, icon_url
+                );
+            }
+        }
 
         let screenshots = component
             .screenshots
@@ -517,24 +557,23 @@ pub struct MetadataState(pub Mutex<AppStreamLoader>);
 
 impl MetadataState {
     pub async fn init(&self, interval_hours: u64) {
-        if cfg!(target_os = "macos") {
-            let cache_dir = get_cache_dir();
-            std::fs::create_dir_all(&cache_dir).ok();
+        // Run on all platforms (Linux/macOS) to ensure consistent cache
+        let cache_dir = get_cache_dir();
+        std::fs::create_dir_all(&cache_dir).ok();
 
-            match download_and_cache_appstream(interval_hours, &cache_dir).await {
-                Ok(path) => match Collection::from_path(path.clone()) {
-                    Ok(col) => {
-                        println!("Loaded AppStream data from {:?}", path);
-                        let mut loader = self.0.lock().unwrap();
-                        loader.set_collection(col);
-                    }
-                    Err(e) => {
-                        println!("Failed to parse downloaded AppStream data: {}", e);
-                    }
-                },
-                Err(e) => {
-                    println!("Failed to download AppStream: {}", e);
+        match download_and_cache_appstream(interval_hours, &cache_dir).await {
+            Ok(path) => match Collection::from_path(path.clone()) {
+                Ok(col) => {
+                    println!("Loaded AppStream data from {:?}", path);
+                    let mut loader = self.0.lock().unwrap();
+                    loader.set_collection(col);
                 }
+                Err(e) => {
+                    println!("Failed to parse downloaded AppStream data: {}", e);
+                }
+            },
+            Err(e) => {
+                println!("Failed to download AppStream: {}", e);
             }
         }
     }
@@ -672,7 +711,13 @@ pub async fn get_metadata(
     };
 
     // 2. Try Flathub (If AppStream failed)
-    let flathub_meta = if app_meta.is_none() {
+    // 2. Try Flathub (If AppStream failed OR if AppStream found package but no icon)
+    let flathub_meta = if app_meta.is_none()
+        || app_meta
+            .as_ref()
+            .map(|m| m.icon_url.is_none())
+            .unwrap_or(false)
+    {
         flathub_state.get_metadata_for_package(&pkg_name).await
     } else {
         None
@@ -733,6 +778,13 @@ pub async fn get_metadata(
                 }
             }
         }
+    }
+    // Final Check: Log if icon is still missing for debugging
+    if final_meta.icon_url.is_none() {
+        println!(
+            "WARN: No icon found for package '{}' after all fallbacks.",
+            pkg_name
+        );
     }
 
     Ok(final_meta)
@@ -822,9 +874,27 @@ pub fn get_apps_by_category(state: State<MetadataState>, category: String) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flathub_api::FlathubApiClient;
     use std::path::PathBuf;
 
-    #[test]
+    #[tokio::test]
+    async fn test_brave_lookup_debug() {
+        let flathub = FlathubApiClient::new();
+
+        let meta = flathub.get_metadata_for_package("brave").await;
+        if let Some(m) = &meta {
+            println!("Brave Meta Icon: {:?}", m.icon);
+        } else {
+            println!("Brave Meta: None");
+        }
+
+        let meta_bin = flathub.get_metadata_for_package("brave-bin").await;
+        if let Some(m) = &meta_bin {
+            println!("Brave-bin Meta Icon: {:?}", m.icon);
+        } else {
+            println!("Brave-bin Meta: None");
+        }
+    }
     fn test_parse_extra_v3() {
         let path = PathBuf::from("extra_v5.xml");
         if !path.exists() {

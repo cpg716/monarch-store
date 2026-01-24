@@ -32,7 +32,15 @@ Stop guessing which "firefox" is the right one. MonARCH intelligently merges res
 ### 🐧 Optimized for Your Distro
 *   **CachyOS Optimized**: Fully compatible with CachyOS's `x86-64-v3`/`v4` optimized repositories for maximum performance.
 *   **Manjaro Tested**: Verified stable on Manjaro's branch structure.
-*   **Universal Arch Support**: Works seamlessly on EndeavourOS, Garuda, and vanilla Arch.
+### 🛡️ Safety First
+*   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
+*   **Out-of-Date Warnings**: Visual alerts for flagged packages.
+*   **Partial Upgrade Prevention**: We rigidly enforce `pacman -S` semantics to prevent breaking your system.
+
+## 🔄 How to Update
+MonARCH Store automatically checks for updates on startup.
+- **App Updates**: You will be notified when a new version of the store is available.
+- **System Updates**: Use the **"Update System"** button in the sidebar to safely sync and upgrade your entire Arch system (Official Repos + AUR).
 
 ### 🛠️ Graphical "No-Terminal" AUR Builder
 Building from the AUR shouldn't require a CLI degree.

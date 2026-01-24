@@ -194,19 +194,15 @@ pub async fn fetch_repo_packages<C: RepoClient>(
     let packages = tokio::task::spawn_blocking(move || {
         // Detect compression based on magic bytes
         let reader: Box<dyn Read + Send> = if bytes.starts_with(&[0x1f, 0x8b]) {
-            // println!("DEBUG: Detected Gzip compression for {}", repo_name);
             Box::new(GzDecoder::new(&bytes[..]))
         } else if bytes.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-            // println!("DEBUG: Detected Zstd compression for {}", repo_name);
             match zstd::stream::read::Decoder::new(&bytes[..]) {
                 Ok(d) => Box::new(d),
                 Err(e) => return Err(e.to_string()),
             }
         } else if bytes.starts_with(&[0xfd, 0x37, 0x7a, 0x58]) {
-            // println!("DEBUG: Detected XZ compression for {}", repo_name);
             Box::new(xz2::read::XzDecoder::new(&bytes[..]))
         } else {
-            // println!("DEBUG: Assuming uncompressed tar for {}", repo_name);
             Box::new(&bytes[..])
         };
 

@@ -757,7 +757,11 @@ async fn search_packages(
     }
 
     // 2. Search Synced Repos (Binary Repos)
-    let repo_results = state_repo.search(query).await;
+    let mut repo_results = state_repo.search(query).await;
+
+    // CRITICAL: Sort by relevance BEFORE deduplication to ensure "spotify" (exact match)
+    // claims the App ID slot before "spotify-launcher" or "spotify-git".
+    utils::sort_packages_by_relevance(&mut repo_results, query);
 
     // Track seen App IDs to prevent duplicates (e.g. brave-bin vs brave)
     let mut seen_app_ids: std::collections::HashSet<String> =

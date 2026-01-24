@@ -240,6 +240,7 @@ mod tests {
 
 /// Merges official/appstream packages with repository packages, handling deduplication.
 /// This logic was extracted from lib.rs to allow for unit testing.
+#[allow(dead_code)]
 pub fn merge_and_deduplicate(
     mut base_packages: Vec<models::Package>,
     repo_results: Vec<models::Package>,

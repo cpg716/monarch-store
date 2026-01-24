@@ -51,6 +51,7 @@ pub fn get_flathub_app_id(pkg_name: &str) -> Option<String> {
         ("teams", "com.microsoft.Teams"),
         // Media
         ("spotify", "com.spotify.Client"),
+        ("spotify-launcher", "com.spotify.Client"),
         ("vlc", "org.videolan.VLC"),
         ("obs-studio", "com.obsproject.Studio"),
         ("gimp", "org.gimp.GIMP"),
