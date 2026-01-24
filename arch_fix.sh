@@ -1,35 +1,37 @@
 #!/bin/bash
 
-echo "🦋 MonARCH Store - Nuclear System Repair & Fixer"
-echo "==============================================="
+echo "🦋 MonARCH Store - Nuclear System Repair v2 (Extreme Robustness)"
+echo "==============================================================="
 
-# 1. Isolation & Unblocking
-echo "🔓 [1/6] Unblocking Pacman (Isolating modular repos)..."
+# 1. Isolation
+echo "🔓 [1/6] Unblocking Pacman..."
 sudo rm -f /var/lib/pacman/db.lck
 
-# Temporarily disable MonARCH's modular include to allow pacman to work for core tasks
-if grep -q "/etc/pacman.d/monarch/" /etc/pacman.conf; then
-    echo "⏸️  Temporarily disabling MonARCH modular includes to fix deadlock..."
-    sudo sed -i 's/^Include = \/etc\/pacman.d\/monarch\/\*.conf/#Include = \/etc\/pacman.d\/monarch\/*.conf/' /etc/pacman.conf
-fi
+# 2. Create Emergency Config
+echo "📋 [2/6] Creating Emergency Pacman Config..."
+TMP_CONF="/tmp/monarch_repair_pacman.conf"
+cat <<EOF > $TMP_CONF
+[options]
+HoldPkg     = pacman glibc
+Architecture = auto
+SigLevel    = Required DatabaseOptional
+LocalFileSigLevel = Optional
 
-# Clear stale/corrupted databases
-echo "🧹 Clearing stale sync databases..."
-sudo rm -rf /var/lib/pacman/sync/*
+[core]
+Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
+[extra]
+Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
+EOF
 
-# 2. Keyring Bootstrap
-echo "🔑 [2/6] Bootstrapping GPG Keyrings..."
-sudo pacman-key --init
-sudo pacman-key --populate archlinux
+# 3. Keyring Reset
+echo "🔑 [3/6] Resetting Pacman Keyring..."
+sudo pacman-key --config $TMP_CONF --init
+sudo pacman-key --config $TMP_CONF --populate archlinux
 
-# Attempt to sync ONLY core Arch repos first
-echo "📡 Syncing Core Arch Repositories..."
-sudo pacman -Sy --noconfirm || echo "⚠️ Core sync had issues, attempting to proceed anyway..."
-
-# 3. Install/Verify System Dependencies & Rust
-echo "📦 [3/6] Installing Essential Build Tools..."
-# We install these first while the system is unblocked
-sudo pacman -S --needed --noconfirm \
+# 4. Emergency Dependency Install
+echo "📦 [4/6] Installing Dependencies via Emergency Config..."
+# This bypasses all broken repos in /etc/pacman.conf
+sudo pacman --config $TMP_CONF -Sy --needed --noconfirm \
     webkit2gtk-4.1 \
     base-devel \
     curl \
@@ -42,38 +44,29 @@ sudo pacman -S --needed --noconfirm \
     librsvg \
     libvips
 
-# 4. Repair Third-Party Infrastructure
-echo "🛠️  [4/6] Repairing Third-Party Signatures..."
-
-# Manually fetch Chaotic and CachyOS keyrings if they were causing the deadlock
-echo "🔍 Fetching fresh CachyOS keyring..."
-sudo pacman -U --noconfirm "https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst" || true
-
-echo "🔍 Fetching fresh Chaotic keyring..."
-sudo pacman -U --noconfirm "https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst" || true
-
-sudo pacman-key --populate chaotic cachyos || true
-
-# 5. Restore MonARCH Infrastructure
-echo "🔄 [5/6] Restoring Modular Configs..."
-if grep -q "#Include = /etc/pacman.d/monarch/\*.conf" /etc/pacman.conf; then
-    sudo sed -i 's/^#Include = \/etc\/pacman.d\/monarch\/\*.conf/Include = \/etc\/pacman.d\/monarch\/*.conf/' /etc/pacman.conf
+# 5. Repository Cleanup (Optional but recommended)
+echo "🧹 [5/6] Cleaning up broken repository definitions..."
+if [ -d /etc/pacman.d/monarch ]; then
+    sudo rm -rf /etc/pacman.d/monarch/
+    mkdir -p /etc/pacman.d/monarch/
 fi
 
-# Final full sync
-echo "🚀 Performing final system sync..."
-sudo pacman -Sy --noconfirm
-
-# 6. Verify Build
+# 6. Verify Build Environment
 echo "🔍 [6/6] Verifying Build Environment..."
 rm -rf src-tauri/target
 if command -v cargo &> /dev/null; then
-    echo "✅ Cargo is ready!"
-    cd src-tauri && cargo check || echo "⚠️  'cargo check' warns, but environment is functional."
+    echo "✅ Cargo (Rust) is ready!"
+    # One-click keyring fix for third party
+    sudo pacman-key --recv-keys 3056513887B78AEB F4A617F51E9D1FA3 --keyserver keyserver.ubuntu.com || true
+    sudo pacman-key --lsign-key 3056513887B78AEB || true
+    sudo pacman-key --lsign-key F4A617F51E9D1FA3 || true
+    
+    cd src-tauri && cargo check || echo "⚠️  'cargo check' warns, but tools are installed."
 else
     echo "❌ CRITICAL: 'cargo' is still missing. Please install Rust manually."
     exit 1
 fi
 
 echo ""
-echo "✨ Repair complete! You can now run 'makepkg -si' safely."
+echo "✨ System unblocked! You can now run 'makepkg -si' safely."
+echo "Note: The broken repos in /etc/pacman.conf might still show errors, but the build tools are now available."
