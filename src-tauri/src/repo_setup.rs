@@ -135,7 +135,7 @@ fn get_repo_script(name: &str) -> String {
         "cachyos" => {
             r#"
             echo "--- CachyOS Modular Setup ---"
-            pacman -U "https://mirror.cachyos.org/cachyos-keyring-2-1-any.pkg.tar.zst" --noconfirm || true
+            pacman -U "https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst" --noconfirm || true
             CONF="/etc/pacman.d/monarch/cachyos.conf"
             echo "[cachyos]" > $CONF
             echo "Include = /etc/pacman.d/cachyos-mirrorlist" >> $CONF

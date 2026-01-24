@@ -12,7 +12,8 @@ sudo pacman-key --populate archlinux chaotic
 # Attempt to fetch CachyOS keyring if repo is detected
 if grep -q "cachyos" /etc/pacman.conf || [ -d /etc/pacman.d/monarch ]; then
     echo "🔍 CachyOS detected. Attempting to fetch keyring..."
-    sudo pacman -U "https://mirror.cachyos.org/cachyos-keyring-2-1-any.pkg.tar.zst" --noconfirm || true
+    # Using the verified latest URL from mirror.cachyos.org
+    sudo pacman -U "https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst" --noconfirm || true
 fi
 
 # Refresh keys (helps with 'No data' and 'Invalid Signature' errors)
