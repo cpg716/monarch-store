@@ -42,10 +42,10 @@ pub async fn get_app_rating(app_id: &str) -> Result<Option<OdrsRating>, String> 
         return Ok(None); // No ratings found often returns 404 or empty
     }
 
-    // ODRS returns a map { "app.id": { ... } }
-    let body: HashMap<String, OdrsRating> = resp.json().await.map_err(|e| e.to_string())?;
+    // ODRS returns a map { "app.id": { ... } } wrapped in an object
+    let body: OdrsResponse = resp.json().await.map_err(|e| e.to_string())?;
 
-    Ok(body.get(app_id).cloned())
+    Ok(body.ratings.get(app_id).cloned())
 }
 
 // Fetch detailed reviews
