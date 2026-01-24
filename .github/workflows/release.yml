@@ -48,6 +48,6 @@ jobs:
         with:
           tagName: __VERSION__ # the action automatically replaces this
           releaseName: 'MonArch Store v__VERSION__'
-          body: 'See the assets to download this version and install.'
-          draft: true
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: true
           prerelease: false
