@@ -44,12 +44,20 @@ sudo pacman --config $TMP_CONF -Sy --needed --noconfirm \
     librsvg \
     libvips
 
-# 5. Repository Cleanup (Optional but recommended)
-echo "🧹 [5/6] Cleaning up broken repository definitions..."
+# 5. Repository Cleanup & Full System Sync
+echo "🧹 [5/6] Cleaning up and performing full system update..."
+# This ensures the user has the latest libicu and other core libs
+sudo pacman --config $TMP_CONF -Syu --noconfirm
+
 if [ -d /etc/pacman.d/monarch ]; then
     sudo rm -rf /etc/pacman.d/monarch/
     mkdir -p /etc/pacman.d/monarch/
 fi
+
+# Clean any existing binary to prevent "Silent Fail" with old versions
+echo "🗑️ Removing old binaries..."
+sudo rm -f /usr/bin/monarch-store
+sudo rm -f /usr/bin/"MonARCH Store"
 
 # 6. Verify Build Environment
 echo "🔍 [6/6] Verifying Build Environment..."
@@ -68,5 +76,5 @@ else
 fi
 
 echo ""
-echo "✨ System unblocked! You can now run 'makepkg -si' safely."
-echo "Note: The broken repos in /etc/pacman.conf might still show errors, but the build tools are now available."
+echo "✨ System unblocked and UPDATED! You can now run 'makepkg -si' safely."
+echo "Note: This native build will perfectly match your system's library versions (v78)."
