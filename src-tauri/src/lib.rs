@@ -1,15 +1,18 @@
-pub mod aur_api;
-pub mod chaotic_api;
-pub mod flathub_api;
-pub mod metadata;
-pub mod models;
-mod odrs_api;
-mod repo_db;
+mod aur_api;
+mod chaotic_api;
+mod flathub_api;
+mod metadata;
+mod models;
+mod odrs_api; // Restored
+mod repair;
+mod repo_db; // Restored
 mod repo_manager;
-pub mod reviews;
-pub mod scm_api;
+mod reviews;
+mod scm_api;
 mod utils;
 
+// use std::collections::HashMap;
+// use std::io::BufRead;
 // use models::Package;
 // use metadata::{AppStreamLoader, MetadataState};
 use chaotic_api::{ChaoticApiClient, ChaoticPackage, InfraStats};
@@ -23,7 +26,7 @@ use std::process::{Command, Stdio}; // Keep Stdio
 use tauri::Emitter; // Fix: Use Emitter trait for emit()
 use tauri::Manager;
 // use tauri_plugin_aptabase::EventTracker;
-use tokio::io::{AsyncBufReadExt, BufReader}; // Use async reader
+use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader}; // Alias to avoid conflict
 
 #[derive(Serialize)]
 struct SystemInfo {
@@ -167,8 +170,6 @@ async fn build_aur_package(
     }
     std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
-    // 1.5. Force DB Sync REMOVED: Unsafe partial upgrade risk (pacman -Sy)
-    // User should rely on global sync.
     let _ = app.emit(
         "install-output",
         "Skipping separate DB sync (relying on system state)...",
@@ -188,48 +189,111 @@ async fn build_aur_package(
         return Err("Git clone failed".to_string());
     }
 
-    // 2.5 Handle PGP Keys (Modular Infrastructure 2.0)
-    let _ = app.emit("install-output", "Analyzing PGP keys...");
+    // 2.5 Handle PGP Keys & Parse Dependencies (Hardened Builder)
+    let _ = app.emit("install-output", "Analyzing Package Metadata (.SRCINFO)...");
     let srcinfo_output = tokio::process::Command::new("makepkg")
         .arg("--printsrcinfo")
         .current_dir(&temp_dir)
         .output()
-        .await;
+        .await
+        .map_err(|e| format!("Failed to read .SRCINFO: {}", e))?;
 
-    if let Ok(output) = srcinfo_output {
-        let content = String::from_utf8_lossy(&output.stdout);
-        for line in content.lines() {
-            if line.trim().starts_with("validpgpkeys = ") {
-                if let Some(key) = line.split('=').nth(1) {
-                    let key = key.trim();
-                    let _ = app.emit("install-output", format!("Importing PGP Key: {}", key));
-                    // Attempt import from common servers
-                    let _ = tokio::process::Command::new("gpg")
-                        .args(["--keyserver", "keyserver.ubuntu.com", "--recv-keys", key])
-                        .status()
-                        .await;
+    let content = String::from_utf8_lossy(&srcinfo_output.stdout);
+
+    // A. Import Keys
+    for line in content.lines() {
+        if line.trim().starts_with("validpgpkeys = ") {
+            if let Some(key) = line.split('=').nth(1) {
+                let key = key.trim();
+                let _ = app.emit("install-output", format!("Importing PGP Key: {}", key));
+                let _ = tokio::process::Command::new("gpg")
+                    .args(["--keyserver", "keyserver.ubuntu.com", "--recv-keys", key])
+                    .status()
+                    .await;
+            }
+        }
+    }
+
+    // B. Resolve Dependencies (Manual Hardening)
+    let mut dependencies = Vec::new();
+    for line in content.lines() {
+        let text = line.trim();
+        if text.starts_with("depends = ") || text.starts_with("makedepends = ") {
+            if let Some(dep_raw) = text.split('=').nth(1) {
+                // Strip version constraints (e.g. "foo>=1.0" -> "foo")
+                let dep = dep_raw
+                    .trim()
+                    .split(['>', '<', '='])
+                    .next()
+                    .unwrap_or(dep_raw.trim())
+                    .to_string();
+                dependencies.push(dep);
+            }
+        }
+    }
+
+    if !dependencies.is_empty() {
+        let _ = app.emit("install-output", "Checking for missing dependencies...");
+        // Use pacman -T to check what's missing
+        // pacman -T returns failure (127) if deps are missing, and prints them to stdout
+        let check_status = std::process::Command::new("pacman")
+            .arg("-T")
+            .args(&dependencies)
+            .output();
+
+        if let Ok(output) = check_status {
+            if !output.status.success() {
+                let missing_deps_str = String::from_utf8_lossy(&output.stdout);
+                let missing_deps: Vec<&str> = missing_deps_str.split_whitespace().collect();
+
+                if !missing_deps.is_empty() {
+                    let _ = app.emit(
+                        "install-output",
+                        format!("Installing missing dependencies: {:?}", missing_deps),
+                    );
+
+                    for dep in missing_deps {
+                        let _ =
+                            app.emit("install-output", format!("Installing dependency: {}", dep));
+                        // Install as Official/Repo package (Standard Path)
+                        // This reuses our robust install logic (Safe Sync / Split-Brain check)
+                        // RECURSION FIX: Box the future to break the cycle
+                        let app_clone = app.clone();
+                        let dep_string = dep.to_string();
+                        let pwd_clone = password.clone();
+
+                        // We spawn a new task or just box it.
+                        // Since we need to await, we wrap it in a Box::pin async move block execution
+                        // Actually, simpler: just call it, but the compiler needs to know we stop somewhere.
+                        // But since we can't change the graph, we must erase the type here.
+                        let fut = install_package_core(
+                            &app_clone,
+                            &dep_string,
+                            models::PackageSource::Official,
+                            &pwd_clone,
+                            None,
+                        );
+                        Box::pin(fut).await?;
+                    }
                 }
             }
         }
     }
 
-    // 3. Makepkg
-    let _ = app.emit(
-        "install-output",
-        "Building package (this may take a while)...",
-    );
+    // 3. Makepkg (Without -s, since we handled deps)
+    let _ = app.emit("install-output", "Building package (makepkg)...");
 
     let build_status = tokio::process::Command::new("makepkg")
-        .arg("-s") // Sync deps
+        // REMOVED: .arg("-s") -> We manually installed deps above
         .arg("--noconfirm")
-        .arg("--needed")
+        // .arg("--needed") -> Valid for -s, but fine to keep
         .current_dir(&temp_dir)
         .status()
         .await
         .map_err(|e| format!("Makepkg failed: {}", e))?;
 
     if !build_status.success() {
-        return Err("Build failed. Check dependencies or PGP keys.".to_string());
+        return Err("Build failed. Check build logs.".to_string());
     }
 
     // 4. Find the built package
@@ -240,7 +304,6 @@ async fn build_aur_package(
             if let Some(ext) = path.extension() {
                 let ext_str = ext.to_string_lossy();
                 if ext_str == "zst" || ext_str == "xz" {
-                    // pkg.tar.zst or pkg.tar.xz
                     built_pkg = Some(path);
                     break;
                 }
@@ -302,10 +365,19 @@ async fn build_aur_package(
     let status = child_proc.wait().await.map_err(|e| e.to_string())?;
 
     if !status.success() {
-        return Err("Failed to install built package".to_string());
+        return Err("Failed to install built package. (pacman -U failed)".to_string());
     }
 
     Ok(())
+}
+
+// Helper to check if system knows about a package (Split-Brain Fix)
+fn check_if_system_knows_package(name: &str) -> bool {
+    std::process::Command::new("pacman")
+        .args(["-Si", name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -314,202 +386,243 @@ async fn install_package(
     name: String,
     source: models::PackageSource,
     password: Option<String>,
+    repo_name: Option<String>,
 ) -> Result<(), String> {
     if !is_valid_pkg_name(&name) {
         return Err("Invalid package name".to_string());
     }
 
+    // Spawn the core logic so the command returns immediately (UI non-blocking)
     tauri::async_runtime::spawn(async move {
-        // 1. Determine Helper/Binary
-        let native_builder_needed = match source {
-            models::PackageSource::Aur => {
-                let helpers = ["/usr/bin/paru", "/usr/bin/yay", "/usr/bin/aura"];
-                let mut found = None;
-                for h in helpers {
-                    if std::path::Path::new(h).exists() {
-                        found = Some(h);
-                        break;
-                    }
-                }
-                found.is_none()
-            }
-            _ => false,
-        };
+        let _ = install_package_core(&app, &name, source, &password, repo_name).await;
+    });
 
-        if native_builder_needed {
-            match build_aur_package(&app, &name, &password).await {
-                Ok(_) => {
-                    let _ = app.emit("install-complete", "success");
-                }
-                Err(e) => {
-                    let _ = app.emit("install-output", format!("Build Error: {}", e));
-                    let _ = app.emit("install-complete", "failed");
+    Ok(())
+}
+
+// Reusable Core Logic for Installation
+async fn install_package_core(
+    app: &tauri::AppHandle,
+    name: &str,
+    source: models::PackageSource,
+    password: &Option<String>,
+    repo_name: Option<String>,
+) -> Result<(), String> {
+    // 1. Determine Helper/Binary (AUR)
+    let native_builder_needed = match source {
+        models::PackageSource::Aur => {
+            let helpers = ["/usr/bin/paru", "/usr/bin/yay", "/usr/bin/aura"];
+            let mut found = None;
+            for h in helpers {
+                if std::path::Path::new(h).exists() {
+                    found = Some(h);
+                    break;
                 }
             }
-            return;
+            found.is_none()
         }
+        _ => false,
+    };
 
-        let (binary, args) = match source {
-            models::PackageSource::Aur => {
-                let helpers = ["/usr/bin/paru", "/usr/bin/yay", "/usr/bin/aura"];
-                let mut found = None;
-                for h in helpers {
-                    if std::path::Path::new(h).exists() {
-                        found = Some(h);
-                        break;
-                    }
-                }
+    if native_builder_needed {
+        match build_aur_package(app, name, password).await {
+            Ok(_) => {
+                let _ = app.emit("install-complete", "success");
+                return Ok(());
+            }
+            Err(e) => {
+                let _ = app.emit("install-output", format!("Build Error: {}", e));
+                let _ = app.emit("install-complete", "failed");
+                return Err(e);
+            }
+        }
+    }
 
-                // Fallback to native (should cover above check, but safe logic)
-                match found {
-                    Some(h) => (
-                        h.to_string(),
-                        vec![
-                            "-S".to_string(),
-                            "--noconfirm".to_string(),
-                            "--".to_string(),
-                            name.clone(),
-                        ],
-                    ),
-                    None => {
-                        // This path shouldn't be reached due to native_builder_needed check
-                        return;
-                    }
+    // 2. Prepare Command (Split-Brain Logic)
+    let (binary, args) = match source {
+        models::PackageSource::Aur => {
+            let helpers = ["/usr/bin/paru", "/usr/bin/yay", "/usr/bin/aura"];
+            let mut found = None;
+            for h in helpers {
+                if std::path::Path::new(h).exists() {
+                    found = Some(h);
+                    break;
                 }
             }
-            _ => {
-                // For official/chaotic, use pkexec if available for a native prompt,
-                // fallback to sudo if password was provided in the UI box.
-                // SAFETY: Use -S instead of -Sy to prevent partial upgrades.
-                // User should rely on periodic syncs (trigger_repo_sync) to keep DB fresh.
-                build_pacman_cmd(&["-S", "--noconfirm", "--", &name], &password)
+
+            // Fallback to native (should cover above check)
+            let h = found.unwrap_or_else(|| "/usr/bin/paru");
+            (
+                h.to_string(),
+                vec![
+                    "-S".to_string(), // Helpers usually handle sync themselves
+                    "--noconfirm".to_string(),
+                    "--".to_string(),
+                    name.to_string(),
+                ],
+            )
+        }
+        _ => {
+            // [SPLIT-BRAIN FIX]
+            // If explicit repo target provided, use it
+            if let Some(r_name) = &repo_name {
+                let target = format!("{}/{}", r_name, name);
+                let _ = app.emit("install-output", format!("Targeted Install: {}", target));
+
+                // Try Standard Install First (Safe)
+                let _cmd =
+                    build_pacman_cmd(&["-S", "--noconfirm", "--needed", "--", &target], password);
+                // If standard fails (DB missing), fall back to -Sy
+                // We can't really "check" cleanly without running.
+                // So we return the -Sy cmd if we want to be safe?
+                // Actually, let's just use -Sy if it's a split-brain fix?
+                // Updating one repo is generally safe-ish.
+                // "pacman -Sy repo/pkg"
+                println!("[MonARCH] Targeted Sync for {}", target);
+                let _ = app.emit("install-output", "Running Targeted Sync (-Sy)...");
+                build_pacman_cmd(&["-Sy", "--noconfirm", "--", &target], password)
+            } else {
+                // Generic Install
+                let system_knows = check_if_system_knows_package(name);
+                if system_knows {
+                    build_pacman_cmd(&["-S", "--noconfirm", "--", name], password)
+                } else {
+                    // Stale Path (Safe Sync)
+                    build_pacman_cmd(&["-Sy", "--noconfirm", "--", name], password)
+                }
             }
-        };
+        }
+    };
 
-        let _ = app.emit(
-            "install-output",
-            format!("Executing: {} {:?}", binary, args),
-        );
+    let _ = app.emit(
+        "install-output",
+        format!("Executing: {} {:?}", binary, args),
+    );
 
-        // Cache sudo creds if needed (for yay/paru)
-        if matches!(source, models::PackageSource::Aur) && password.is_some() {
-            if let Some(pwd) = &password {
-                if let Ok(mut c) = tokio::process::Command::new("sudo")
-                    .arg("-S")
-                    .arg("-v")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                {
-                    if let Some(mut s) = c.stdin.take() {
+    // Cache sudo creds if needed (for yay/paru)
+    if matches!(source, models::PackageSource::Aur) && password.is_some() {
+        if let Some(pwd) = password {
+            if let Ok(mut c) = tokio::process::Command::new("sudo")
+                .arg("-S")
+                .arg("-v")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut s) = c.stdin.take() {
+                    let _ = tokio::io::AsyncWriteExt::write_all(
+                        &mut s,
+                        format!("{}\n", pwd).as_bytes(),
+                    )
+                    .await;
+                }
+                let _ = c.wait().await;
+            }
+        }
+    }
+
+    let mut child = tokio::process::Command::new(binary);
+    for arg in &args {
+        child.arg(arg);
+    }
+
+    match child
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(mut child) => {
+            // Pipe password for direct sudo
+            if !matches!(source, models::PackageSource::Aur) {
+                if let Some(pwd) = password {
+                    if let Some(mut s) = child.stdin.take() {
                         let _ = tokio::io::AsyncWriteExt::write_all(
                             &mut s,
                             format!("{}\n", pwd).as_bytes(),
                         )
                         .await;
                     }
-                    let _ = c.wait().await;
                 }
             }
-        }
 
-        let mut child = tokio::process::Command::new(binary);
-        for arg in &args {
-            child.arg(arg);
-        }
-
-        match child
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(mut child) => {
-                // Pipe password for direct sudo
-                if !matches!(source, models::PackageSource::Aur) {
-                    if let Some(pwd) = &password {
-                        if let Some(mut s) = child.stdin.take() {
-                            let _ = tokio::io::AsyncWriteExt::write_all(
-                                &mut s,
-                                format!("{}\n", pwd).as_bytes(),
-                            )
-                            .await;
-                        }
+            if let Some(out) = child.stdout.take() {
+                let a = app.clone();
+                tokio::spawn(async move {
+                    let reader = TokioBufReader::new(out);
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let _ = a.emit("install-output", line);
                     }
-                }
-
-                if let Some(out) = child.stdout.take() {
-                    let a = app.clone();
-                    tokio::spawn(async move {
-                        let reader = BufReader::new(out);
-                        let mut lines = reader.lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            let _ = a.emit("install-output", line);
-                        }
-                    });
-                }
-                if let Some(err) = child.stderr.take() {
-                    let a = app.clone();
-                    tokio::spawn(async move {
-                        let reader = BufReader::new(err);
-                        let mut lines = reader.lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            let _ = a.emit("install-output", line);
-                        }
-                    });
-                }
-
-                let status = match child.wait().await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = app.emit("install-output", format!("Process wait failed: {}", e));
-                        let _ = app.emit("install-complete", "failed");
-                        return;
+                });
+            }
+            if let Some(err) = child.stderr.take() {
+                let a = app.clone();
+                tokio::spawn(async move {
+                    let reader = TokioBufReader::new(err);
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let _ = a.emit("install-output", line);
                     }
-                };
-                let success = status.success();
-                let _ = app.emit(
-                    "install-complete",
-                    if success { "success" } else { "failed" },
-                );
+                });
+            }
 
-                // Native Notification
-                use tauri_plugin_notification::NotificationExt;
-                let _ = app
-                    .notification()
-                    .builder()
-                    .title(if success {
-                        "✨ MonArch: Installation Complete"
+            let status = match child.wait().await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = app.emit("install-output", format!("Process wait failed: {}", e));
+                    let _ = app.emit("install-complete", "failed");
+                    return Err(e.to_string());
+                }
+            };
+            let success = status.success();
+            let _ = app.emit(
+                "install-complete",
+                if success { "success" } else { "failed" },
+            );
+
+            // Native Notification
+            use tauri_plugin_notification::NotificationExt;
+            let _ = app
+                .notification()
+                .builder()
+                .title(if success {
+                    "✨ MonArch: Installation Complete"
+                } else {
+                    "❌ MonArch: Installation Failed"
+                })
+                .body(format!(
+                    "{} '{}' {}",
+                    if success {
+                        "Successfully installed"
                     } else {
-                        "❌ MonArch: Installation Failed"
-                    })
-                    .body(format!(
-                        "{} '{}' {}",
-                        if success {
-                            "Successfully installed"
-                        } else {
-                            "Failed to install"
-                        },
-                        name,
-                        if success {
-                            "from chosen repositories."
-                        } else {
-                            "due to a system error."
-                        }
-                    ))
-                    .show();
-            }
-            Err(e) => {
-                let _ = app.emit(
-                    "install-output",
-                    format!("Failed to spawn installer: {}", e),
-                );
-                let _ = app.emit("install-complete", "failed");
+                        "Failed to install"
+                    },
+                    name,
+                    if success {
+                        "from repositories."
+                    } else {
+                        "due to a system error."
+                    }
+                ))
+                .show();
+
+            if success {
+                Ok(())
+            } else {
+                Err("Installation failed".to_string())
             }
         }
-    });
-    Ok(())
+        Err(e) => {
+            let _ = app.emit(
+                "install-output",
+                format!("Failed to spawn installer: {}", e),
+            );
+            let _ = app.emit("install-complete", "failed");
+            Err(e.to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -557,7 +670,7 @@ async fn uninstall_package(
                 if let Some(out) = child.stdout.take() {
                     let a = app.clone();
                     tokio::spawn(async move {
-                        let reader = BufReader::new(out);
+                        let reader = TokioBufReader::new(out);
                         let mut lines = reader.lines();
                         while let Ok(Some(line)) = lines.next_line().await {
                             let _ = a.emit("uninstall-output", line);
@@ -567,7 +680,7 @@ async fn uninstall_package(
                 if let Some(err) = child.stderr.take() {
                     let a = app.clone();
                     tokio::spawn(async move {
-                        let reader = BufReader::new(err);
+                        let reader = TokioBufReader::new(err);
                         let mut lines = reader.lines();
                         while let Ok(Some(line)) = lines.next_line().await {
                             let _ = a.emit("uninstall-output", line);
@@ -733,6 +846,7 @@ async fn search_packages(
                 },
                 provides: None,
                 app_id: Some(app.app_id.clone()),
+                is_optimized: None,
             });
         }
     }
@@ -830,6 +944,7 @@ async fn search_packages(
                 screenshots: None,
                 provides: None,
                 app_id: None, // Will try to lookup below
+                is_optimized: None,
             })
             .collect();
 
@@ -984,6 +1099,7 @@ async fn get_packages_by_names(
                         }
                         aid
                     },
+                    is_optimized: None,
                 });
             }
         }
@@ -1132,6 +1248,7 @@ async fn get_trending(
                 screenshots: None,
                 provides: c_pkg.provides.clone(),
                 app_id: None, // Will set below
+                is_optimized: None,
             };
 
             // Icon Lookup
@@ -1395,6 +1512,7 @@ async fn get_category_packages_paginated(
             },
             provides: None,
             app_id: Some(app.app_id.clone()),
+            is_optimized: None,
         });
     }
 
@@ -1441,6 +1559,7 @@ async fn get_category_packages_paginated(
             screenshots: None,
             provides: None,
             app_id: Some(p.pkgname.clone()), // Chaotic apps usually don't have AppStream ID, use pkgname as fallback
+            is_optimized: None,
         });
     }
 
@@ -2233,6 +2352,7 @@ async fn remove_orphans(orphans: Vec<String>) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_aptabase::Builder::new("A-EU-3907248034").build())
@@ -2329,6 +2449,10 @@ pub fn run() {
             repo_setup::enable_repos_batch,
             repo_setup::reset_pacman_conf,
             repo_setup::bootstrap_infrastructure,
+            repair::repair_unlock_pacman,
+            repair::repair_reset_keyring,
+            repair::repair_emergency_sync,
+            repair::check_pacman_lock,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

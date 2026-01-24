@@ -15,6 +15,7 @@ import CategoryView from './pages/CategoryView';
 import InstalledPage from './pages/InstalledPage';
 import UpdatesPage from './pages/UpdatesPage';
 import SettingsPage from './pages/SettingsPage';
+import SystemHealth from './pages/SystemHealth'; // [NEW]
 import { useTheme } from './hooks/useTheme';
 import './App.css';
 
@@ -98,8 +99,9 @@ function App() {
         // This ensures the app has content on launch without blocking UI.
         const savedInterval = localStorage.getItem('sync-interval-hours');
         const interval = savedInterval ? parseInt(savedInterval, 10) : 3;
-        invoke('trigger_repo_sync', { syncIntervalHours: interval })
-          .catch(e => console.error("Background Startup Sync Failed", e));
+
+        // Await the sync so the Loading Screen persists until data is ready
+        await invoke('trigger_repo_sync', { syncIntervalHours: interval });
 
       } catch (e) {
         console.error("Startup Logic Error", e);
@@ -182,6 +184,14 @@ function App() {
         if (input) input.focus();
       }, 50);
     } else {
+      // Logic: If user clicks the SAME tab they are already on, we want to reset the view
+      // back to the "root" of that tab (clear selection, search, etc.)
+      if (activeTab === tab) {
+        setSelectedPackage(null);
+        setSelectedCategory(null);
+        setViewAll(null);
+        setSearchQuery('');
+      }
       setActiveTab(tab);
       setSearchQuery(''); // Always clear search when switching tabs to ensure view changes
     }
@@ -226,7 +236,7 @@ function App() {
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0 pb-32 scroll-smooth">
               {activeTab === 'explore' && !searchQuery && (
                 <div className="px-6 pt-6 animate-in fade-in slide-in-from-top-5 duration-700">
-                  <HeroSection />
+                  <HeroSection onNavigateToFix={() => handleTabChange('system')} />
                 </div>
               )}
 
@@ -277,6 +287,8 @@ function App() {
                   <UpdatesPage />
                 ) : activeTab === 'settings' ? (
                   <SettingsPage onRestartOnboarding={() => setShowOnboarding(true)} />
+                ) : activeTab === 'system' ? (
+                  <SystemHealth />
                 ) : null}
               </div>
             </div>

@@ -1,6 +1,6 @@
 # Build from source for perfect library compatibility
 pkgname=monarch-store
-pkgver=0.2.25
+pkgver=0.2.26
 pkgrel=1
 pkgdesc="A modern, high-performance software store for Arch Linux based distributions."
 arch=('x86_64')

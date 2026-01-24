@@ -62,6 +62,22 @@ export default function SearchPage({
 
     const displayed = sortedResults.slice(0, displayLimit);
 
+    // [NOVICE] Windows App Aliases
+    const aliases: Record<string, string> = {
+        'photoshop': 'GIMP',
+        'illustrator': 'Inkscape',
+        'word': 'LibreOffice',
+        'excel': 'LibreOffice',
+        'powerpoint': 'LibreOffice',
+        'outlook': 'Thunderbird',
+        'notepad': 'Gedit',
+        'chrome': 'Google Chrome',
+        'edge': 'Microsoft Edge',
+        'paint': 'Krita',
+        'task manager': 'Stacer'
+    };
+    const didYouMean = aliases[query.toLowerCase()];
+
     return (
         <div className="flex-1 flex flex-col h-full overflow-hidden bg-app-bg">
             <div className="p-8 pb-4 space-y-6">
@@ -255,9 +271,12 @@ export default function SearchPage({
                             ) : displayed.length === 0 ? (
                                 <EmptyState
                                     title="No apps found"
-                                    description={`We couldn't find any packages matching "${query}"${activeFilter !== 'all' ? ` in the ${activeFilter} source` : ''}.`}
-                                    actionLabel="Clear filters & search again"
-                                    onAction={() => { onQueryChange(''); setActiveFilter('all'); }}
+                                    description={didYouMean ? `Did you mean '${didYouMean}'? Arch uses different apps than Windows.` : `We couldn't find any packages matching "${query}"${activeFilter !== 'all' ? ` in the ${activeFilter} source` : ''}.`}
+                                    actionLabel={didYouMean ? `Search for ${didYouMean}` : "Clear filters & search again"}
+                                    onAction={() => {
+                                        if (didYouMean) onQueryChange(didYouMean);
+                                        else { onQueryChange(''); setActiveFilter('all'); }
+                                    }}
                                 />
                             ) : (
                                 <>

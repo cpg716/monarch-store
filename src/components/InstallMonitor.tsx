@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Terminal, CheckCircle2, XCircle, Loader2, Lock, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw } from 'lucide-react';
+import { Terminal, CheckCircle2, XCircle, Loader2, Lock, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw, ChevronUp } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { clsx } from 'clsx';
+import { friendlyError } from '../utils/friendlyError';
 
 interface InstallMonitorProps {
     pkg: { name: string; source: string; } | null;
@@ -15,6 +16,7 @@ export default function InstallMonitor({ pkg, onClose }: InstallMonitorProps) {
     const [logs, setLogs] = useState<string[]>([]);
     const [progress, setProgress] = useState(0);
     const [minimized, setMinimized] = useState(false);
+    const [showLogs, setShowLogs] = useState(false);
     const logsEndRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll logs
@@ -77,6 +79,12 @@ export default function InstallMonitor({ pkg, onClose }: InstallMonitorProps) {
 
     if (!pkg) return null;
 
+    const displayStatus = status === 'error' && logs.length > 0
+        ? friendlyError(logs[logs.length - 1])
+        : status === 'idle' ? 'Ready to Install'
+            : status === 'success' ? 'Installation Complete'
+                : pkg.source === 'aur' ? 'Building App (This may take a while)...' : 'Installing...';
+
     if (minimized) {
         return (
             <div className="fixed bottom-4 right-4 z-50 bg-app-card border border-app-border p-4 rounded-xl shadow-2xl flex items-center gap-4 w-80 animate-in slide-in-from-bottom-4 transition-colors">
@@ -137,10 +145,7 @@ export default function InstallMonitor({ pkg, onClose }: InstallMonitorProps) {
                         </div>
                         <div>
                             <h2 className="text-xl font-bold text-app-fg">
-                                {status === 'idle' ? 'Install Package' :
-                                    status === 'success' ? 'Installation Complete' :
-                                        status === 'error' ? 'Installation Failed' :
-                                            `Installing ${pkg.name}`}
+                                {displayStatus}
                             </h2>
                             <p className="text-app-muted text-sm">{pkg.source.toUpperCase()} Repository</p>
                         </div>
@@ -234,10 +239,19 @@ export default function InstallMonitor({ pkg, onClose }: InstallMonitorProps) {
                                 )}
 
                                 <div className="flex justify-between text-sm text-app-muted mb-2">
-                                    <span>Status: {status.toUpperCase()}</span>
+                                    <span>Status: {status === 'running' ? 'Working...' : status.toUpperCase()}</span>
                                     <span>{progress}%</span>
                                 </div>
                                 <div className="w-full bg-app-fg/10 h-2 rounded-full overflow-hidden">
+                                    {/* Progress Steps for AUR */}
+                                    {pkg.source === 'aur' && status === 'running' && (
+                                        <div className="flex justify-between text-[10px] text-app-muted mt-1 px-1">
+                                            <span className={clsx(progress > 10 && "text-blue-500 font-bold")}>Download</span>
+                                            <span className={clsx(progress > 30 && "text-blue-500 font-bold")}>Prepare</span>
+                                            <span className={clsx(progress > 50 && "text-blue-500 font-bold")}>Build</span>
+                                            <span className={clsx(progress > 90 && "text-blue-500 font-bold")}>Install</span>
+                                        </div>
+                                    )}
                                     <div
                                         className={clsx("h-full transition-all duration-300",
                                             status === 'success' ? "bg-green-500" :
@@ -250,16 +264,28 @@ export default function InstallMonitor({ pkg, onClose }: InstallMonitorProps) {
                                 </div>
                             </div>
 
-                            {/* Logs Terminal */}
-                            <div className="flex-1 overflow-auto p-4 font-mono text-xs text-app-muted space-y-1 scrollbar-thin transition-colors">
-                                {logs.map((log, i) => (
-                                    <div key={i} className="break-all whitespace-pre-wrap">
-                                        <span className="text-app-muted opacity-50 mr-2">[{new Date().toLocaleTimeString()}]</span>
-                                        {log}
-                                    </div>
-                                ))}
-                                <div ref={logsEndRef} />
+                            {/* Logs Toggle */}
+                            <div className="flex justify-center mt-4">
+                                <button
+                                    onClick={() => setShowLogs(!showLogs)}
+                                    className="text-xs text-app-muted hover:text-app-fg flex items-center gap-1 transition-colors"
+                                >
+                                    {showLogs ? <ChevronUp size={14} /> : <div className="flex items-center gap-1"><Terminal size={14} /> Show Build Logs</div>}
+                                </button>
                             </div>
+
+                            {/* Logs Terminal */}
+                            {showLogs && (
+                                <div className="flex-1 overflow-auto p-4 font-mono text-xs text-app-muted space-y-1 scrollbar-thin transition-colors bg-black/20 mt-2 rounded-lg border border-white/10 mx-6 mb-4">
+                                    {logs.map((log, i) => (
+                                        <div key={i} className="break-all whitespace-pre-wrap">
+                                            <span className="text-app-muted opacity-50 mr-2">[{new Date().toLocaleTimeString()}]</span>
+                                            {log}
+                                        </div>
+                                    ))}
+                                    <div ref={logsEndRef} />
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

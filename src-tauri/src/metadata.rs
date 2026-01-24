@@ -1,7 +1,8 @@
 use appstream::{enums::Icon, Collection, Component};
+
+// use lazy_static::lazy_static;
+// use regex::Regex;
 use base64::prelude::*;
-use lazy_static::lazy_static;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -9,11 +10,13 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
 
+/*
 lazy_static! {
     static ref RE_URL: Regex = Regex::new(r#"(?s)<url\b([^>]*)>(.*?)</url>"#).unwrap();
     static ref RE_IMG: Regex = Regex::new(r#"(?s)<image\b([^>]*)>(.*?)</image>"#).unwrap();
     static ref RE_ICON: Regex = Regex::new(r#"(?s)<icon\b([^>]*)>(.*?)</icon>"#).unwrap();
 }
+*/
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppMetadata {
@@ -146,8 +149,22 @@ impl AppStreamLoader {
             }
         }
 
+        // 3. Fallback: Check for dash replacement (e.g. "gnome 2048" might match "org.gnome.TwentyFortyEight")
+        // This is hard without the reverse map, but we can check if any key in icon_index ENDS with the package name
+        // Iterate only if we must (slow-ish but cached)
+        // Optimization: Only do this for short names or numbers like "2048"
+        if pkg_name.chars().all(char::is_numeric) || pkg_name == "angband" {
+            for (key, icon) in &self.icon_index {
+                if key.contains(pkg_name) {
+                    return Some(icon.clone());
+                }
+            }
+        }
+
+        // println!("DEBUG: Looking for icon for pkg: '{}'", pkg_name);
         // 3. Search the icons directory for pattern match
         let icons_dir = get_icons_dir();
+        // println!("DEBUG: Checking icons dir: {:?}", icons_dir);
 
         // Helper to check a dir for the icon
         let check_dir = |dir: &PathBuf| -> Option<String> {
@@ -156,7 +173,6 @@ impl AppStreamLoader {
                     let path = entry.path();
                     if let Some(name_os) = path.file_name() {
                         let name = name_os.to_string_lossy();
-                        // Match "firefox.png" or "firefox_*.png"
                         if (name.starts_with(pkg_name)
                             && (name.ends_with(".png") || name.ends_with(".svg")))
                             && (name == format!("{}.png", pkg_name)
@@ -170,11 +186,24 @@ impl AppStreamLoader {
                                     "image/png"
                                 };
                                 let encoded = BASE64_STANDARD.encode(&bytes);
+                                // println!(
+                                //     "DEBUG: Found icon for '{}' at {:?} ({} bytes)",
+                                //     pkg_name,
+                                //     path,
+                                //     bytes.len()
+                                // );
                                 return Some(format!("data:{};base64,{}", mime, encoded));
+                            } else {
+                                // println!(
+                                //     "DEBUG: Failed to read file for '{}' at {:?}",
+                                //     pkg_name, path
+                                // );
                             }
                         }
                     }
                 }
+            } else {
+                // println!("DEBUG: Failed to read_dir {:?}", dir);
             }
             None
         };
@@ -190,6 +219,8 @@ impl AppStreamLoader {
             PathBuf::from("/usr/share/icons/hicolor/128x128/apps"),
             PathBuf::from("/usr/share/icons/hicolor/scalable/apps"),
             PathBuf::from("/usr/share/icons/hicolor/48x48/apps"),
+            PathBuf::from("/usr/share/icons/hicolor/256x256/apps"),
+            PathBuf::from("/usr/share/icons/hicolor/512x512/apps"),
         ];
 
         for path in system_paths {
@@ -274,14 +305,18 @@ impl AppStreamLoader {
                 let filename = path.file_name()?;
                 let local_path = get_icons_dir().join(filename);
 
-                if let Ok(bytes) = std::fs::read(&local_path) {
-                    let mime = if local_path.extension().is_some_and(|e| e == "svg") {
-                        "image/svg+xml"
+                if local_path.exists() {
+                    if let Ok(bytes) = std::fs::read(&local_path) {
+                        let mime = if local_path.extension().is_some_and(|e| e == "svg") {
+                            "image/svg+xml"
+                        } else {
+                            "image/png"
+                        };
+                        let encoded = BASE64_STANDARD.encode(&bytes);
+                        Some(format!("data:{};base64,{}", mime, encoded))
                     } else {
-                        "image/png"
-                    };
-                    let encoded = BASE64_STANDARD.encode(&bytes);
-                    Some(format!("data:{};base64,{}", mime, encoded))
+                        None
+                    }
                 } else if path.is_absolute() && path.exists() {
                     // Fallback: Check if the original path provided by AppStream is absolute and exists on filesystem (Linux system icons)
                     if let Ok(bytes) = std::fs::read(path) {
@@ -306,10 +341,10 @@ impl AppStreamLoader {
 
         if let Some(pkg) = &component.pkgname {
             if pkg.contains("brave") || pkg.contains("spotify") {
-                println!(
-                    "DEBUG: component_to_metadata '{}' -> Icon: {:?}",
-                    pkg, icon_url
-                );
+                // println!(
+                //     "DEBUG: component_to_metadata '{}' -> Icon: {:?}",
+                //     pkg, icon_url
+                // );
             }
         }
 
@@ -368,72 +403,24 @@ impl AppStreamLoader {
 }
 
 pub fn sanitize_xml(content: &str) -> String {
-    // Strip null bytes immediately
+    // 1. Strip null bytes (Essential)
     let mut content = content.replace('\0', "");
 
+    // 2. Fix known Enum variant incompatibilities
+    // "service" and "web-application" are not supported by the old appstream crate we might be using,
+    // or cause issues. Mapping them to "console-application" (generic) is safe.
     content = content
         .replace("type=\"service\"", "type=\"console-application\"")
         .replace("type=\"web-application\"", "type=\"console-application\"");
 
-    // Helper closure to sanitize URL content inside tags
-    let sanitize_tag = |caps: &regex::Captures, is_url_tag: bool| -> String {
-        let attrs = &caps[1];
-        let raw_content = &caps[2];
-        let url_content = raw_content.trim();
+    // 3. Fix &amp; entities double encoding if present (common issue)
+    // content = content.replace("&amp;amp;", "&amp;");
 
-        if url_content.is_empty() {
-            return String::new();
-        }
-
-        if url_content.contains('<') || url_content.contains('>') {
-            return String::new();
-        }
-
-        if !url_content.contains("://") && !url_content.starts_with("mailto:") {
-            // For <icon> tags, we only check if it is remote type or looks relative
-            if !is_url_tag {
-                if attrs.contains(r#"type="remote""#) || !url_content.contains("://") {
-                    return format!("<icon{}>https://{}</icon>", attrs, url_content);
-                }
-                return caps[0].to_string();
-            }
-
-            // For <url> and <image> tags, always ensure protocol
-            let tag_name = if is_url_tag { "url" } else { "image" };
-            format!(
-                "<{}{}>https://{}</{}>",
-                tag_name, attrs, url_content, tag_name
-            )
-        } else {
-            caps[0].to_string()
-        }
-    };
-
-    content = RE_URL
-        .replace_all(&content, |caps: &regex::Captures| sanitize_tag(caps, true))
-        .to_string();
-    content = RE_IMG
-        .replace_all(&content, |caps: &regex::Captures| sanitize_tag(caps, false))
-        .to_string(); // treat image like url for proto check
-
-    // Icon has special logic in original code, but effectively it was just ensuring https:// for remote/relative icons
-    content = RE_ICON
-        .replace_all(&content, |caps: &regex::Captures| {
-            let attrs = &caps[1];
-            let url_content = &caps[2];
-            let url_trimmed = url_content.trim();
-
-            if attrs.contains(r#"type="remote""#) {
-                if !url_trimmed.contains("://") {
-                    format!("<icon{}>https://{}</icon>", attrs, url_trimmed)
-                } else {
-                    caps[0].to_string()
-                }
-            } else {
-                caps[0].to_string()
-            }
-        })
-        .to_string();
+    // NOTE: We disabled the aggressive Regex sanitization for URLs/Icons because
+    // it was causing "Unexpected end of stream" errors on the 25MB+ XML file,
+    // likely due to regex buffer limits or accidental tag stripping.
+    // The AppStream parser is reasonably robust, so we accept a few malformed URLs
+    // in exchange for successfully loading the cache.
 
     content
 }
@@ -570,7 +557,22 @@ impl MetadataState {
                     loader.set_collection(col);
                 }
                 Err(e) => {
-                    println!("Failed to parse downloaded AppStream data: {}", e);
+                    println!(
+                        "Failed to parse AppStream data: {}. Deleting corrupted cache...",
+                        e
+                    );
+                    let _ = std::fs::remove_file(&path);
+
+                    // Optional: Retry immediately once
+                    println!("Retrying download...");
+                    if let Ok(new_path) = download_and_cache_appstream(0, &cache_dir).await {
+                        // 0 interval forces check/download
+                        if let Ok(col) = Collection::from_path(new_path) {
+                            println!("Retry successful!");
+                            let mut loader = self.0.lock().unwrap();
+                            loader.set_collection(col);
+                        }
+                    }
                 }
             },
             Err(e) => {
@@ -679,11 +681,11 @@ pub async fn get_metadata_batch(
         }
     }
 
-    println!(
-        "DEBUG: Backend Batch returning {} items. Keys: {:?}",
-        results.len(),
-        results.keys()
-    );
+    // println!(
+    //     "DEBUG: Backend Batch returning {} items. Keys: {:?}",
+    //     results.len(),
+    //     results.keys()
+    // );
 
     Ok(results)
 }
@@ -866,17 +868,9 @@ pub async fn check_system_health() -> Result<Vec<HealthIssue>, String> {
     Ok(issues)
 }
 
-#[tauri::command]
-pub fn get_apps_by_category(state: State<MetadataState>, category: String) -> Vec<AppMetadata> {
-    let loader = state.0.lock().unwrap();
-    loader.get_apps_by_category(&category)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::flathub_api::FlathubApiClient;
-    use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_brave_lookup_debug() {
@@ -895,53 +889,5 @@ mod tests {
         } else {
             println!("Brave-bin Meta: None");
         }
-    }
-    fn test_parse_extra_v3() {
-        let path = PathBuf::from("extra_v5.xml");
-        if !path.exists() {
-            println!("extra_v5.xml not found, skipping test");
-            return;
-        }
-
-        let content = std::fs::read_to_string(&path).unwrap();
-
-        // Extract all components manually
-        let re = regex::Regex::new(r#"(?s)<component\b.*?</component>"#).unwrap();
-        let components: Vec<_> = re.find_iter(&content).map(|m| m.as_str()).collect();
-
-        println!(
-            "Found {} components. Testing individually...",
-            components.len()
-        );
-
-        // Header for wrapping
-        let header = r#"<?xml version="1.0" encoding="utf-8"?>
-<components version="1.0" origin="archlinux-arch-extra">
-"#;
-        let footer = "</components>";
-
-        for (i, comp_str) in components.iter().enumerate() {
-            let wrapped = format!("{}{}{}", header, comp_str, footer);
-            // Create a temp file for this component
-            let temp_path = std::env::temp_dir().join(format!("temp_comp_{}.xml", i));
-            std::fs::write(&temp_path, wrapped).unwrap();
-
-            match Collection::from_path(temp_path.clone()) {
-                Ok(_) => {
-                    // Success
-                }
-                Err(e) => {
-                    println!("Failed to parse component {}!", i);
-                    println!("Error: {}", e);
-                    // Print the first few lines of the component to identify it
-                    let lines: Vec<&str> = comp_str.lines().take(5).collect();
-                    println!("Component Content (Snipped):\n{}", lines.join("\n"));
-                    std::fs::remove_file(temp_path).unwrap();
-                    panic!("Found the validator!");
-                }
-            }
-            std::fs::remove_file(temp_path).unwrap();
-        }
-        println!("All components parsed successfully individually!");
     }
 }

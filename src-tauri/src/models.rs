@@ -37,6 +37,7 @@ pub struct Package {
     pub screenshots: Option<Vec<String>>,
     pub provides: Option<Vec<String>>,
     pub app_id: Option<String>,
+    pub is_optimized: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

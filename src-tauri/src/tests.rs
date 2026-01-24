@@ -24,6 +24,7 @@ mod tests {
             screenshots: None,
             provides: None,
             app_id: app_id.map(|s| s.to_string()),
+            is_optimized: None,
         }
     }
 

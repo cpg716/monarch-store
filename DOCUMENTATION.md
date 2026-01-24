@@ -16,12 +16,14 @@ MonARCH Store uses a **"Soft Disable"** architecture to balance User Experience 
 
 ## Key Features & Logic
 
-### 1. Unified Search
-When you search for "firefox", MonARCH aggregates results from:
-1.  **Chaotic-AUR** (Priority #1): Pre-built binary. Fastest install.
-2.  **Official Repos** (Priority #2): Standard Arch package.
-3.  **AppStream** (Priority #3): Metadata-rich results (icons/screenshots).
-4.  **AUR** (Priority #4): Source build (fallback).
+### 1. Unified Search (Chaotic-First)
+When you search for "firefox", MonARCH aggregates results from all enabled sources but prioritizes instant binaries:
+1.  **Hardware Optimized** (Priority #0): `cachyos-v3` / `v4` (if CPU supported).
+2.  **Chaotic-AUR** (Priority #1): Pre-built binary. Fastest install.
+3.  **Official Repos** (Priority #2): Standard Arch package.
+4.  **AUR** (Priority #3): Source build (fallback).
+
+*Users can manually override this choice using the "Download Source" dropdown in the package details.*
 
 ### 2. Update Consistency
 We strictly enforce **"Update All"** via `perform_system_update`.
@@ -33,6 +35,13 @@ We use a composite rating strategy:
 *   **Step 1:** Check **ODRS** (Open Desktop Rating Service).
 *   **Step 2:** Fallback to **Supabase** community reviews.
 *   **Display:** Merged 5-star rating.
+
+### 4. Self-Healing System (System Health)
+MonARCH includes a "System Health" database that automatically detects and offers fixes for common Arch Linux issues:
+*   **Stuck Updates**: Detects `db.lck` and offers a one-click unlock.
+*   **Keyring Issues**: Resets GPG keys if signatures fail.
+*   **Hero Warnings**: If a critical issue is detected, a clickable Red Banner appears on the home screen that takes you directly to the fix.
+*   **Device Care**: Includes tools to safely clean orphans and cache (migrated from Settings).
 
 ## 🛠️ Build & Release
 

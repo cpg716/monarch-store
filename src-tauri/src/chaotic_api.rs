@@ -215,34 +215,6 @@ impl ChaoticApiClient {
         Ok(arc_packages)
     }
 
-    pub async fn get_repo_counts(&self) -> Result<InfraStats, String> {
-        let url = format!("{}/infra", BASE_URL);
-
-        // Return cache if fresh
-        if let Some(stats) = self.infra_cache.get("infra_stats").await {
-            return Ok(stats);
-        }
-
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !resp.status().is_success() {
-            return Err(format!("Failed to fetch infra stats: {}", resp.status()));
-        }
-
-        let stats: InfraStats = resp.json().await.map_err(|e| e.to_string())?;
-
-        self.infra_cache
-            .insert("infra_stats".to_string(), stats.clone())
-            .await;
-
-        Ok(stats)
-    }
-
     pub async fn clear_cache(&self) {
         self.package_cache.invalidate_all();
         self.trending_cache.invalidate_all();

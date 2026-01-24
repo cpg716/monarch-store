@@ -9,6 +9,14 @@
     "core:default",
     "opener:default",
     "app-commands",
-    "notification:default"
+    "notification:default",
+    {
+      "identifier": "fs:allow-read",
+      "allow": [
+        {
+          "path": "$CACHE/monarch-store/**"
+        }
+      ]
+    }
   ]
 }

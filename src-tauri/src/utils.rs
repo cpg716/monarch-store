@@ -219,6 +219,7 @@ mod tests {
             screenshots: None,
             provides: None,
             app_id: None,
+            is_optimized: None,
         }
     }
 

@@ -91,6 +91,7 @@ fn aur_to_package(p: AurPackage) -> Package {
         screenshots: None,
         provides: None,
         app_id: None,
+        is_optimized: None,
     }
 }
 

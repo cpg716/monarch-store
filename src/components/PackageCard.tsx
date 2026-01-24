@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Download, Package as PackageIcon, ShieldCheck, Zap, Heart } from 'lucide-react';
+import { Download, ShieldCheck, Zap, Heart } from 'lucide-react';
 import { useFavorites } from '../hooks/useFavorites';
 import { clsx } from 'clsx';
+// import { invoke } from '@tauri-apps/api/core';
 import { invoke } from '@tauri-apps/api/core';
+import { resolveIconUrl } from '../utils/iconHelper';
 
 export interface Package {
     name: string;
@@ -22,6 +24,7 @@ export interface Package {
     icon?: string;
     app_id?: string;
     screenshots?: string[];
+    is_optimized?: boolean;
 }
 
 interface PackageCardProps {
@@ -45,14 +48,17 @@ import { usePackageRating } from '../hooks/useRatings';
 
 import { usePackageMetadata } from '../hooks/usePackageMetadata';
 
+import archLogo from '../assets/arch-logo.png';
+
 const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFetch = false, chaoticInfo: initialChaoticInfo }) => {
+    // ... (rest of component setup remains same until return) ...
     const isChaotic = pkg.source === 'chaotic';
-    const isOfficial = pkg.source === 'official';
     const [chaoticInfo, setChaoticInfo] = useState<ChaoticPackage | null>(initialChaoticInfo || null);
 
     // Global Data Optimization (Source of Truth)
     const { metadata } = usePackageMetadata(pkg.name, pkg.url, skipMetadataFetch);
-    const iconUrl = pkg.icon || metadata?.icon_url || null;
+    const rawIcon = pkg.icon || metadata?.icon_url || null;
+    const iconUrl = resolveIconUrl(rawIcon);
 
     // Unified Rating System (Source of Truth)
     const { rating } = usePackageRating(pkg.name, pkg.app_id || metadata?.app_id);
@@ -70,6 +76,13 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
     }, [pkg.name, isChaotic, initialChaoticInfo]);
 
 
+    const [imgError, setImgError] = useState(false);
+
+    // Reset error state when icon changes
+    useEffect(() => {
+        setImgError(false);
+    }, [iconUrl]);
+
     return (
         <div
             onClick={() => onClick(pkg)}
@@ -79,14 +92,18 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                     <div className={clsx(
                         "w-10 h-10 rounded-lg flex items-center justify-center text-app-fg shadow-lg shrink-0 overflow-hidden relative transition-colors",
-                        !iconUrl && isChaotic ? "bg-gradient-to-br from-purple-600/80 to-blue-600/80" :
-                            !iconUrl && isOfficial ? "bg-gradient-to-br from-emerald-500/80 to-teal-600/80" :
-                                !iconUrl ? "bg-app-bg/50" : "bg-transparent"
+                        (!iconUrl || imgError) ? "bg-app-fg/5 border border-app-border/50 p-2" : "bg-transparent"
                     )}>
-                        {iconUrl ? (
-                            <img src={iconUrl || undefined} alt={pkg.name} className="w-full h-full object-contain p-1" loading="lazy" />
+                        {iconUrl && !imgError ? (
+                            <img
+                                src={iconUrl}
+                                alt={pkg.name}
+                                className="w-full h-full object-contain p-1"
+                                loading="lazy"
+                                onError={() => setImgError(true)}
+                            />
                         ) : (
-                            isChaotic ? <Zap size={20} fill="currentColor" className="text-yellow-400" /> : <PackageIcon size={20} className="text-app-muted" />
+                            <img src={archLogo} className="w-full h-full object-contain opacity-80 grayscale group-hover:grayscale-0 transition-all" alt="Arch Linux" />
                         )}
                     </div>
                     <div className="flex-1 min-w-0">
@@ -114,6 +131,11 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
                     {isChaotic && (
                         <div className="px-2 py-0.5 rounded-full bg-violet-600/20 border border-violet-600/40 text-violet-600 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 shrink-0 whitespace-nowrap">
                             <ShieldCheck size={10} /> Chaotic
+                        </div>
+                    )}
+                    {pkg.is_optimized && (
+                        <div className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-500 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 shrink-0 whitespace-nowrap shadow-[0_0_10px_rgba(245,158,11,0.2)] animate-pulse">
+                            <Zap size={10} fill="currentColor" /> Optimized
                         </div>
                     )}
                     <div className="flex items-center gap-2">

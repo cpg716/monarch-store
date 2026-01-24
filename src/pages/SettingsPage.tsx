@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
-    CheckCircle2, Zap, Globe, Palette, Info,
-    Trash2, ShieldCheck, Activity, Package, ArrowUp, ArrowDown, RefreshCw, Lock, Clock, ChevronDown, Sparkles
+    CheckCircle2, Palette, Info,
+    ShieldCheck, Package, ArrowUp, ArrowDown, RefreshCw, Lock, Clock, ChevronDown, Sparkles
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
@@ -9,7 +9,7 @@ import { clsx } from 'clsx';
 import { motion } from 'framer-motion';
 
 import { useTheme } from '../hooks/useTheme';
-import { useToast } from '../context/ToastContext';
+// import { useToast } from '../context/ToastContext';
 
 interface SettingsPageProps {
     onRestartOnboarding?: () => void;
@@ -19,7 +19,7 @@ import { useSettings } from '../hooks/useSettings';
 
 export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps) {
     const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
-    const { success, error } = useToast();
+    // const { success, error } = useToast();
 
     // Centralized Logic
     const {
@@ -27,11 +27,9 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
         syncIntervalHours, updateSyncInterval,
         isAurEnabled, toggleAur,
         repos, toggleRepo, reorderRepos,
-        isSyncing, triggerManualSync, repoCounts,
-        refresh
+        isSyncing, triggerManualSync, repoCounts
     } = useSettings();
 
-    const [isOptimizing, setIsOptimizing] = useState(false);
     const [pkgVersion, setPkgVersion] = useState("0.0.0");
     const [systemInfo, setSystemInfo] = useState<{ kernel: string, de: string, distro: string, has_avx2: boolean } | null>(null);
 
@@ -49,35 +47,6 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
             [newRepos[index], newRepos[index + 1]] = [newRepos[index + 1], newRepos[index]];
         }
         reorderRepos(newRepos);
-    };
-
-    const handleOptimize = async () => {
-        setIsOptimizing(true);
-        try {
-            const result = await invoke<string>('optimize_system');
-            success(result);
-        } catch (e) {
-            error(`Optimization failed: ${e}`);
-        } finally {
-            setIsOptimizing(false);
-        }
-    };
-
-    const handleClearCache = async () => {
-        if (!confirm("Are you sure you want to wipe all application caches? This will resolve metadata issues but may require re-downloading some data.")) {
-            return;
-        }
-
-        setIsOptimizing(true);
-        try {
-            const result = await invoke<string>('clear_cache');
-            success(result);
-            refresh();
-        } catch (e) {
-            error(`Cache wipe failed: ${e}`);
-        } finally {
-            setIsOptimizing(false);
-        }
     };
 
 
@@ -112,109 +81,9 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
             </div>
 
             <div className="flex-1 overflow-y-auto p-8 space-y-12">
-                {/* System Health Dashboard */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {/* 1. Global Connectivity */}
-                    <div className="relative group">
-                        <div className="absolute inset-0 bg-gradient-to-br from-green-500/20 to-emerald-500/5 blur-xl group-hover:blur-2xl transition-all duration-500 opacity-50" />
-                        <div className="relative bg-app-card/40 backdrop-blur-xl border border-green-500/30 rounded-3xl p-6 shadow-2xl overflow-hidden transition-all group-hover:-translate-y-1 h-full">
-                            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-125 transition-transform duration-700 pointer-events-none">
-                                <Globe size={64} className="text-emerald-700" />
-                            </div>
-                            <div className="flex items-center gap-3 mb-4">
-                                <div className="p-2 bg-green-500/20 rounded-xl">
-                                    <Zap size={24} className="text-emerald-700 animate-pulse" />
-                                </div>
-                                <div>
-                                    <h3 className="font-bold text-app-fg text-lg leading-tight">Connectivity</h3>
-                                    <p className="text-[10px] text-app-muted uppercase tracking-widest font-extrabold">Service Status</p>
-                                </div>
-                            </div>
-                            <div className="space-y-4">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-app-fg/80 font-medium">Chaotic-AUR</span>
-                                    <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-700">
-                                        <span className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)]" />
-                                        ONLINE
-                                    </span>
-                                </div>
-                                <div className="h-1.5 w-full bg-app-subtle rounded-full overflow-hidden">
-                                    <div className="h-full bg-green-500 w-[95%] shadow-[0_0_10px_rgba(34,197,94,0.4)]" />
-                                </div>
-                                <p className="text-[11px] text-app-muted font-medium opacity-80">Latency: 45ms • 14 Active Mirrors</p>
-                            </div>
-                        </div>
-                    </div>
+                {/* Dashboard removed - Moved to System Health page */}
+                <div className="flex-1 overflow-y-auto p-8 space-y-12">
 
-                    {/* 2. Repository Sync Pipeline */}
-                    <div className="relative group">
-                        <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 to-cyan-500/5 blur-xl group-hover:blur-2xl transition-all duration-500 opacity-50" />
-                        <div className="relative bg-app-card/40 backdrop-blur-xl border border-blue-500/30 rounded-3xl p-6 shadow-2xl overflow-hidden transition-all group-hover:-translate-y-1 h-full">
-                            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-125 transition-transform duration-700 pointer-events-none">
-                                <RefreshCw size={64} className="text-blue-700" />
-                            </div>
-                            <div className="flex items-center gap-3 mb-4">
-                                <div className="p-2 bg-blue-500/20 rounded-xl text-blue-700">
-                                    <Package size={24} className={clsx(isSyncing && "animate-spin")} />
-                                </div>
-                                <div>
-                                    <h3 className="font-bold text-app-fg text-lg leading-tight">Sync Pipeline</h3>
-                                    <p className="text-[10px] text-app-muted uppercase tracking-widest font-extrabold">Data Refresh</p>
-                                </div>
-                            </div>
-                            <div className="space-y-4">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-app-fg/80 font-medium">Catalogs</span>
-                                    <span className="text-xs font-bold text-app-fg">{Object.values(repoCounts).reduce((a, b) => a + b, 0).toLocaleString()} Pkgs</span>
-                                </div>
-                                <div className="h-1.5 w-full bg-app-subtle rounded-full overflow-hidden">
-                                    <div className={clsx(
-                                        "h-full bg-blue-500 transition-all duration-1000",
-                                        isSyncing ? "w-[100%] animate-pulse" : "w-[65%]"
-                                    )} />
-                                </div>
-                                <p className="text-[11px] text-app-muted font-medium opacity-80">{isSyncing ? "Syncing catalogs..." : "Last checked: Just now"}</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* 3. System Integrity */}
-                    <div className="relative group">
-                        <div className="absolute inset-0 bg-gradient-to-br from-purple-500/20 to-pink-500/5 blur-xl group-hover:blur-2xl transition-all duration-500 opacity-50" />
-                        <div className="relative bg-app-card/40 backdrop-blur-xl border border-purple-500/30 rounded-3xl p-6 shadow-2xl overflow-hidden transition-all group-hover:-translate-y-1 h-full">
-                            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-125 transition-transform duration-700 pointer-events-none">
-                                <ShieldCheck size={64} className="text-purple-700" />
-                            </div>
-                            <div className="flex items-center gap-3 mb-4">
-                                <div className="p-2 bg-purple-500/20 rounded-xl text-purple-700">
-                                    <Activity size={24} className={clsx(isOptimizing && "animate-bounce")} />
-                                </div>
-                                <div>
-                                    <h3 className="font-bold text-app-fg text-lg leading-tight">Integrity</h3>
-                                    <p className="text-[10px] text-app-muted uppercase tracking-widest font-extrabold">Optimization</p>
-                                </div>
-                            </div>
-                            <div className="space-y-4">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-app-fg/80 font-medium">Local Health</span>
-                                    <span className="text-xs font-bold text-emerald-700">EXCELLENT</span>
-                                </div>
-                                <div className="h-1.5 w-full bg-app-subtle rounded-full overflow-hidden text-purple-700 font-bold">
-                                    <div className="h-full bg-current w-full" />
-                                </div>
-                                <button
-                                    onClick={handleOptimize}
-                                    className="text-[11px] text-purple-700 font-bold hover:text-purple-600 transition-colors uppercase tracking-tight"
-                                >
-                                    {isOptimizing ? "Optimizing..." : "Run Optimization"}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Main Content Sections */}
-                <div className="space-y-12">
                     {/* Sync Control */}
                     <section>
                         <h2 className="text-xl font-bold mb-4 flex items-center gap-3 text-app-fg">
@@ -326,7 +195,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                         onClick={async () => {
                                             if (repo.enabled) {
                                                 // Prevent accidental breakage
-                                                setIsOptimizing(true); // Show busy state if needed, or just block UI
+                                                // setIsOptimizing(true); // Show busy state if needed, or just block UI
                                                 try {
                                                     const installed = await invoke<{ name: string, repository: string }[]>('get_installed_packages');
                                                     const affected = installed.filter(p => p.repository === repo.name);
@@ -336,14 +205,13 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                                         const more = affected.length > 3 ? ` and ${affected.length - 3} others` : '';
 
                                                         if (!confirm(`⚠️ CRITICAL WARNING:\n\nYou have ${affected.length} apps installed from "${repo.name}" (including ${names}${more}).\n\nIf you disable this repository, these apps will STOP UPDATING and might break.\n\nAre you absolutely sure?`)) {
-                                                            setIsOptimizing(false);
                                                             return;
                                                         }
                                                     }
                                                 } catch (e) {
                                                     console.error("Failed to check dependencies", e);
                                                 } finally {
-                                                    setIsOptimizing(false);
+                                                    // setIsOptimizing(false);
                                                 }
                                                 toggleRepo(repo.id);
                                             } else {
@@ -469,98 +337,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                             </div>
                         </section>
 
-                        {/* Maintenance */}
-                        <section>
-                            <h2 className="text-xl font-bold text-app-fg mb-4 flex items-center gap-3">
-                                <Trash2 size={22} className="text-app-muted" /> System Maintenance
-                            </h2>
-                            <div className="bg-app-card/30 border border-app-border/50 rounded-3xl p-8 h-full space-y-6">
-                                {/* Repair Config */}
-                                <div className="flex items-center justify-between pb-6 border-b border-app-border/30">
-                                    <div className="max-w-[60%]">
-                                        <h3 className="text-base font-bold text-app-fg text-red-400">System Repair</h3>
-                                        <p className="text-xs text-app-muted mt-1 leading-relaxed">
-                                            Reset <code className="bg-app-subtle px-1 rounded">/etc/pacman.conf</code> to defaults. Use this if official repositories stop working.
-                                        </p>
-                                    </div>
-                                    <button
-                                        onClick={async () => {
-                                            if (confirm("DANGER: This will reset /etc/pacman.conf to defaults and wipe all custom repo configs. You will need to re-enable them. Continue?")) {
-                                                setIsOptimizing(true);
-                                                try {
-                                                    await invoke('reset_pacman_conf');
-                                                    success("System config reset to defaults.");
-                                                    // Trigger a sync after reset
-                                                    await invoke('trigger_repo_sync');
-                                                } catch (e) {
-                                                    error(`Reset failed: ${e}`);
-                                                } finally {
-                                                    setIsOptimizing(false);
-                                                }
-                                            }
-                                        }}
-                                        disabled={isOptimizing}
-                                        className="h-9 px-4 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 font-bold text-xs transition-all"
-                                    >
-                                        Repair Config
-                                    </button>
-                                </div>
-                                {/* Disk Cleanup */}
-                                <div className="flex items-center justify-between">
-                                    <div className="max-w-[60%]">
-                                        <h3 className="text-base font-bold text-app-fg">Disk Cleanup</h3>
-                                        <p className="text-xs text-app-muted mt-1 leading-relaxed">Clear old package caches, temporary files, and build artifacts to free disk space.</p>
-                                    </div>
-                                    <button
-                                        onClick={handleClearCache}
-                                        disabled={isOptimizing}
-                                        className={clsx(
-                                            "px-5 py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-700 rounded-2xl text-xs font-black transition-all border border-red-500/30 active:scale-95 flex items-center gap-2",
-                                            isOptimizing && "opacity-50 cursor-not-allowed"
-                                        )}
-                                    >
-                                        <Trash2 size={16} /> WIPE CACHE
-                                    </button>
-                                </div>
 
-                                {/* Orphan Cleanup */}
-                                <div className="flex items-center justify-between border-t border-app-border/30 pt-6">
-                                    <div className="max-w-[60%]">
-                                        <h3 className="text-base font-bold text-app-fg">Orphan Packages</h3>
-                                        <p className="text-xs text-app-muted mt-1 leading-relaxed">Remove unused dependencies that are no longer required by any installed package.</p>
-                                    </div>
-                                    <button
-                                        onClick={async () => {
-                                            if (confirm("Scan for and remove unused orphan packages? This requires authentication.")) {
-                                                setIsOptimizing(true);
-                                                try {
-                                                    const orphans = await invoke<string[]>('get_orphans');
-                                                    if (orphans.length === 0) {
-                                                        success("No orphan packages found. Your system is clean.");
-                                                    } else {
-                                                        if (confirm(`Found ${orphans.length} orphans:\n${orphans.slice(0, 5).join(', ')}${orphans.length > 5 ? '...' : ''}\n\nRemove them?`)) {
-                                                            await invoke('remove_orphans', { orphans });
-                                                            success(`Successfully removed ${orphans.length} packages.`);
-                                                        }
-                                                    }
-                                                } catch (e) {
-                                                    error(`Failed: ${e}`);
-                                                } finally {
-                                                    setIsOptimizing(false);
-                                                }
-                                            }
-                                        }}
-                                        disabled={isOptimizing}
-                                        className={clsx(
-                                            "px-5 py-2.5 bg-app-subtle hover:bg-app-hover text-app-fg rounded-2xl text-xs font-black transition-all border border-app-border/50 active:scale-95 flex items-center gap-2",
-                                            isOptimizing && "opacity-50 cursor-not-allowed"
-                                        )}
-                                    >
-                                        <Package size={16} /> CLEAN ORPHANS
-                                    </button>
-                                </div>
-                            </div>
-                        </section>
                     </div>
 
                     {/* Appearance */}

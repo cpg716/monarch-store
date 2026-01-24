@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Check, Zap, Package, Layers, Globe } from 'lucide-react';
+import { ChevronDown, Check, Zap, Globe, ShieldCheck, Hammer, Server } from 'lucide-react';
 import { clsx } from 'clsx';
 
 interface RepoVariant {
     source: string;
     version: string;
+    repo_name?: string;
 }
 
 interface RepoSelectorProps {
@@ -18,7 +19,6 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
 
-    // Close on click outside
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
             if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -31,28 +31,37 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
 
     const selectedVariant = variants.find(v => v.source === selectedSource);
 
-    const getIcon = (source: string) => {
+    const getSourceInfo = (variant?: RepoVariant) => {
+        if (!variant) return { label: 'Select Source', icon: Globe, color: 'text-app-muted', bg: 'bg-app-card' };
+
+        const { source, repo_name } = variant;
+        const isOptimized = repo_name?.includes('v3') || repo_name?.includes('v4') || repo_name?.includes('znver4');
+
         switch (source) {
-            case 'chaotic': return <Zap size={14} className="text-yellow-500" />;
-            case 'official': return <Package size={14} className="text-blue-500" />;
-            case 'aur': return <Layers size={14} className="text-purple-500" />;
-            case 'cachyos': return <Zap size={14} className="text-green-500" />;
-            default: return <Globe size={14} className="text-app-muted" />;
+            case 'chaotic':
+                return { label: 'Instant Download (Recommended)', badge: 'INSTANT', icon: ShieldCheck, color: 'text-green-500', bg: 'bg-green-500/10 border-green-500/20' };
+            case 'cachyos':
+                if (isOptimized) {
+                    return { label: 'CPU Optimized', badge: 'OPTIMIZED', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
+                }
+                return { label: 'CachyOS Repo', badge: 'CACHYOS', icon: Zap, color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/20' };
+            case 'manjaro':
+                return { label: 'Manjaro Stable', badge: 'MANJARO', icon: ShieldCheck, color: 'text-teal-500', bg: 'bg-teal-500/10 border-teal-500/20' };
+            case 'garuda':
+                return { label: 'Garuda Extras', badge: 'GARUDA', icon: Zap, color: 'text-orange-500', bg: 'bg-orange-500/10 border-orange-500/20' };
+            case 'endeavour':
+                return { label: 'EndeavourOS', badge: 'ENDEAVOUR', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
+            case 'official':
+                return { label: 'Official Arch', badge: 'OFFICIAL', icon: Server, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/20' };
+            case 'aur':
+                return { label: 'Build from Source', badge: 'SOURCE', icon: Hammer, color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/20' };
+            default:
+                return { label: source, badge: source.toUpperCase(), icon: Server, color: 'text-app-muted', bg: 'bg-app-subtle border-app-border' };
         }
     };
 
-    const getLabel = (source: string) => {
-        const labels: Record<string, string> = {
-            'chaotic': 'Chaotic-AUR (Prebuilt)',
-            'official': 'Official Repository',
-            'aur': 'AUR (Source Code)',
-            'cachyos': 'CachyOS Optimized',
-            'garuda': 'Garuda Linux',
-            'endeavour': 'EndeavourOS',
-            'manjaro': 'Manjaro Stable'
-        };
-        return labels[source] || source.charAt(0).toUpperCase() + source.slice(1);
-    };
+    const info = getSourceInfo(selectedVariant);
+    const Icon = info.icon;
 
     return (
         <div className="relative w-full" ref={containerRef}>
@@ -60,20 +69,21 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                 onClick={() => setIsOpen(!isOpen)}
                 className={clsx(
                     "w-full flex items-center justify-between px-4 py-3 rounded-xl border transition-all text-left",
-                    isOpen
-                        ? "bg-app-card border-blue-500/50 ring-2 ring-blue-500/10"
-                        : "bg-app-card/50 border-app-border hover:bg-app-card hover:border-app-fg/20"
+                    info.bg,
+                    isOpen ? "ring-2 ring-blue-500/10" : "hover:brightness-105"
                 )}
             >
                 <div className="flex items-center gap-3">
-                    {selectedVariant && getIcon(selectedVariant.source)}
+                    <Icon size={18} className={info.color} />
                     <div className="flex flex-col leading-none">
-                        <span className="text-sm font-bold text-app-fg">
-                            {selectedVariant ? getLabel(selectedVariant.source) : 'Select Source'}
-                        </span>
+                        <div className="flex items-center gap-2">
+                            <span className={clsx("text-sm font-bold", info.color)}>
+                                {info.label}
+                            </span>
+                        </div>
                         {selectedVariant && (
-                            <span className="text-[10px] text-app-muted font-mono mt-1">
-                                v{selectedVariant.version}
+                            <span className="text-[10px] text-app-muted font-mono mt-1 opacity-70">
+                                {info.badge} • v{selectedVariant.version}
                             </span>
                         )}
                     </div>
@@ -82,7 +92,7 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                     animate={{ rotate: isOpen ? 180 : 0 }}
                     transition={{ duration: 0.2 }}
                 >
-                    <ChevronDown size={16} className="text-app-muted" />
+                    <ChevronDown size={16} className={clsx("opacity-50", info.color)} />
                 </motion.div>
             </button>
 
@@ -96,38 +106,37 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                         className="absolute top-full left-0 right-0 mt-2 p-1 bg-app-card border border-app-border rounded-xl shadow-xl z-50 overflow-hidden"
                     >
                         <div className="flex flex-col gap-1 max-h-[300px] overflow-y-auto custom-scrollbar">
-                            {variants.map(v => (
-                                <button
-                                    key={v.source}
-                                    onClick={() => {
-                                        onChange(v.source);
-                                        setIsOpen(false);
-                                    }}
-                                    className={clsx(
-                                        "flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors group",
-                                        selectedSource === v.source
-                                            ? "bg-blue-500/10 text-blue-500"
-                                            : "hover:bg-app-fg/5 text-app-fg"
-                                    )}
-                                >
-                                    <div className="flex items-center gap-3">
-                                        <div className="opacity-70 group-hover:opacity-100 transition-opacity">
-                                            {getIcon(v.source)}
+                            {variants.map(v => {
+                                const vInfo = getSourceInfo(v);
+                                const VIcon = vInfo.icon;
+                                const isSelected = selectedSource === v.source;
+                                return (
+                                    <button
+                                        key={`${v.source}-${v.version}`}
+                                        onClick={() => {
+                                            onChange(v.source);
+                                            setIsOpen(false);
+                                        }}
+                                        className={clsx(
+                                            "flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors group",
+                                            isSelected ? "bg-app-accent/10" : "hover:bg-app-fg/5"
+                                        )}
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <VIcon size={16} className={vInfo.color} />
+                                            <div className="flex flex-col items-start leading-none">
+                                                <span className={clsx("text-sm font-medium", isSelected ? "text-app-fg" : "text-app-muted")}>
+                                                    {vInfo.label}
+                                                </span>
+                                                <span className="text-[10px] text-app-muted font-mono mt-1 opacity-60">
+                                                    {vInfo.badge} • v{v.version}
+                                                </span>
+                                            </div>
                                         </div>
-                                        <div className="flex flex-col items-start leading-none">
-                                            <span className={clsx("text-sm font-medium", selectedSource === v.source && "font-bold")}>
-                                                {getLabel(v.source)}
-                                            </span>
-                                            <span className="text-[10px] text-app-muted font-mono mt-1 group-hover:text-app-fg/70 transition-colors">
-                                                v{v.version}
-                                            </span>
-                                        </div>
-                                    </div>
-                                    {selectedSource === v.source && (
-                                        <Check size={14} className="text-blue-500" />
-                                    )}
-                                </button>
-                            ))}
+                                        {isSelected && <Check size={14} className="text-app-accent" />}
+                                    </button>
+                                );
+                            })}
                         </div>
                     </motion.div>
                 )}

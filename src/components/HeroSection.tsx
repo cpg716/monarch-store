@@ -12,7 +12,7 @@ interface HealthIssue {
     action_command?: string;
 }
 
-export default function HeroSection() {
+export default function HeroSection({ onNavigateToFix }: { onNavigateToFix?: () => void }) {
     const [issues, setIssues] = useState<HealthIssue[]>([]);
     const [dismissed, setDismissed] = useState(false);
     const [fixing, setFixing] = useState<string | null>(null);
@@ -52,10 +52,16 @@ export default function HeroSection() {
                         initial={{ opacity: 0, height: 0 }}
                         animate={{ opacity: 1, height: 'auto' }}
                         exit={{ opacity: 0, height: 0 }}
-                        className="bg-red-500/10 border border-red-500/20 rounded-3xl p-6 relative overflow-hidden"
+                        className="bg-red-500/10 border border-red-500/20 rounded-3xl p-6 relative overflow-hidden cursor-pointer hover:bg-red-500/15 transition-colors"
+                        onClick={() => {
+                            if (onNavigateToFix) onNavigateToFix();
+                        }}
                     >
                         <div className="absolute top-4 right-4 focus:outline-none">
-                            <button onClick={() => setDismissed(true)} className="p-1 rounded-full hover:bg-red-500/10 text-red-500/50 hover:text-red-500 transition-colors">
+                            <button onClick={(e) => {
+                                e.stopPropagation();
+                                setDismissed(true);
+                            }} className="p-1 rounded-full hover:bg-red-500/10 text-red-500/50 hover:text-red-500 transition-colors">
                                 <X size={16} />
                             </button>
                         </div>

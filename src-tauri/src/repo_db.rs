@@ -299,6 +299,7 @@ fn parse_desc(content: &str, source: PackageSource) -> Option<Package> {
             screenshots: None,
             provides,
             app_id: None,
+            is_optimized: None,
         })
     } else {
         None

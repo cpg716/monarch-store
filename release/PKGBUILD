@@ -1,6 +1,6 @@
 # Maintainer: MonARCH Team <monarch@example.com>
 pkgname=monarch-store
-pkgver=0.1.0
+pkgver=0.2.26
 pkgrel=1
 pkgdesc="A high-performance, premium software store for Arch Linux (Tauri based)"
 arch=('x86_64')
@@ -9,7 +9,7 @@ license=('MIT')
 depends=('webkit2gtk' 'gtk3' 'libappindicator-gtk3' 'curl' 'wget' 'polkit')
 makedepends=('npm' 'cargo' 'git')
 source=("git+$url.git")
-sha256sums=('SKIP')
+sha256sums=('76199bf311c654ae715d38876575cbb361c520322b51d53a3c823ebcf66f2ad3')
 
 build() {
 	cd "$pkgname"

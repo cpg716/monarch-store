@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LayoutGrid, Download, Settings, RefreshCw, Search, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
+import { LayoutGrid, Download, Settings, RefreshCw, Search, Heart, ChevronLeft, ChevronRight, Activity } from 'lucide-react';
 import { clsx } from 'clsx';
 import logoSmall from '../assets/logo_small.png';
 import { motion } from 'framer-motion';
@@ -24,6 +24,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
         { id: 'installed', icon: Download, label: 'Installed', desc: 'Manage your apps' },
         { id: 'favorites', icon: Heart, label: 'Favorites', desc: 'Your saved apps' },
         { id: 'updates', icon: RefreshCw, label: 'Updates', desc: 'Check for updates' },
+        { id: 'system', icon: Activity, label: 'System Health', desc: 'Repair Tools' }, // [NEW]
         { id: 'settings', icon: Settings, label: 'Settings', desc: 'Preferences' },
     ];
 

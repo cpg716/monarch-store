@@ -3,9 +3,10 @@ import { ArrowLeft, Download, Globe, Calendar, User, Zap, Package as PackageIcon
 import RepoSelector from '../components/RepoSelector';
 import { Package } from '../components/PackageCard';
 import InstallMonitor from '../components/InstallMonitor';
-import RepoSetupModal from '../components/RepoSetupModal';
+// import RepoSetupModal from '../components/RepoSetupModal';
 import { invoke } from '@tauri-apps/api/core';
 import { clsx } from 'clsx';
+import { resolveIconUrl } from '../utils/iconHelper';
 import { useFavorites } from '../hooks/useFavorites';
 import { submitReview } from '../services/reviewService';
 import { trackEvent } from '@aptabase/tauri';
@@ -64,8 +65,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
     // Install Flow State
     const [showInstallMonitor, setShowInstallMonitor] = useState(false);
     const [showInstallConfirm, setShowInstallConfirm] = useState(false);
-    const [showRepoSetup, setShowRepoSetup] = useState(false);
-    const [missingRepoId, setMissingRepoId] = useState<string>("");
+
 
     // PKGBUILD Viewer State
     const [showPkgbuild, setShowPkgbuild] = useState(false);
@@ -166,17 +166,9 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
 
     // Handle install button click - shows confirmation for AUR packages
     const handleInstallClick = async () => {
-        // Pre-flight check: Is the repo actually backend-enabled?
-        try {
-            const isSetup = await invoke<boolean>('check_repo_status', { name: selectedSource });
-            if (!isSetup) {
-                setMissingRepoId(selectedSource);
-                setShowRepoSetup(true);
-                return;
-            }
-        } catch (e) {
-            console.error("Failed to check repo status:", e);
-        }
+        // DIRECT INSTALL: We assume all repos are active or handled by backend auto-sync.
+        // The "Setup Repo" check has been removed per "Zero Friction" requirements.
+
 
         if (selectedSource === 'aur') {
             setShowInstallConfirm(true);
@@ -228,8 +220,12 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
 
                     {/* Main Icon - Centered on mobile, left on desktop */}
                     <div className="w-28 h-28 lg:w-32 lg:h-32 lg:ml-16 shrink-0 rounded-2xl bg-app-card shadow-2xl flex items-center justify-center p-5 border border-app-border overflow-hidden mx-auto lg:mx-0">
-                        {pkg.icon || fullMeta?.icon_url ? (
-                            <img src={pkg.icon || fullMeta?.icon_url} alt={pkg.name} className="w-full h-full object-contain drop-shadow-lg" />
+                        {(pkg.icon || fullMeta?.icon_url) ? (
+                            <img
+                                src={resolveIconUrl(pkg.icon || fullMeta?.icon_url)}
+                                alt={pkg.name}
+                                className="w-full h-full object-contain drop-shadow-lg"
+                            />
                         ) : selectedSource === 'chaotic' ? (
                             <Zap size={64} className="text-yellow-400" />
                         ) : selectedSource === 'official' ? (
@@ -262,7 +258,10 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
                                         pkg.source === 'official' ? "bg-teal-600/20 text-teal-600 border border-teal-600/30" :
                                             "bg-sky-600/20 text-sky-600 border border-sky-600/30"
                             )}>
-                                {pkg.source}
+                                {pkg.source === 'chaotic' ? '⚡ Instant Download' :
+                                    pkg.source === 'cachyos' ? '⚡ Optimized' :
+                                        pkg.source === 'aur' ? 'Community Build' :
+                                            pkg.source === 'official' ? 'Official' : pkg.source}
                             </span>
 
                         </div>
@@ -317,12 +316,13 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
 
                             {variants.length > 1 && (
                                 <div className="flex flex-col items-start text-left">
-                                    <span className="text-xs text-app-muted mb-1 font-medium">Install from:</span>
+                                    <span className="text-xs text-app-muted mb-1 font-bold uppercase tracking-wider">Download Source:</span>
                                     <div className="relative z-10 w-full">
                                         <RepoSelector
                                             variants={variants.map(v => ({
                                                 source: v.source,
-                                                version: v.version
+                                                version: v.version,
+                                                repo_name: v.repo_name
                                             }))}
                                             selectedSource={selectedSource}
                                             onChange={(s) => setSelectedSource(s as any)}
@@ -330,13 +330,13 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
                                     </div>
                                     {/* Helper text under dropdown */}
                                     <p className="text-xs text-app-muted mt-2 max-w-[320px]">
-                                        {selectedSource === 'chaotic' && 'Pre-compiled AUR binary. Installs instantly without building from source.'}
-                                        {selectedSource === 'aur' && 'Built from source. Always the latest version, but takes longer to install.'}
+                                        {selectedSource === 'chaotic' && 'Pre-compiled binary. Installs instantly without building from source.'}
+                                        {selectedSource === 'aur' && 'Compiles from source code. May take longer to install, but provides the latest version.'}
                                         {selectedSource === 'official' && 'Official Arch repository. Most stable and well-tested option.'}
                                         {selectedSource === 'cachyos' && 'Performance-optimized build with CPU-specific tuning for speed.'}
                                         {selectedSource === 'garuda' && 'Gaming-focused build with extra performance tweaks.'}
                                         {selectedSource === 'endeavour' && 'Community-maintained build, often with additional patches.'}
-                                        {selectedSource === 'manjaro' && 'Tested and delayed release for extra stability over Arch.'}
+                                        {selectedSource === 'manjaro' && 'Tested and delayed release for extra stability.'}
                                     </p>
                                 </div>
                             )}
@@ -767,18 +767,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
                     </div>
                 )}
 
-                {/* Repo Setup Modal (Fallback) */}
-                <RepoSetupModal
-                    repoName={missingRepoId.charAt(0).toUpperCase() + missingRepoId.slice(1)}
-                    repoId={missingRepoId}
-                    isOpen={showRepoSetup}
-                    onClose={() => setShowRepoSetup(false)}
-                    onSuccess={() => {
-                        setShowRepoSetup(false);
-                        // Re-trigger install after success
-                        handleInstallClick();
-                    }}
-                />
+
             </div>
         </div>
     );

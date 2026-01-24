@@ -19,45 +19,31 @@ MonARCH Store is designed to make package management on Arch-based systems (Arch
 
 ## ✨ Features
 
-### 🌪️ Chaotic-AUR: A Game Changer
-We don't just "support" Chaotic-AUR — **we prioritize it.**
-*   **Zero-Compile Updates**: Automatic preference for pre-built binaries from the Chaotic-AUR infrastructure.
-*   **Massive Library**: Access thousands of pre-compiled AUR packages without waiting hours for local compilation.
+### ⚡ Instant Downloads (Chaotic-First)
+We prioritized speed above all else. MonARCH automatically detects if a package has a pre-built binary in **Chaotic-AUR** or **CachyOS** and serves that instead of forcing you to compile from source.
+*   **Zero-Compile Updates**: Get AUR packages in seconds, not hours.
+*   **Transparent**: You can always choose to "Build from Source" via the dropdown if you prefer.
+
+### 🚀 Hardware Optimization ("God Tier")
+MonARCH detects your CPU capabilities (AVX2, AVX-512) and automatically prioritizes **CachyOS v3/v4** repositories if available.
+*   **10-20% Faster**: Python, compilers, and rendering apps run significantly faster.
+*   **Automatic**: No configuration needed. If your CPU supports it, we use it.
+
+### 🩺 System Repair Dashboard
+Arch Linux can be fragile. MonARCH includes a built-in **"Click-to-Repair"** suite:
+*   **Fix Stuck Updates**: Removes stuck `pacman.db.lck` files.
+*   **Fix Security Keys**: Resets GPG keys if signatures fail.
+*   **Force System Update**: Forces a database refresh if you get stuck in a "Partial Upgrade" state.
 
 ### 🧠 Intelligent Package Merging
-Stop guessing which "firefox" is the right one. MonARCH intelligently merges results from all sources into a single, clean view:
-*   **Smart Resolution**: If a package exists in Official Repos, Chaotic-AUR, and AUR, we automatically serve the fastest/safest option (Official/Chaotic) while keeping the AUR version available as a fallback.
-*   **De-Duplication**: Clean, unified search results without clutter.
-
-### 🐧 Optimized for Your Distro
-*   **CachyOS Optimized**: Fully compatible with CachyOS's `x86-64-v3`/`v4` optimized repositories for maximum performance.
-*   **Manjaro Tested**: Verified stable on Manjaro's branch structure.
-### 🛡️ Safety First
-*   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
-*   **Out-of-Date Warnings**: Visual alerts for flagged packages.
-*   **Partial Upgrade Prevention**: We rigidly enforce `pacman -S` semantics to prevent breaking your system.
-
-## 🔄 How to Update
-MonARCH Store automatically checks for updates on startup.
-- **App Updates**: You will be notified when a new version of the store is available.
-- **System Updates**: Use the **"Update System"** button in the sidebar to safely sync and upgrade your entire Arch system (Official Repos + AUR).
-
-### 🛠️ Graphical "No-Terminal" AUR Builder
-Building from the AUR shouldn't require a CLI degree.
-*   **One-Click Build**: Click install, and we handle the `makepkg` magic, dependency resolution, and `sudo` handling in the background.
-*   **Visual Feedback**: Beautiful, real-time progress bars instead of scrolling text.
-
-### ⭐ Hybrid Community Reviews
-*   **ODRS Integration**: See global ratings for official Linux apps.
-*   **Community Reviews**: Submit and read reviews for AUR packages (powered by Supabase).
-
-### 📊 Analytics
-Privacy-friendly usage stats (install trends, top searches) powered by Aptabase.
+Stop guessing which "firefox" is the right one. MonARCH intelligently merges results from all sources into a single, clean view.
+*   **Unified Search**: Official, Chaotic, and AUR results in one card.
+*   **De-Duplication**: We show you the *best* version by default.
 
 ### 🛡️ Safety First
+*   **Split-Brain Protection**: We check `pacman -Si` before every install to prevent partial upgrades.
+*   **GPG Automator**: Missing keys are imported automatically during install.
 *   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
-*   **Out-of-Date Warnings**: Visual alerts for flagged packages.
-*   **Partial Upgrade Prevention**: We rigidly enforce `pacman -S` semantics to prevent breaking your system.
 
 ### ⚙️ Repository Configuration
 You can personalize your store experience by toggling specific repositories (CachyOS, Manjaro, Chaotic-AUR) in the settings. MonArch uses a **"Soft Disable"** architecture: disabling a repository hides it from search but keeps it active in the background for system updates, ensuring your installed apps always remain secure and up-to-date.
@@ -69,26 +55,18 @@ You can personalize your store experience by toggling specific repositories (Cac
 
 ## 🚀 Installation
 
-### Pre-requisites
-*   Arch Linux (or derivative).
-*   `paru` or `yay` (optional, for AUR helper support, defaults to manual `makepkg` logic if missing, but helper recommended).
+### Option 1: Pre-built Binary (Recommended)
+Download the latest `monarch-store-x.x.x-x86_64.pkg.tar.zst` from the [Releases Page](https://github.com/cpg716/monarch-store/releases).
 
-### Install via PKGBUILD (Recommended)
-Coming soon to AUR!
-
-### Manual Build
 ```bash
-# 1. Clone the repo
+sudo pacman -U monarch-store-*.pkg.tar.zst
+```
+
+### Option 2: Build from Source
+```bash
 git clone https://github.com/cpg716/monarch-store.git
 cd monarch-store
-
-# 2. Install dependencies
 npm install
-
-# 3. Run in Development Mode
-npm run tauri dev
-
-# 4. Build Release
 npm run tauri build
 ```
 
