@@ -23,6 +23,27 @@ sudo pacman-key --refresh-keys || echo "⚠️ Refresh failed, proceeding with l
 # Sync databases to clear 'corrupted' state
 sudo pacman -Sy --noconfirm || echo "⚠️ Sync failed, but proceeding..."
 
+# 1.5 Modular Config Fix (Ensure optimizations are present)
+if [ -d /etc/pacman.d/monarch ]; then
+    echo "🛠️  Fixing modular CachyOS optimizations..."
+    CONF="/etc/pacman.d/monarch/cachyos.conf"
+    if [ -f "$CONF" ]; then
+        # Check for v4 support
+        if grep -q "avx512f" /proc/cpuinfo && ! grep -q "\[cachyos-v4\]" "$CONF"; then
+             echo "🚀 Enabling v4 optimizations..."
+             echo -e "\n[cachyos-v4]\nInclude = /etc/pacman.d/cachyos-v4-mirrorlist" >> "$CONF"
+             echo -e "[cachyos-core-v4]\nInclude = /etc/pacman.d/cachyos-v4-mirrorlist" >> "$CONF"
+             echo -e "[cachyos-extra-v4]\nInclude = /etc/pacman.d/cachyos-v4-mirrorlist" >> "$CONF"
+        fi
+        # Check for znver4 support
+        if grep -q "avx512_fp16" /proc/cpuinfo && ! grep -q "\[cachyos-core-znver4\]" "$CONF"; then
+             echo "🚀 Enabling znver4 optimizations..."
+             echo -e "\n[cachyos-core-znver4]\nInclude = /etc/pacman.d/cachyos-v4-mirrorlist" >> "$CONF"
+             echo -e "[cachyos-extra-znver4]\nInclude = /etc/pacman.d/cachyos-v4-mirrorlist" >> "$CONF"
+        fi
+    fi
+fi
+
 # 2. Install/Verify System Dependencies for Tauri v2
 echo "📦 [2/5] Checking System Dependencies..."
 if command -v pacman &> /dev/null; then

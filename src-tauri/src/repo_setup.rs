@@ -139,6 +139,8 @@ fn get_repo_script(name: &str) -> String {
             CONF="/etc/pacman.d/monarch/cachyos.conf"
             echo "[cachyos]" > $CONF
             echo "Include = /etc/pacman.d/cachyos-mirrorlist" >> $CONF
+            
+            # v3 Optimization (AVX2)
             if grep -q "avx2" /proc/cpuinfo; then
                 echo "[cachyos-v3]" >> $CONF
                 echo "Include = /etc/pacman.d/cachyos-v3-mirrorlist" >> $CONF
@@ -147,6 +149,26 @@ fn get_repo_script(name: &str) -> String {
                 echo "[cachyos-extra-v3]" >> $CONF
                 echo "Include = /etc/pacman.d/cachyos-v3-mirrorlist" >> $CONF
             fi
+
+            # v4 Optimization (AVX512)
+            if grep -q "avx512f" /proc/cpuinfo; then
+                echo "[cachyos-v4]" >> $CONF
+                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
+                echo "[cachyos-core-v4]" >> $CONF
+                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
+                echo "[cachyos-extra-v4]" >> $CONF
+                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
+            fi
+
+            # znver4 Optimization (AMD Zen 4)
+            # This is a bit trickier via flags, but checking for 'avx512_fp16' is a good indicator for Zen 4
+            if grep -q "avx512_fp16" /proc/cpuinfo; then
+                echo "[cachyos-core-znver4]" >> $CONF
+                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
+                echo "[cachyos-extra-znver4]" >> $CONF
+                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
+            fi
+
             pacman -Sy --noconfirm
             "#
         }
