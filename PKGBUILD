@@ -8,8 +8,8 @@ url="https://github.com/cpg716/monarch-store"
 license=('MIT')
 depends=('gtk3' 'webkit2gtk-4.1' 'libappindicator-gtk3' 'librsvg' 'polkit')
 makedepends=('nodejs' 'npm' 'rust' 'cargo')
-source=("git+${url}.git#tag=v${pkgver}")
-sha256sums=('SKIP')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
+sha256sums=('eade1a0a50b32b6d224f61f35b2728a3f6266782f7f290a2d65294ec7f844bca')
 
 build() {
   cd "${srcdir}/${pkgname}"
