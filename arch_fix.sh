@@ -56,29 +56,50 @@ sudo pacman --config $TMP_CONF -S --needed --noconfirm \
     curl wget file openssl appmenu-gtk-module libappindicator-gtk3 \
     librsvg libvips icu
 
-# 5. Fix Source Code Blockers (index.html path)
+# 5. Fix Source Code Blockers (Vite Pathing)
 echo "🛠️  [5/7] Patching Source Code..."
-# standard Vite root resolution
-sed -i 's/src=".\/src\/main.tsx"/src="src\/main.tsx"/g' index.html
-sed -i 's/src="\/src\/main.tsx"/src="src\/main.tsx"/g' index.html
+# Standard Vite root resolution for Tauri production
+# We ensure it uses ./src/main.tsx (Relative) which works best for Vite-in-Tauri
+sed -i 's/src="\/src\/main.tsx"/src=".\/src\/main.tsx"/g' index.html
+sed -i 's/src="src\/main.tsx"/src=".\/src\/main.tsx"/g' index.html
 
-# 6. Native Compilation (Skip bundling to avoid linuxdeploy errors)
-echo "🏗️  [6/7] Compiling Native Binary (Fast Native Only)..."
+# 6. Native Compilation (Correctly embed UI assets)
+echo "🏗️  [6/7] Compiling Native Binary (With Embedded Assets)..."
 npm install
-npm run build # Frontend build
-cd src-tauri && cargo build --release
-cd ..
+# Using tauri build with --no-bundle ensures assets are embedded but skips system packaging
+npx tauri build --no-bundle
 
 # 7. Final Installation & Path Cleanup
 echo "🚀 [7/7] Installing and Clearing Path..."
 # Nuke all possible "broken" versions
 sudo rm -f /usr/bin/monarch-store /usr/local/bin/monarch-store /usr/bin/"MonARCH Store"
 
-# Install the shiny new native binary
+# Install the shiny new native binary (standard name)
 sudo install -Dm755 src-tauri/target/release/monarch-store /usr/bin/monarch-store
 
+# Install System Icon (Fixes vanished icon)
+echo "🎨 Installing App Icons..."
+sudo mkdir -p /usr/share/icons/hicolor/128x128/apps
+sudo mkdir -p /usr/share/icons/hicolor/512x512/apps
+sudo install -Dm644 src-tauri/icons/128x128.png /usr/share/icons/hicolor/128x128/apps/monarch-store.png
+sudo install -Dm644 src-tauri/icons/icon.png /usr/share/icons/hicolor/512x512/apps/monarch-store.png 2>/dev/null || true
+
+# Update Desktop File
+echo "📝 Refreshing Desktop Entry..."
+sudo mkdir -p /usr/share/applications
+cat <<EOF | sudo tee /usr/share/applications/monarch-store.desktop > /dev/null
+[Desktop Entry]
+Name=MonARCH Store
+Description=Modern Arch Software Store
+Exec=monarch-store
+Icon=monarch-store
+Terminal=false
+Type=Application
+Categories=System;Settings;
+EOF
+
 echo ""
-echo "✨ NATIVE REPAIR COMPLETE! ✨"
-echo "Binary is now perfectly linked to your system libraries."
-echo "You can now launch it by typing: monarch-store"
+echo "✨ v4.1 NATIVE REPAIR COMPLETE! ✨"
+echo "Binary is perfectly linked and UI assets are embedded."
+echo "Launch now: monarch-store"
 echo ""

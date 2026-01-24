@@ -517,11 +517,12 @@ pub async fn download_and_cache_appstream(
             && (path_str.ends_with(".png") || path_str.ends_with(".svg"))
         {
             // Extract icons - match "icons/" anywhere in path
-            let file_name = path.file_name().unwrap();
-            let icon_target = icons_dir.join(file_name);
-            if let Ok(mut out_file) = std::fs::File::create(&icon_target) {
-                let _ = std::io::copy(&mut entry, &mut out_file);
-                extracted_count += 1;
+            if let Some(file_name) = path.file_name() {
+                let icon_target = icons_dir.join(file_name);
+                if let Ok(mut out_file) = std::fs::File::create(&icon_target) {
+                    let _ = std::io::copy(&mut entry, &mut out_file);
+                    extracted_count += 1;
+                }
             }
         }
     }

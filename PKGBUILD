@@ -17,8 +17,8 @@ build() {
   # 1. Install frontend deps
   npm install
   
-  # 2. Build Tauri release
-  npm run tauri build
+  # 2. Build Tauri release (no-bundle since we package manually)
+  npx tauri build --no-bundle
 }
 
 package() {
