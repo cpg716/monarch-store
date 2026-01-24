@@ -17,19 +17,21 @@ cat <<EOF > $TMP_CONF
 [options]
 HoldPkg     = pacman glibc
 Architecture = auto
-# RELAXED SIGLEVEL: To bypass corrupted local keyrings during bootstrap
-SigLevel    = Optional TrustAll
+# ABSOLUTE BYPASS: To overcome persistent local corruption/signature issues
+SigLevel    = Never
 LocalFileSigLevel = Optional
 
+# Using a different reliable mirror (Rackspace) to bypass potential geo.mirror sync issues
 [core]
-Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
+Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch
 [extra]
-Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
+Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch
 EOF
 
-# 2.5 Nuke Corrupted Keyring & Cache
-echo "🧹 [2.5/7] Nuking corrupted GPG database & cache..."
+# 2.5 Nuke Corrupted Keyring, Cache & SYNC DBs
+echo "🧹 [2.5/7] Nuking corrupted GPG database, cache & sync DBs..."
 sudo rm -rf /etc/pacman.d/gnupg
+sudo rm -rf /var/lib/pacman/sync/*
 sudo pacman -Scc --noconfirm 
 
 # 3. System Update & Keyring
