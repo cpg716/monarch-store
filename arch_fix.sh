@@ -3,8 +3,27 @@
 echo "🦋 MonARCH Store - Arch Linux Lifecycle Fixer (Robust Mode)"
 echo "=========================================================="
 
-# 1. Install/Verify System Dependencies for Tauri v2
-echo "📦 [1/4] Checking System Dependencies..."
+# 1. Keyring Repair (Rescue Mode)
+echo "🔑 [1/5] Repairing Pacman Keyring & Signatures..."
+sudo rm -f /var/lib/pacman/db.lck
+sudo pacman-key --init
+sudo pacman-key --populate archlinux chaotic
+
+# Attempt to fetch CachyOS keyring if repo is detected
+if grep -q "cachyos" /etc/pacman.conf || [ -d /etc/pacman.d/monarch ]; then
+    echo "🔍 CachyOS detected. Attempting to fetch keyring..."
+    sudo pacman -U "https://mirror.cachyos.org/cachyos-keyring-2-1-any.pkg.tar.zst" --noconfirm || true
+fi
+
+# Refresh keys (helps with 'No data' and 'Invalid Signature' errors)
+echo "📡 Refreshing keys (this may take a minute)..."
+sudo pacman-key --refresh-keys || echo "⚠️ Refresh failed, proceeding with local keys..."
+
+# Sync databases to clear 'corrupted' state
+sudo pacman -Sy --noconfirm || echo "⚠️ Sync failed, but proceeding..."
+
+# 2. Install/Verify System Dependencies for Tauri v2
+echo "📦 [2/5] Checking System Dependencies..."
 if command -v pacman &> /dev/null; then
     echo "Enter password for pacman if requested:"
     sudo pacman -S --needed --noconfirm \
