@@ -1577,13 +1577,29 @@ async fn optimize_system() -> Result<String, String> {
         _ => results.push("⚠ Key population failed (maybe already valid)".to_string()),
     }
 
-    // 4. Refresh Keys
+    // 4. Targeted Key Import (MUCH faster than --refresh-keys)
     let refresh_cmd = Command::new("pkexec")
-        .args(["pacman-key", "--refresh-keys"])
+        .args([
+            "pacman-key",
+            "--recv-keys",
+            "3056513887B78AEB", // Chaotic-AUR
+            "F4A617F51E9D1FA3", // CachyOS
+            "--keyserver",
+            "keyserver.ubuntu.com",
+        ])
         .output();
     match refresh_cmd {
-        Ok(o) if o.status.success() => results.push("✓ Refreshed keys from keyservers".to_string()),
-        _ => results.push("⚠ Key refresh failed (check network)".to_string()),
+        Ok(o) if o.status.success() => {
+            // Locally sign the keys
+            let _ = Command::new("pkexec")
+                .args(["pacman-key", "--lsign-key", "3056513887B78AEB"])
+                .output();
+            let _ = Command::new("pkexec")
+                .args(["pacman-key", "--lsign-key", "F4A617F51E9D1FA3"])
+                .output();
+            results.push("✓ Imported and signed essential keys".to_string());
+        }
+        _ => results.push("⚠ Essential key import failed (check network)".to_string()),
     }
 
     // 5. Update Databases

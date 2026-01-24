@@ -16,9 +16,12 @@ if grep -q "cachyos" /etc/pacman.conf || [ -d /etc/pacman.d/monarch ]; then
     sudo pacman -U "https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst" --noconfirm || true
 fi
 
-# Refresh keys (helps with 'No data' and 'Invalid Signature' errors)
-echo "📡 Refreshing keys (this may take a minute)..."
-sudo pacman-key --refresh-keys || echo "⚠️ Refresh failed, proceeding with local keys..."
+# Targeted key refresh (MUCH faster than --refresh-keys)
+echo "📡 Importing specific third-party keys..."
+# Chaotic-AUR & CachyOS
+sudo pacman-key --recv-keys 3056513887B78AEB F4A617F51E9D1FA3 --keyserver keyserver.ubuntu.com || echo "⚠️ Key import failed, proceeding..."
+sudo pacman-key --lsign-key 3056513887B78AEB || true
+sudo pacman-key --lsign-key F4A617F51E9D1FA3 || true
 
 # Sync databases to clear 'corrupted' state
 sudo pacman -Sy --noconfirm || echo "⚠️ Sync failed, but proceeding..."
