@@ -167,31 +167,12 @@ async fn build_aur_package(
     }
     std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
-    // 1.5. Force DB Sync (Fix for Manjaro/Arch "databases not found" error)
-    let _ = app.emit("install-output", "Syncing package databases...");
-
-    let sync_cmd = if let Some(pwd) = password {
-        std::process::Command::new("sh")
-            .args([
-                "-c",
-                &format!("echo '{}' | sudo -S pacman -Sy --noconfirm", pwd),
-            ])
-            .output()
-    } else {
-        std::process::Command::new("pkexec")
-            .args(["pacman", "-Sy", "--noconfirm"])
-            .output()
-    };
-
-    match sync_cmd {
-        Ok(o) if !o.status.success() => {
-            let _ = app.emit("install-output", "⚠ DB Sync warning (continuing)...");
-        }
-        Err(_) => {
-            let _ = app.emit("install-output", "⚠ DB Sync failed to run (continuing)...");
-        }
-        _ => {}
-    }
+    // 1.5. Force DB Sync REMOVED: Unsafe partial upgrade risk (pacman -Sy)
+    // User should rely on global sync.
+    let _ = app.emit(
+        "install-output",
+        "Skipping separate DB sync (relying on system state)...",
+    );
 
     // 2. Git Clone
     let _ = app.emit("install-output", "Cloning AUR repository...");
@@ -384,7 +365,7 @@ async fn install_package(
                     Some(h) => (
                         h.to_string(),
                         vec![
-                            "-Sy".to_string(),
+                            "-S".to_string(),
                             "--noconfirm".to_string(),
                             "--".to_string(),
                             name.clone(),
