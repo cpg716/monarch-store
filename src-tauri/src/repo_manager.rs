@@ -150,25 +150,6 @@ impl RepoManager {
                 source: PackageSource::Endeavour,
                 enabled: true,
             },
-            RepoConfig {
-                name: "manjaro-core".to_string(),
-                url: "https://mirror.easyname.at/manjaro/stable/core/x86_64/core.db".to_string(),
-                source: PackageSource::Manjaro,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "manjaro-extra".to_string(),
-                url: "https://mirror.easyname.at/manjaro/stable/extra/x86_64/extra.db".to_string(),
-                source: PackageSource::Manjaro,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "manjaro-multilib".to_string(),
-                url: "https://mirror.easyname.at/manjaro/stable/multilib/x86_64/multilib.db"
-                    .to_string(),
-                source: PackageSource::Manjaro,
-                enabled: false,
-            },
         ];
 
         let mut initial_repos = defaults.clone();
