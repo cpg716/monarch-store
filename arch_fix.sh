@@ -8,7 +8,7 @@ set -e # Exit on error
 # 1. Unblocking & Initial Cleanup
 echo "🔓 [1/7] Unblocking Pacman & Cleaning..."
 sudo rm -f /var/lib/pacman/db.lck
-rm -rf node_modules src-tauri/target pkg/ src/
+rm -rf node_modules src-tauri/target pkg/
 
 # 2. Emergency Config for Bootstrap
 echo "📋 [2/7] Creating Emergency Config..."
@@ -58,7 +58,9 @@ sudo pacman --config $TMP_CONF -S --needed --noconfirm \
 
 # 5. Fix Source Code Blockers (index.html path)
 echo "🛠️  [5/7] Patching Source Code..."
-sed -i 's/src="\/src\/main.tsx"/src=".\/src\/main.tsx"/g' index.html
+# standard Vite root resolution
+sed -i 's/src=".\/src\/main.tsx"/src="src\/main.tsx"/g' index.html
+sed -i 's/src="\/src\/main.tsx"/src="src\/main.tsx"/g' index.html
 
 # 6. Native Compilation (Matches your system perfectly)
 echo "🏗️  [6/7] Compiling Native Binary (This may take 2-5 minutes)..."
