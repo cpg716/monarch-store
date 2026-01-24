@@ -1,14 +1,17 @@
 #!/bin/bash
 
-echo "🦋 MonARCH Store - Nuclear System Repair v2 (Extreme Robustness)"
-echo "==============================================================="
+echo "🦋 MonARCH Store - Nuclear Build & Repair v3"
+echo "==========================================="
 
-# 1. Isolation
-echo "🔓 [1/6] Unblocking Pacman..."
+set -e # Exit on error
+
+# 1. Unblocking & Initial Cleanup
+echo "🔓 [1/7] Unblocking Pacman & Cleaning..."
 sudo rm -f /var/lib/pacman/db.lck
+rm -rf node_modules src-tauri/target pkg/ src/
 
-# 2. Create Emergency Config
-echo "📋 [2/6] Creating Emergency Pacman Config..."
+# 2. Emergency Config for Bootstrap
+echo "📋 [2/7] Creating Emergency Config..."
 TMP_CONF="/tmp/monarch_repair_pacman.conf"
 cat <<EOF > $TMP_CONF
 [options]
@@ -23,58 +26,38 @@ Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
 Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
 EOF
 
-# 3. Keyring Reset
-echo "🔑 [3/6] Resetting Pacman Keyring..."
+# 3. System Update & Keyring (Fixes libicu version)
+echo "🔑 [3/7] Updating System Keyrings & Core Libraries (libicu)..."
+sudo pacman --config $TMP_CONF -Syu --noconfirm
 sudo pacman-key --config $TMP_CONF --init
 sudo pacman-key --config $TMP_CONF --populate archlinux
 
-# 4. Emergency Dependency Install
-echo "📦 [4/6] Installing Dependencies via Emergency Config..."
-# This bypasses all broken repos in /etc/pacman.conf
-sudo pacman --config $TMP_CONF -Sy --needed --noconfirm \
-    webkit2gtk-4.1 \
-    base-devel \
-    curl \
-    wget \
-    file \
-    openssl \
-    rust \
-    appmenu-gtk-module \
-    libappindicator-gtk3 \
-    librsvg \
-    libvips
+# 4. Install Build Dependencies
+echo "📦 [4/7] Installing Build Tools (Node, Rust, WebKit)..."
+sudo pacman --config $TMP_CONF -S --needed --noconfirm \
+    nodejs npm rust cargo webkit2gtk-4.1 base-devel \
+    curl wget file openssl appmenu-gtk-module libappindicator-gtk3 \
+    librsvg libvips libicu
 
-# 5. Repository Cleanup & Full System Sync
-echo "🧹 [5/6] Cleaning up and performing full system update..."
-# This ensures the user has the latest libicu and other core libs
-sudo pacman --config $TMP_CONF -Syu --noconfirm
+# 5. Fix Source Code Blockers (index.html path)
+echo "🛠️  [5/7] Patching Source Code..."
+sed -i 's/src="\/src\/main.tsx"/src=".\/src\/main.tsx"/g' index.html
 
-if [ -d /etc/pacman.d/monarch ]; then
-    sudo rm -rf /etc/pacman.d/monarch/
-    mkdir -p /etc/pacman.d/monarch/
-fi
+# 6. Native Compilation (Matches your system perfectly)
+echo "🏗️  [6/7] Compiling Native Binary (This may take 2-5 minutes)..."
+npm install
+npm run tauri build
 
-# Clean any existing binary to prevent "Silent Fail" with old versions
-echo "🗑️ Removing old binaries..."
-sudo rm -f /usr/bin/monarch-store
-sudo rm -f /usr/bin/"MonARCH Store"
+# 7. Final Installation & Path Cleanup
+echo "🚀 [7/7] Installing and Clearing Path..."
+# Nuke all possible "broken" versions
+sudo rm -f /usr/bin/monarch-store /usr/local/bin/monarch-store /usr/bin/"MonARCH Store"
 
-# 6. Verify Build Environment
-echo "🔍 [6/6] Verifying Build Environment..."
-rm -rf src-tauri/target
-if command -v cargo &> /dev/null; then
-    echo "✅ Cargo (Rust) is ready!"
-    # One-click keyring fix for third party
-    sudo pacman-key --recv-keys 3056513887B78AEB F4A617F51E9D1FA3 --keyserver keyserver.ubuntu.com || true
-    sudo pacman-key --lsign-key 3056513887B78AEB || true
-    sudo pacman-key --lsign-key F4A617F51E9D1FA3 || true
-    
-    cd src-tauri && cargo check || echo "⚠️  'cargo check' warns, but tools are installed."
-else
-    echo "❌ CRITICAL: 'cargo' is still missing. Please install Rust manually."
-    exit 1
-fi
+# Install the shiny new native binary
+sudo install -Dm755 src-tauri/target/release/monarch-store /usr/bin/monarch-store
 
 echo ""
-echo "✨ System unblocked and UPDATED! You can now run 'makepkg -si' safely."
-echo "Note: This native build will perfectly match your system's library versions (v78)."
+echo "✨ NATIVE REPAIR COMPLETE! ✨"
+echo "Binary is now perfectly linked to your system libraries."
+echo "You can now launch it by typing: monarch-store"
+echo ""
