@@ -33,15 +33,20 @@ echo "🧹 [2.5/7] Nuking corrupted GPG database, cache & sync DBs..."
 # Kill any background GPG agents that are locking the directory
 sudo gpgconf --kill all || true
 sudo killall -9 gpg-agent dirmngr || true
-sudo rm -rf /etc/pacman.d/gnupg
+# Try to use fuser to kill anything using the directory specifically
+if command -v fuser &> /dev/null; then
+    sudo fuser -k /etc/pacman.d/gnupg || true
+fi
+sudo rm -rf /etc/pacman.d/gnupg || echo "⚠️  Warning: GPG directory busy, skipping reset (Should be okay with SigLevel=Never)"
 sudo rm -rf /var/lib/pacman/sync/*
 sudo pacman -Scc --noconfirm 
 
 # 3. System Update & Keyring
 echo "🔑 [3/7] Re-initializing Keyring & updating libraries..."
-sudo pacman-key --config $TMP_CONF --init
-sudo pacman-key --config $TMP_CONF --populate archlinux
+sudo pacman-key --config $TMP_CONF --init || true
+sudo pacman-key --config $TMP_CONF --populate archlinux || true
 
+# This is the most important step for libicu v78 fix
 sudo pacman --config $TMP_CONF -Syu --noconfirm
 
 # 4. Install Build Dependencies
