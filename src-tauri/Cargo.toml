@@ -1,6 +1,6 @@
 [package]
 name = "monarch-store"
-version = "0.2.26"
+version = "0.2.27"
 description = "MonARCH Store - A premium software store for Arch Linux"
 authors = ["MonARCH Store Contributors"]
 license = "MIT"
@@ -50,4 +50,4 @@ tempfile = "3.24.0"
 
 [patch.crates-io]
 # Force ring to 0.17.18 to resolve linker symbol errors on Linux
-ring = { git = "https://github.com/briansmith/ring", tag = "0.17.18" }
+ring = { package = "ring", version = "0.17.18" }
