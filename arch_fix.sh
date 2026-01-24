@@ -30,6 +30,9 @@ EOF
 
 # 2.5 Nuke Corrupted Keyring, Cache & SYNC DBs
 echo "🧹 [2.5/7] Nuking corrupted GPG database, cache & sync DBs..."
+# Kill any background GPG agents that are locking the directory
+sudo gpgconf --kill all || true
+sudo killall -9 gpg-agent dirmngr || true
 sudo rm -rf /etc/pacman.d/gnupg
 sudo rm -rf /var/lib/pacman/sync/*
 sudo pacman -Scc --noconfirm 
