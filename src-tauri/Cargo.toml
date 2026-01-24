@@ -1,6 +1,6 @@
 [package]
 name = "monarch-store"
-version = "0.2.28"
+version = "0.2.29"
 description = "MonARCH Store - A premium software store for Arch Linux"
 authors = ["MonARCH Store Contributors"]
 license = "MIT"
@@ -47,8 +47,3 @@ tauri-plugin-fs = "2.4.5"
 
 [dev-dependencies]
 tempfile = "3.24.0"
-
-[patch.crates-io]
-# Force ring to 0.17.18 to resolve linker symbol errors on Linux
-# Using the git source directly for the patch to ensure resolution bypasses registry version constraints
-ring = { git = "https://github.com/briansmith/ring", tag = "0.17.18" }

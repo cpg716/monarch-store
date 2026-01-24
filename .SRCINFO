@@ -1,6 +1,6 @@
 pkgbase = monarch-store
 	pkgdesc = A modern, high-performance software store for Arch Linux based distributions.
-	pkgver = 0.2.28
+	pkgver = 0.2.29
 	pkgrel = 1
 	url = https://github.com/cpg716/monarch-store
 	arch = x86_64
@@ -17,7 +17,7 @@ pkgbase = monarch-store
 	makedepends = npm
 	makedepends = rust
 	makedepends = cargo
-	source = git+https://github.com/cpg716/monarch-store.git#tag=v0.2.28
+	source = git+https://github.com/cpg716/monarch-store.git#tag=v0.2.29
 	sha256sums = SKIP
 
 pkgname = monarch-store
