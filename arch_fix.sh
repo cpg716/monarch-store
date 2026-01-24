@@ -26,11 +26,18 @@ Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
 Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch
 EOF
 
+# 2.5 Nuke Corrupted Package Cache (Fixes "invalid or corrupted package")
+echo "🧹 [2.5/7] Clearing potentially corrupted package cache..."
+sudo pacman -Scc --noconfirm # Double 'cc' removes ALL cached packages
+
 # 3. System Update & Keyring (Fixes libicu version)
 echo "🔑 [3/7] Updating System Keyrings & Core Libraries (libicu)..."
-sudo pacman --config $TMP_CONF -Syu --noconfirm
 sudo pacman-key --config $TMP_CONF --init
 sudo pacman-key --config $TMP_CONF --populate archlinux
+# Refresh the specific master keys to be super safe
+sudo pacman-key --config $TMP_CONF --refresh-keys || true
+
+sudo pacman --config $TMP_CONF -Syu --noconfirm
 
 # 4. Install Build Dependencies
 echo "📦 [4/7] Installing Build Tools (Node, Rust, WebKit)..."
