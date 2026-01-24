@@ -90,14 +90,20 @@ function App() {
   useEffect(() => {
     const initInfo = async () => {
       try {
-        setIsRefreshing(true);
+        // Start stats immediately
         fetchInfraStats();
+
+        // Run sync in background - do NOT await here
+        // This prevents broken mirrors from blocking the UI load
         const savedInterval = localStorage.getItem('sync-interval-hours');
         const interval = savedInterval ? parseInt(savedInterval, 10) : 3;
-        await invoke('trigger_repo_sync', { syncIntervalHours: interval });
+        invoke('trigger_repo_sync', { syncIntervalHours: interval })
+          .catch(e => console.error("Background Startup Sync Failed", e));
+
       } catch (e) {
-        console.error("Startup Sync Failed", e);
+        console.error("Startup Logic Error", e);
       } finally {
+        // Always show the UI, even if sync is still running or failed
         setIsRefreshing(false);
       }
     };

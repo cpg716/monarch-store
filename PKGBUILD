@@ -14,7 +14,7 @@ options=('!strip')
 
 # Download the .deb from your GitHub release
 source=("https://github.com/cpg716/monarch-store/releases/download/${pkgver}/MonARCH.Store_${pkgver}_amd64.deb")
-sha256sums=('SKIP')
+sha256sums=('356ad817875e7ebebb947d295088980cb9a100ea5c03e55013d3be46fb519eef')
 
 package() {
   # Extract the .deb file members
