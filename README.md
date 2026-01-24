@@ -49,6 +49,18 @@ Privacy-friendly usage stats (install trends, top searches) powered by Aptabase.
 ### 🛡️ Safety First
 *   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
 *   **Out-of-Date Warnings**: Visual alerts for flagged packages.
+*   **Partial Upgrade Prevention**: We rigidly enforce `pacman -S` semantics to prevent breaking your system.
+
+### ⚙️ Repository Configuration
+You can toggle specific repositories (CachyOS, Manjaro, Chaotic-AUR) directly in the app settings.
+
+> [!WARNING]
+> **Partial Upgrade Risk:** Disabling a repository that you previously installed packages from can lead to dependency breakages during updates. Ensure your active repositories match your installed software ecosystem.
+
+## 📘 Documentation
+- [Troubleshooting Guide](docs/TROUBLESHOOTING.md) - Fix GPG, Lock files, and Database issues.
+- [Security Policy](SECURITY.md) - How to report vulnerabilities.
+- [Architecture](docs/ARCHITECTURE.md) - Technical design.
 
 ## 🚀 Installation
 

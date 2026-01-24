@@ -23,6 +23,8 @@ graph TD
 - **`flathub_api.rs`**: Critical mapping layer that translates Arch package names to AppStream IDs (e.g., `brave-bin` -> `com.brave.Browser`) for fetching reviews.
 - **`odrs_api.rs`**: Fetches global ratings and reviews from the Open Desktop Rating System.
 - **`repo_manager.rs`**: Syncs PACMAN databases and manages source-specific logic.
+- **`repo_db.rs`**: Data Abstraction Layer for repository fetching. Implements a `RepoClient` trait to allow dependency injection for network testing.
+- **`mocks.rs`**: Test infrastructure providing `MockPackageManager` and `MockRepoClient` for safe, offline verification.
 
 ### Search & Priority Logic
 To ensure the best user experience, results are merged and sorted by **source reliability and speed**:
@@ -31,7 +33,12 @@ To ensure the best user experience, results are merged and sorted by **source re
 3.  **Distros**: Manjaro, Garuda, etc.
 4.  **AUR**: Absolute fallback.
 
-**Deduplication**: The backend uses **App ID** based merging. If multiple packages map to the same AppStream ID, they are presented as a single entry to avoid UI clutter.
+**Deduplication**: The backend uses **App ID** based merging. If multiple packages map to the same AppStream ID, they are presented as a single entry to avoid UI clutter. This logic resides in `utils::merge_and_deduplicate` for pure unit testing.
+
+### Testing Infrastructure
+We employ a "Mock-First" strategies to validate risky system operations:
+- **`MockPackageManager`**: Intercepts `pacman` and `makepkg` calls, returning canned success/failure outputs.
+- **`MockRepoClient`**: Simulates HTTP responses (timeout, 404, valid DBs) to test resilience without spamming mirrors.
 
 ## Frontend (React + TypeScript)
 

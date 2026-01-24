@@ -3,7 +3,6 @@ import { Download, Package as PackageIcon, ShieldCheck, Zap, Heart } from 'lucid
 import { useFavorites } from '../hooks/useFavorites';
 import { clsx } from 'clsx';
 import { invoke } from '@tauri-apps/api/core';
-import * as reviewService from '../services/reviewService';
 
 export interface Package {
     name: string;
@@ -42,72 +41,34 @@ export interface ChaoticPackage {
     }
 }
 
+import { usePackageRating } from '../hooks/useRatings';
+
+import { usePackageMetadata } from '../hooks/usePackageMetadata';
+
 const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFetch = false, chaoticInfo: initialChaoticInfo }) => {
     const isChaotic = pkg.source === 'chaotic';
     const isOfficial = pkg.source === 'official';
-    const [iconUrl, setIconUrl] = useState<string | null>(pkg.icon || null);
     const [chaoticInfo, setChaoticInfo] = useState<ChaoticPackage | null>(initialChaoticInfo || null);
-    const [rating, setRating] = useState<{ average: number; count: number } | null>(null);
+
+    // Global Data Optimization (Source of Truth)
+    const { metadata } = usePackageMetadata(pkg.name, skipMetadataFetch);
+    const iconUrl = pkg.icon || metadata?.icon_url || null;
+
+    // Unified Rating System (Source of Truth)
+    const { rating } = usePackageRating(pkg.name, pkg.app_id || metadata?.app_id);
 
     // Favorites
     const { toggleFavorite, isFavorite } = useFavorites();
     const isFav = isFavorite(pkg.name);
 
-    // Sync with prop if it updates
     useEffect(() => {
-        if (initialChaoticInfo) {
-            setChaoticInfo(initialChaoticInfo);
-        }
-    }, [initialChaoticInfo]);
-
-    useEffect(() => {
-        const loadMetadata = async () => {
-            // Optimization: If we already have an icon from the parent (which get_trending/get_essentials now provides), SKIP the heavy invoke.
-            if (pkg.icon) {
-                if (iconUrl !== pkg.icon) setIconUrl(pkg.icon);
-            }
-
-            // Fetch Rating (Lazy)
-            const lookupId = pkg.app_id || pkg.name;
-            // console.log(`[PackageCard] Fetching rating for ${pkg.name} (ID: ${lookupId})`);
-            try {
-                // Use the shared service to get ODRS or Supabase ratings with fallback logic
-                const summary = await reviewService.getCompositeRating(pkg.name, lookupId);
-                if (summary) {
-                    setRating(summary);
-                }
-            } catch (e) {
-                // console.warn(`[PackageCard] Rating failed for ${lookupId}`, e);
-            }
-
-            // Also skip icon fetch if we already found one or if explicitly told to skip
-            if (iconUrl || skipMetadataFetch) return;
-
-            try {
-                // Fetch basic metadata (mostly for icon)
-                const meta = await invoke<any>('get_metadata', {
-                    pkgName: pkg.name,
-                    upstreamUrl: pkg.url
-                });
-
-                if (meta && meta.icon_url) {
-                    setIconUrl(meta.icon_url);
-                }
-            } catch (e) {
-                // Silent fail for list items
-            }
-        };
-
-        loadMetadata();
-
-        // Separate chaotic info fetch if needed (optional for list view, maybe skip for perf?)
         if (isChaotic && !initialChaoticInfo && !chaoticInfo) {
-            // Fetch individually ONLY if not provided by parent (batch)
             invoke<ChaoticPackage>('get_chaotic_package_info', { name: pkg.name })
                 .then(info => setChaoticInfo(info || null))
                 .catch(() => { });
         }
-    }, [pkg.name, pkg.url, isChaotic, pkg.icon, initialChaoticInfo, pkg.app_id]);
+    }, [pkg.name, isChaotic, initialChaoticInfo]);
+
 
     return (
         <div
@@ -157,10 +118,10 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
                     )}
                     <div className="flex items-center gap-2">
                         {rating && rating.count > 0 && typeof rating.average === 'number' && (
-                            <div className="flex items-center gap-1 bg-yellow-500/10 px-1.5 py-0.5 rounded text-[10px] font-bold text-yellow-500 border border-yellow-500/20">
-                                <span>★</span>
-                                <span>{rating.average.toFixed(1)}</span>
-                                <span className="opacity-60 font-normal">({rating.count})</span>
+                            <div className="flex items-center gap-1.5 bg-yellow-400/10 backdrop-blur-md px-2 py-0.5 rounded-lg text-[10px] font-black text-yellow-500 border border-yellow-400/20 shadow-sm shadow-yellow-900/10">
+                                <span className="text-[12px] leading-none">★</span>
+                                <span className="tracking-tight">{rating.average.toFixed(1)}</span>
+                                <span className="opacity-50 font-medium">({rating.count})</span>
                             </div>
                         )}
                         {chaoticInfo && chaoticInfo.lastUpdated && (

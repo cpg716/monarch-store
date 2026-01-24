@@ -1,8 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { invoke } from '@tauri-apps/api/core';
 
-// Initialize Supabase Client (Placeholder Credentials)
-// User must update these in production or use env vars
 const SUPABASE_URL = "https://tcmbahxvwhcetfbtnxlj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_H5McpvxB2eoujN9LNzhy1w_lJup-ZcX";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -23,43 +21,45 @@ export interface RatingSummary {
 }
 
 /**
- * Fetches reviews from ODRS (if AppStream ID exists) OR Supabase (fallback).
+ * Fetches reviews from ODRS (with ID probing) OR Supabase (fallback).
  */
 export async function getPackageReviews(pkgName: string, appStreamId?: string): Promise<{ reviews: Review[], summary: RatingSummary }> {
-    // 1. Try ODRS if AppStream ID is available
+    const probeIds = new Set<string>();
     if (appStreamId) {
-        try {
-            const odrsRating: any = await invoke('get_app_rating', { appId: appStreamId });
-            const odrsReviews: any[] = await invoke('get_app_reviews', { appId: appStreamId });
+        probeIds.add(appStreamId);
+        if (!appStreamId.endsWith('.desktop')) probeIds.add(`${appStreamId}.desktop`);
+    }
+    if (pkgName) {
+        probeIds.add(pkgName);
+        if (!pkgName.endsWith('.desktop')) probeIds.add(`${pkgName}.desktop`);
+    }
 
-            // Only prioritize ODRS if it actually has content 
-            // (checking total > 0 to avoid overriding Supabase reviews with an empty ODRS sheet)
+    // 1. Try ODRS with probing
+    for (const id of Array.from(probeIds)) {
+        try {
+            const odrsRating: any = await invoke('get_app_rating', { appId: id });
+            const odrsReviews: any[] = await invoke('get_app_reviews', { appId: id });
+
             const hasOdrsRatings = odrsRating && odrsRating.total > 0;
             const hasOdrsReviews = odrsReviews && odrsReviews.length > 0;
 
             if (hasOdrsRatings || hasOdrsReviews) {
-
-                // Fallback: Calculate summary from reviews if rating API returned null
                 let average = odrsRating?.score ? odrsRating.score / 20 : 0;
                 let count = odrsRating?.total || 0;
 
                 if (count === 0 && odrsReviews.length > 0) {
                     count = odrsReviews.length;
                     const sum = odrsReviews.reduce((acc, r) => acc + (r.rating || 0), 0);
-                    // ODRS ratings in reviews are usually 0-100 too, check backend 'rating' field
-                    // In backend Review struct: pub rating: Option<u32>
-                    // In frontend map: rating: (r.rating || 0) / 20
-                    // So here we sum r.rating (0-100) and divide by count, then divide by 20 for 0-5 scale
                     average = (sum / count) / 20;
                 }
 
                 return {
                     reviews: odrsReviews.map(r => ({
-                        id: r.review_id,
+                        id: r.review_id || Math.random(),
                         userName: r.user_display || 'Anonymous',
                         rating: (r.rating || 0) / 20,
-                        comment: r.description || r.summary,
-                        date: new Date(r.date_created * 1000),
+                        comment: r.description || r.summary || '',
+                        date: new Date((r.date_created || 0) * 1000),
                         source: 'odrs'
                     })),
                     summary: {
@@ -76,59 +76,11 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
                 };
             }
         } catch (e) {
-            console.warn("[ReviewService] ODRS Fetch failed", e);
+            // Continue probing
         }
     }
 
-    // 1b. Fallback: Try ODRS with pkgName if appStreamId didn't work (or wasn't provided, though logic below handles that)
-    // Only try if pkgName is different from appStreamId to avoid redundant call
-    if (pkgName && pkgName !== appStreamId) {
-        let odrsRating: any = null;
-        let odrsReviews: any[] = [];
-
-        // Fetch independently to ensure one 404 doesn't block the other
-        try { odrsRating = await invoke('get_app_rating', { appId: pkgName }); } catch (e) { }
-        try { odrsReviews = await invoke('get_app_reviews', { appId: pkgName }); } catch (e) { }
-
-        const hasOdrsRatings = odrsRating && odrsRating.total > 0;
-        const hasOdrsReviews = odrsReviews && odrsReviews.length > 0;
-
-        if (hasOdrsRatings || hasOdrsReviews) {
-            // Fallback: Calculate summary from reviews if rating API returned null
-            let average = odrsRating?.score ? odrsRating.score / 20 : 0;
-            let count = odrsRating?.total || 0;
-
-            if (count === 0 && odrsReviews.length > 0) {
-                count = odrsReviews.length;
-                const sum = odrsReviews.reduce((acc: any, r: any) => acc + (r.rating || 0), 0);
-                average = (sum / count) / 20;
-            }
-
-            return {
-                reviews: odrsReviews.map((r: any) => ({
-                    id: r.review_id,
-                    userName: r.user_display || 'Anonymous',
-                    rating: (r.rating || 0) / 20,
-                    comment: r.description || r.summary,
-                    date: new Date(r.date_created * 1000),
-                    source: 'odrs'
-                })),
-                summary: {
-                    average: average,
-                    count: count,
-                    stars: {
-                        1: odrsRating?.star1 || 0,
-                        2: odrsRating?.star2 || 0,
-                        3: odrsRating?.star3 || 0,
-                        4: odrsRating?.star4 || 0,
-                        5: odrsRating?.star5 || 0,
-                    }
-                }
-            };
-        }
-    }
-
-    // 2. Fallback to Supabase (MonArch Community Reviews)
+    // 2. Fallback to Supabase
     try {
         const { data: reviews, error } = await supabase
             .from('reviews')
@@ -136,10 +88,7 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
             .eq('package_name', pkgName)
             .order('created_at', { ascending: false });
 
-        if (error) {
-            // console.warn("[ReviewService] Supabase error:", error); // Suppress generic errors for now
-            throw error;
-        }
+        if (error) throw error;
 
         const typedReviews = (reviews || []).map(r => ({
             id: r.id,
@@ -150,12 +99,10 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
             source: 'monarch' as const
         }));
 
-        // Calculate generic summary
         const total = typedReviews.length;
         const sum = typedReviews.reduce((acc, r) => acc + r.rating, 0);
         const avg = total > 0 ? sum / total : 0;
 
-        // Simple star count
         const stars = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
         typedReviews.forEach(r => {
             const rounded = Math.round(r.rating) as 1 | 2 | 3 | 4 | 5;
@@ -164,21 +111,14 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
 
         return {
             reviews: typedReviews,
-            summary: {
-                average: avg,
-                count: total,
-                stars
-            }
+            summary: { average: avg, count: total, stars }
         };
-
     } catch (e) {
-        console.warn("Supabase Fetch failed", e);
         return { reviews: [], summary: { average: 0, count: 0, stars: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } } };
     }
 }
 
 export async function submitReview(pkgName: string, rating: number, comment: string, userName: string) {
-    // Only submitting to Supabase for now to avoid ODRS auth complexity
     const { error } = await supabase
         .from('reviews')
         .insert({
@@ -193,16 +133,23 @@ export async function submitReview(pkgName: string, rating: number, comment: str
 
 /**
  * Fetches just the rating summary (efficiently) for a package.
- * Tries ODRS first, then Supabase.
+ * Tries ODRS first (probing), then Supabase.
  */
 export async function getCompositeRating(pkgName: string, appStreamId?: string): Promise<{ average: number; count: number } | null> {
-
-    // 1. Try ODRS
+    const probeIds = new Set<string>();
     if (appStreamId) {
-        try {
-            // Try lightweight rating API first
-            const odrsRating: any = await invoke('get_app_rating', { appId: appStreamId });
+        probeIds.add(appStreamId);
+        if (!appStreamId.endsWith('.desktop')) probeIds.add(`${appStreamId}.desktop`);
+    }
+    if (pkgName) {
+        probeIds.add(pkgName);
+        if (!pkgName.endsWith('.desktop')) probeIds.add(`${pkgName}.desktop`);
+    }
 
+    // 1. Try ODRS with probing
+    for (const id of Array.from(probeIds)) {
+        try {
+            const odrsRating: any = await invoke('get_app_rating', { appId: id });
             if (odrsRating && odrsRating.total > 0) {
                 return {
                     average: odrsRating.score ? odrsRating.score / 20 : 0,
@@ -210,29 +157,12 @@ export async function getCompositeRating(pkgName: string, appStreamId?: string):
                 };
             }
 
-            // Fallback: Fetch reviews if rating API failed but reviews might exist (e.g. VLC case)
-            const odrsReviews: any[] = await invoke('get_app_reviews', { appId: appStreamId });
+            const odrsReviews: any[] = await invoke('get_app_reviews', { appId: id });
             if (odrsReviews && odrsReviews.length > 0) {
                 const count = odrsReviews.length;
                 const sum = odrsReviews.reduce((acc, r) => acc + (r.rating || 0), 0);
-                const average = (sum / count) / 20; // 0-100 -> 0-5
+                const average = (sum / count) / 20;
                 return { average, count };
-            }
-
-        } catch (e) {
-            // console.warn("ODRS Rating fetch failed", e);
-        }
-    }
-
-    // 1b. Fallback ODRS (Try pkgName if different)
-    if (pkgName && pkgName !== appStreamId) {
-        try {
-            const odrsRating: any = await invoke('get_app_rating', { appId: pkgName });
-            if (odrsRating && odrsRating.total > 0) {
-                return {
-                    average: odrsRating.score ? odrsRating.score / 20 : 0,
-                    count: odrsRating.total
-                };
             }
         } catch (e) { }
     }

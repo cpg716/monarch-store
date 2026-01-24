@@ -33,6 +33,16 @@ This section guides you through submitting an enhancement suggestion, including 
 - Include screenshots and animated GIFs in your pull request whenever possible.
 - End all files with a newline
 
+### ⚠️ REPO SAFETY RULES (CRITICAL)
+
+**Any modification to package management logic (pacman/makepkg wrappers, root command execution) requires MANDATORY Security Review.**
+
+- **No Arbitrary Command Execution:** Never construct shell commands from unsanitized user input.
+- **Root Privileges:** Mininize `sudo` or `pkexec` usage.
+- **Partial Upgrades:** Ensure `pacman -Sy` is NEVER used without safeguards. Only `pacman -S` or full system upgrades are allowed.
+
+Violating these rules will result in immediate PR closure.
+
 ## Styleguides
 
 ### Git Commit Messages

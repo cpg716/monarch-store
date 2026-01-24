@@ -165,14 +165,36 @@ impl RepoManager {
                 if let Ok(saved_config) = serde_json::from_reader::<_, StoredConfig>(reader) {
                     initial_aur = saved_config.aur_enabled;
 
-                    // Merge saved states with defaults (to allow new repos in updates)
+                    // Merge saved states with defaults
                     for repo in &mut initial_repos {
                         if let Some(saved_repo) =
                             saved_config.repos.iter().find(|r| r.name == repo.name)
                         {
                             repo.enabled = saved_repo.enabled;
-                            // FORCE update URLs for official/optimized repos to latest defaults
-                            // This ensures users migrate to new mirrors (like cdn77) automatically.
+                        }
+
+                        // CRITICAL: Strict Hardware Enforcement
+                        // If a repo is enabled but incompatible with the detected CPU, force it off.
+                        let is_cachy = repo.name.to_lowercase().starts_with("cachyos");
+                        if repo.enabled && is_cachy {
+                            let repo_lower = repo.name.to_lowercase();
+                            let is_compatible = if repo_lower.contains("-znver4") {
+                                crate::utils::is_cpu_znver4_compatible()
+                            } else if repo_lower.contains("-v4") {
+                                crate::utils::is_cpu_v4_compatible()
+                            } else if repo_lower.contains("-v3") || repo_lower.contains("-core") {
+                                crate::utils::is_cpu_v3_compatible()
+                            } else {
+                                true // standard x86-64
+                            };
+
+                            if !is_compatible {
+                                println!(
+                                    "WARNING: Disabling incompatible repo '{}' for current CPU",
+                                    repo.name
+                                );
+                                repo.enabled = false;
+                            }
                         }
                     }
                 }
@@ -244,7 +266,9 @@ impl RepoManager {
 
             handles.push(tokio::spawn(async move {
                 // Pass cache_dir, force flag, and interval_hours
+                let client = repo_db::RealRepoClient::new();
                 match repo_db::fetch_repo_packages(
+                    &client,
                     &r.url,
                     &r.name,
                     r.source,

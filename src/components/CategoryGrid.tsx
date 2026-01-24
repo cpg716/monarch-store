@@ -155,7 +155,11 @@ export default function CategoryGrid({ onSelectCategory }: CategoryGridProps) {
                                 {/* Popular Examples */}
                                 <div className="flex flex-wrap gap-2 mt-auto">
                                     {cat.popular.map(app => (
-                                        <span key={app} className="text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded bg-app-subtle text-app-muted border border-app-border">
+                                        <span
+                                            key={app}
+                                            onClick={(e) => { e.stopPropagation(); onSelectCategory(cat.id); }}
+                                            className="text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded bg-app-subtle text-app-muted border border-app-border hover:bg-blue-500/10 hover:text-blue-500 hover:border-blue-500/30 transition-all cursor-default"
+                                        >
                                             {app}
                                         </span>
                                     ))}

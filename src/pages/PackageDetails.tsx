@@ -1,27 +1,17 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Download, Globe, Calendar, User, Zap, Package as PackageIcon, AlertTriangle, Star, MessageSquare, ChevronDown, X, ChevronLeft, ChevronRight, Code, Loader2, Heart } from 'lucide-react';
+import { ArrowLeft, Download, Globe, Calendar, User, Zap, Package as PackageIcon, AlertTriangle, Star, MessageSquare, X, ChevronLeft, ChevronRight, Code, Loader2, Heart } from 'lucide-react';
+import RepoSelector from '../components/RepoSelector';
 import { Package } from '../components/PackageCard';
 import InstallMonitor from '../components/InstallMonitor';
 import RepoSetupModal from '../components/RepoSetupModal';
 import { invoke } from '@tauri-apps/api/core';
 import { clsx } from 'clsx';
 import { useFavorites } from '../hooks/useFavorites';
-import { getPackageReviews, submitReview, Review as ServiceReview, RatingSummary } from '../services/reviewService';
+import { submitReview } from '../services/reviewService';
 import { trackEvent } from '@aptabase/tauri';
 
-interface AppMetadata {
-    name: string;
-    pkg_name?: string;
-    icon_url?: string;
-    app_id: string;
-    summary?: string;
-    screenshots: string[];
-    version?: string;
-    maintainer?: string;
-    license?: string;
-    last_updated?: number;
-    description?: string;
-}
+import { usePackageReviews } from '../hooks/useRatings';
+import { usePackageMetadata } from '../hooks/usePackageMetadata';
 
 // Define types locally if not in shared types
 interface PackageDetailsProps {
@@ -41,6 +31,8 @@ interface ChaoticPackage {
     }
 }
 
+// Define types locally if not in shared types
+
 export default function PackageDetails({ pkg, onBack, preferredSource }: PackageDetailsProps) {
     // State
     interface PackageVariant {
@@ -50,13 +42,14 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
         pkg_name?: string;
     }
 
-    // Explicitly typed state
-    const [fullMeta, setFullMeta] = useState<AppMetadata | null>(null);
+    // Global Data Optimization (Source of Truth)
+    const { metadata: fullMeta } = usePackageMetadata(pkg.name);
     const [chaoticInfo, setChaoticInfo] = useState<ChaoticPackage | null>(null);
-    const [rating, setRating] = useState<RatingSummary | null>(null);
-    const [reviews, setReviews] = useState<ServiceReview[]>([]);
 
-    // Removed localReviews state as it is merged in reviewService
+    // Unified Review System (Source of Truth)
+    // Preference: Prop app_id > Meta app_id > pkg.name
+    const lookupId = pkg.app_id || fullMeta?.app_id || pkg.name;
+    const { reviews, summary: rating, refresh: refreshReviews } = usePackageReviews(pkg.name, lookupId);
 
     const [activeTab, setActiveTab] = useState<'details' | 'reviews'>('details');
     const [showReviewForm, setShowReviewForm] = useState(false);
@@ -68,7 +61,6 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
     const [variants, setVariants] = useState<PackageVariant[]>([]);
     const [selectedSource, setSelectedSource] = useState<string>(pkg.source);
 
-    // Install Flow State
     // Install Flow State
     const [showInstallMonitor, setShowInstallMonitor] = useState(false);
     const [showInstallConfirm, setShowInstallConfirm] = useState(false);
@@ -122,31 +114,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
                 }
             })
             .catch(console.error);
-
-        // 2. Fetch Metadata
-        const loadInitialMeta = async () => {
-            if (pkg.icon || pkg.screenshots) {
-                setFullMeta({
-                    name: pkg.display_name || pkg.name,
-                    pkg_name: pkg.name,
-                    icon_url: pkg.icon,
-                    screenshots: pkg.screenshots || [],
-                    app_id: pkg.name
-                });
-            }
-
-            try {
-                const meta = await invoke<AppMetadata>('get_metadata', { pkgName: pkg.name, upstreamUrl: pkg.url });
-                setFullMeta(meta);
-            } catch (e) {
-                console.error(e);
-            }
-        };
-
-        loadInitialMeta();
-
-        // ... (rest of effects combined for clarity/lifecycle)
-    }, [pkg.name, pkg.url, pkg.icon, pkg.screenshots]); // Removed isChaotic dep to avoid loops if source changes
+    }, [pkg.name, pkg.url, pkg.icon, pkg.screenshots, preferredSource]); // Removed isChaotic dep to avoid loops if source changes
 
     // Derived state for UI consistency
     // const isChaotic = selectedSource === 'chaotic';
@@ -161,32 +129,6 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
     }, [selectedSource, pkg.name]);
 
 
-    useEffect(() => {
-        let isMounted = true;
-
-        const fetchReviews = async () => {
-            // setIsLoadingReviews(true);
-            try {
-                // Determine ID to use (prefer AppStream ID if available, else pkg name)
-                const lookupId = fullMeta?.app_id || pkg.app_id || pkg.name;
-                // console.log(`[PackageDetails] Loading reviews for ${pkg.name}. Lookup ID: ${lookupId}`);
-
-                const { reviews: fetchedReviews, summary } = await getPackageReviews(pkg.name, lookupId);
-
-                if (isMounted) {
-                    setReviews(fetchedReviews);
-                    setRating(summary);
-                }
-            } catch (e) {
-                console.error("Failed to load reviews", e);
-            }
-        };
-
-        fetchReviews();
-
-        return () => { isMounted = false; };
-    }, [pkg.name, fullMeta?.app_id]); // Depend on ID specifically, not whole object to reduce churn
-
     const handleReviewSubmit = async () => {
         try {
             // Need user name, for now hardcoded "You" or from auth if we had it
@@ -196,11 +138,8 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
             setReviewTitle('');
             setReviewBody('');
 
-            // Refresh reviews
-            const lookupId = fullMeta?.app_id || pkg.app_id || pkg.name;
-            const { reviews: fetchedReviews, summary } = await getPackageReviews(pkg.name, lookupId);
-            setReviews(fetchedReviews);
-            setRating(summary);
+            // Refresh reviews via hook
+            refreshReviews();
 
             trackEvent('review_submitted', { package: pkg.name, rating: reviewRating });
             alert("Review submitted!");
@@ -338,14 +277,17 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
                             {fullMeta?.summary || pkg.description}
                         </p>
 
-                        {/* Rating Summary moved here */}
+                        {/* Rating Summary */}
                         {rating && rating.count > 0 && (
                             <div className="flex items-center justify-center lg:justify-start gap-2 mt-3">
                                 <div className="flex text-yellow-500 gap-0.5">
                                     {[1, 2, 3, 4, 5].map(s => (
-                                        <Star key={s} size={18} fill={s <= rating.average ? "currentColor" : "none"} />
+                                        <Star key={s} size={18} fill={s <= Math.round(rating.average) ? "currentColor" : "none"} />
                                     ))}
                                 </div>
+                                <span className="text-sm font-bold text-app-fg ml-1">
+                                    {rating.average.toFixed(1)}
+                                </span>
                                 <span className="text-sm text-app-muted">
                                     ({rating.count} reviews)
                                 </span>
@@ -376,26 +318,15 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
                             {variants.length > 1 && (
                                 <div className="flex flex-col items-start text-left">
                                     <span className="text-xs text-app-muted mb-1 font-medium">Install from:</span>
-                                    <div className="relative z-10">
-                                        <select
-                                            value={selectedSource}
-                                            onChange={(e) => setSelectedSource(e.target.value as any)}
-                                            className="appearance-none bg-app-card/50 border border-app-border rounded-xl px-4 py-3 pr-10 text-app-fg font-medium focus:outline-none focus:ring-2 focus:ring-app-accent/50 cursor-pointer text-sm"
-                                        >
-                                            {variants.map(v => {
-                                                const label = v.source === 'chaotic' ? 'Chaotic (Prebuilt)' :
-                                                    v.source === 'official' ? 'Official' :
-                                                        v.source === 'aur' ? 'AUR (Source)' :
-                                                            v.source === 'cachyos' ? 'CachyOS' :
-                                                                v.source.charAt(0).toUpperCase() + v.source.slice(1);
-                                                return (
-                                                    <option key={v.source} value={v.source}>
-                                                        {label} - {v.version}
-                                                    </option>
-                                                );
-                                            })}
-                                        </select>
-                                        <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-app-muted pointer-events-none" />
+                                    <div className="relative z-10 w-full">
+                                        <RepoSelector
+                                            variants={variants.map(v => ({
+                                                source: v.source,
+                                                version: v.version
+                                            }))}
+                                            selectedSource={selectedSource}
+                                            onChange={(s) => setSelectedSource(s as any)}
+                                        />
                                     </div>
                                     {/* Helper text under dropdown */}
                                     <p className="text-xs text-app-muted mt-2 max-w-[320px]">

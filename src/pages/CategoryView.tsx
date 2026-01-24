@@ -4,6 +4,7 @@ import { ArrowLeft, LayoutGrid, Filter } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import PackageCard, { Package, ChaoticPackage } from '../components/PackageCard';
 import PackageCardSkeleton from '../components/PackageCardSkeleton';
+import EmptyState from '../components/EmptyState';
 import { CATEGORIES } from '../components/CategoryGrid';
 
 interface CategoryViewProps {
@@ -260,10 +261,12 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                         ))}
                     </div>
                 ) : packages.length === 0 ? (
-                    <div className="text-center text-app-muted mt-20">
-                        <p>No applications found{repoFilter !== 'all' ? ` in ${getRepoLabel(repoFilter)}` : ' in this category'}.</p>
-                        <p className="text-sm mt-2">Try selecting a different repo or searching manually.</p>
-                    </div>
+                    <EmptyState
+                        title="No apps found"
+                        description={`No applications found${repoFilter !== 'all' ? ` in ${getRepoLabel(repoFilter)}` : ' in this category'}. Try selecting a different repo.`}
+                        actionLabel={repoFilter !== 'all' ? "Show All Repos" : undefined}
+                        onAction={repoFilter !== 'all' ? () => setRepoFilter('all') : undefined}
+                    />
                 ) : (
                     <>
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">

@@ -6,7 +6,57 @@ use tar::Archive;
 
 // Struct removed.
 
-pub async fn fetch_repo_packages(
+#[async_trait::async_trait]
+pub trait RepoClient: Send + Sync {
+    async fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>, String>;
+}
+
+pub struct RealRepoClient {
+    client: Client,
+}
+
+impl RealRepoClient {
+    pub fn new() -> Self {
+        let client = Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+            .timeout(std::time::Duration::from_secs(30))
+            .http1_only()
+            .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
+            .pool_idle_timeout(Some(std::time::Duration::from_secs(60)))
+            .default_headers({
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8".parse().unwrap());
+                headers.insert(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.5".parse().unwrap());
+                headers.insert(reqwest::header::CONNECTION, "keep-alive".parse().unwrap());
+                headers
+            })
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait]
+impl RepoClient for RealRepoClient {
+    async fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
+        match self.client.get(url).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    match resp.bytes().await {
+                        Ok(data) => Ok(data.to_vec()),
+                        Err(e) => Err(format!("Bytes error: {}", e)),
+                    }
+                } else {
+                    Err(format!("HTTP {}", resp.status()))
+                }
+            }
+            Err(e) => Err(format!("Request error: {}", e)),
+        }
+    }
+}
+
+pub async fn fetch_repo_packages<C: RepoClient>(
+    client: &C,
     mirror_url: &str,
     repo_name: &str,
     source: PackageSource,
@@ -44,23 +94,6 @@ pub async fn fetch_repo_packages(
         std::fs::read(&cache_path).map_err(|e| e.to_string())?
     } else {
         // Download with Fallback
-        let client = Client::builder()
-            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
-            .timeout(std::time::Duration::from_secs(30))
-            .http1_only() // Force HTTP/1.1 to avoid ALPN issues on Mac
-            .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
-            .pool_idle_timeout(Some(std::time::Duration::from_secs(60)))
-            .default_headers({
-                let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8".parse().unwrap());
-                headers.insert(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.5".parse().unwrap());
-                headers.insert(reqwest::header::CONNECTION, "keep-alive".parse().unwrap());
-                headers
-            })
-            .build()
-            .unwrap_or_else(|_| Client::new());
-
-        // Define potential mirror rotations based on repo source
         let mut mirrors_to_try = vec![mirror_url.to_string()];
 
         if mirror_url.contains("cachyos.org") || mirror_url.contains("soulharsh007.dev") {
@@ -118,7 +151,7 @@ pub async fn fetch_repo_packages(
             }
         }
 
-        let mut last_err = String::new();
+        let mut accumulated_errors = Vec::new();
         let mut success_data = None;
 
         for (i, url) in mirrors_to_try.iter().enumerate() {
@@ -126,30 +159,14 @@ pub async fn fetch_repo_packages(
                 // println!("Retrying with mirror: {}", url);
             }
 
-            match client.get(url).send().await {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        match resp.bytes().await {
-                            Ok(data) => {
-                                success_data = Some(data.to_vec());
-                                break;
-                            }
-                            Err(e) => {
-                                let err = format!("Bytes error from {}: {}", url, e);
-                                println!("{}", err);
-                                last_err = err;
-                            }
-                        }
-                    } else {
-                        let err = format!("HTTP {} from {}", resp.status(), url);
-                        println!("{}", err);
-                        last_err = err;
-                    }
+            match client.fetch_bytes(url).await {
+                Ok(data) => {
+                    success_data = Some(data);
+                    break;
                 }
                 Err(e) => {
-                    let err = format!("Request error from {}: {}", url, e);
-                    println!("{}", err);
-                    last_err = err;
+                    let err = format!("Error from {}: {}", url, e);
+                    accumulated_errors.push(err);
                 }
             }
         }
@@ -162,8 +179,9 @@ pub async fn fetch_repo_packages(
             }
             None => {
                 return Err(format!(
-                    "All mirrors failed for {}: {}",
-                    repo_name, last_err
+                    "All mirrors failed for {}. Errors: [{}]",
+                    repo_name,
+                    accumulated_errors.join("; ")
                 ))
             }
         }
@@ -288,5 +306,113 @@ fn parse_desc(content: &str, source: PackageSource) -> Option<Package> {
         })
     } else {
         None
+    }
+}
+
+// ----------------------
+// Mocks & Tests
+// ----------------------
+
+#[cfg(test)]
+pub struct MockRepoClient {
+    pub responses: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, Result<Vec<u8>, String>>>,
+    >,
+}
+
+#[cfg(test)]
+impl MockRepoClient {
+    pub fn new() -> Self {
+        Self {
+            responses: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    pub fn mock_response(&self, url: &str, data: Vec<u8>) {
+        self.responses
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), Ok(data));
+    }
+
+    pub fn mock_error(&self, url: &str, error: &str) {
+        self.responses
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), Err(error.to_string()));
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl RepoClient for MockRepoClient {
+    async fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
+        let responses = self.responses.lock().unwrap();
+        if let Some(res) = responses.get(url) {
+            res.clone()
+        } else {
+            Err(format!("Mock 404: {}", url))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::PackageSource;
+
+    #[tokio::test]
+    async fn test_fetch_repo_packages_success_mock() {
+        let mock_client = MockRepoClient::new();
+        // Emulate empty response (valid empty file)
+        let url = "https://example.com/repo.db";
+        mock_client.mock_response(url, vec![]);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_path = temp_dir.path();
+
+        let result = fetch_repo_packages(
+            &mock_client,
+            url,
+            "test_repo",
+            PackageSource::CachyOS,
+            cache_path,
+            true,
+            0,
+        )
+        .await;
+
+        // An empty file is a valid empty tar archive, so this should succeed.
+        // This confirms the network mock delivered the payload.
+        assert!(result.is_ok());
+        let pkgs = result.unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_repo_all_mirrors_fail() {
+        let mock_client = MockRepoClient::new();
+        let url = "https://example.com/repo.db";
+        mock_client.mock_error(url, "Connection Timeout");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_path = temp_dir.path();
+
+        let result = fetch_repo_packages(
+            &mock_client,
+            url,
+            "fail_repo",
+            PackageSource::CachyOS,
+            cache_path,
+            true,
+            0,
+        )
+        .await;
+
+        // Verify correct error aggregation
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.contains("All mirrors failed"));
+        assert!(err.contains("Connection Timeout"));
     }
 }

@@ -43,5 +43,6 @@ commands.allow = [
     "check_repo_status",
     "enable_repo",
     "reset_pacman_conf",
-    "enable_repos_batch"
+    "enable_repos_batch",
+    "bootstrap_infrastructure"
 ]

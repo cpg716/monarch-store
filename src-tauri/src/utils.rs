@@ -122,19 +122,34 @@ pub fn is_cpu_v4_compatible() -> bool {
 
 // Checks if the CPU is Zen 4 or Zen 5 (optimized)
 pub fn is_cpu_znver4_compatible() -> bool {
+    // 1. Must support v4 features (AVX512, etc)
     if !is_cpu_v4_compatible() {
         return false;
     }
 
-    // Check for Zen vendor and specific features if possible
-    // For now, CachyOS uses v4 dbs for znver4 mostly, but we can detect "AuthenticAMD" + "avx512f"
+    // 2. Check for Zen 4/5 specific identifiers
     if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
-        let is_amd = content.contains("AuthenticAMD");
-        let has_avx512 = content.contains("avx512f");
-        let is_zen4 = content.contains("model name")
-            && (content.contains("7000") || content.contains("8000") || content.contains("9000"));
+        let content_lower = content.to_lowercase();
+        let is_amd = content_lower.contains("authenticamd");
 
-        return is_amd && has_avx512 && is_zen4;
+        // Zen 4 (7000/8000/9000 series) uses AVX-512 and several specific instruction patterns
+        // We look for 'avx512_bf16' or 'avx512_fp16' which are specific to newer Zen architectures
+        let has_zen4_flags =
+            content_lower.contains("avx512_bf16") || content_lower.contains("avx512_fp16");
+
+        if is_amd && has_zen4_flags {
+            return true;
+        }
+
+        // Fallback to model name check if flags are masked
+        if is_amd && content_lower.contains("model name") {
+            if content_lower.contains("7000")
+                || content_lower.contains("8000")
+                || content_lower.contains("9000")
+            {
+                return true;
+            }
+        }
     }
     false
 }
@@ -221,4 +236,41 @@ mod tests {
         assert_eq!(pkgs[1].name, "chrome-gnome-shell"); // Official (Rank 3)
         assert_eq!(pkgs[2].name, "open-chrome"); // Aur (Rank 4)
     }
+}
+
+/// Merges official/appstream packages with repository packages, handling deduplication.
+/// This logic was extracted from lib.rs to allow for unit testing.
+pub fn merge_and_deduplicate(
+    mut base_packages: Vec<models::Package>,
+    repo_results: Vec<models::Package>,
+) -> Vec<models::Package> {
+    // Track seen App IDs to prevent duplicates (e.g. brave-bin vs brave)
+    let mut seen_app_ids: std::collections::HashSet<String> = base_packages
+        .iter()
+        .filter_map(|p| p.app_id.clone())
+        .collect();
+
+    for mut pkg in repo_results {
+        // Skip if name exists exactly
+        if base_packages.iter().any(|p| p.name == pkg.name) {
+            continue;
+        }
+
+        // Note: Icon/AppID heuristics would normally go here, but they require AppStreamLoader state.
+        // For this pure function, we assume AppIDs are already populated or will be handled by the caller
+        // if they depend on state.
+        // However, for correct deduplication testing, we must respect the app_id if present.
+
+        if let Some(id) = &pkg.app_id {
+            if seen_app_ids.contains(id) {
+                continue;
+            }
+            seen_app_ids.insert(id.clone());
+        }
+
+        pkg.display_name = Some(to_pretty_name(&pkg.name));
+        base_packages.push(pkg);
+    }
+
+    base_packages
 }

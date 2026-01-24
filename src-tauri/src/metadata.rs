@@ -133,16 +133,44 @@ impl AppStreamLoader {
     }
 
     pub fn find_icon_heuristic(&self, pkg_name: &str) -> Option<String> {
-        // 1. O(1) Exact lookup
+        // 1. O(1) Exact lookup in index
         if let Some(icon) = self.icon_index.get(pkg_name) {
             return Some(icon.clone());
         }
 
-        // 2. Try Suffix Stripping (Centralized)
+        // 2. Try Suffix Stripping (e.g. brave-bin -> brave)
         let base_name = crate::utils::strip_package_suffix(pkg_name);
         if base_name != pkg_name {
             if let Some(icon) = self.icon_index.get(base_name) {
                 return Some(icon.clone());
+            }
+        }
+
+        // 3. Search the icons directory for pattern match
+        let icons_dir = get_icons_dir();
+        if let Ok(entries) = std::fs::read_dir(&icons_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name_os) = path.file_name() {
+                    let name = name_os.to_string_lossy();
+                    // Match "firefox.png" or "firefox_*.png"
+                    if (name.starts_with(pkg_name)
+                        && (name.ends_with(".png") || name.ends_with(".svg")))
+                        && (name == format!("{}.png", pkg_name)
+                            || name == format!("{}.svg", pkg_name)
+                            || name.starts_with(&format!("{}_", pkg_name)))
+                    {
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            let mime = if path.extension().is_some_and(|e| e == "svg") {
+                                "image/svg+xml"
+                            } else {
+                                "image/png"
+                            };
+                            let encoded = BASE64_STANDARD.encode(&bytes);
+                            return Some(format!("data:{};base64,{}", mime, encoded));
+                        }
+                    }
+                }
             }
         }
 
@@ -561,150 +589,201 @@ pub async fn fetch_og_image(url: &str) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn get_metadata(
+pub async fn get_metadata_batch(
     state: State<'_, MetadataState>,
     scm_state: State<'_, crate::ScmState>,
     chaotic_state: State<'_, crate::chaotic_api::ChaoticApiClient>,
     flathub_state: State<'_, crate::flathub_api::FlathubApiClient>,
+    pkg_names: Vec<String>,
+) -> Result<HashMap<String, AppMetadata>, ()> {
+    let mut results = HashMap::new();
+
+    // Process in parallel or sequential?
+    // Since some involves remote API (Flathub, Chaotic), sequential in loop is simplest for now
+    // but better than multiple bridge calls.
+    for pkg_name in pkg_names {
+        // reuse existing get_metadata logic by extracting it or calling it
+        // calling get_metadata requires States which we already have here
+        if let Ok(meta) = get_metadata(
+            state.clone(),
+            scm_state.clone(),
+            chaotic_state.clone(),
+            flathub_state.clone(),
+            pkg_name.clone(),
+            None, // batch doesn't support upstream_url yet
+        )
+        .await
+        {
+            results.insert(pkg_name, meta);
+        }
+    }
+
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn get_metadata(
+    state: State<'_, MetadataState>,
+    scm_state: State<'_, crate::ScmState>,
+    _chaotic_state: State<'_, crate::chaotic_api::ChaoticApiClient>,
+    flathub_state: State<'_, crate::flathub_api::FlathubApiClient>,
     pkg_name: String,
     upstream_url: Option<String>,
 ) -> Result<AppMetadata, ()> {
-    // Scope the lock so it is dropped before any await points
-    let appstream_result = {
+    // 1. Try AppStream Match
+    let app_meta = {
         let loader = state.0.lock().unwrap();
-
-        // 1. Try exact AppStream match
-        if let Some(meta) = loader.find_package(&pkg_name) {
-            Some(meta)
-        } else {
-            // 2. Try heuristic matching
-            let mut found = None;
+        loader.find_package(&pkg_name).or_else(|| {
+            // Heuristic stripper match
             let base_name = crate::utils::strip_package_suffix(&pkg_name);
-
             if base_name != pkg_name {
-                if let Some(mut meta) = loader.find_package(base_name) {
-                    meta.pkg_name = Some(pkg_name.clone());
-                    found = Some(meta);
-                }
+                loader.find_package(base_name)
+            } else {
+                None
             }
-
-            if found.is_none() {
-                // 3. Try prefix matching
-                if let Some(col) = &loader.collection {
-                    for component in col.components.iter() {
-                        if let Some(cpkg) = &component.pkgname {
-                            if pkg_name.starts_with(cpkg.as_str()) && pkg_name.len() > cpkg.len() {
-                                let mut meta = loader.component_to_metadata(component);
-                                meta.pkg_name = Some(pkg_name.clone());
-                                found = Some(meta);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            found
-        }
+        })
     };
 
-    if let Some(meta) = appstream_result {
-        return Ok(meta);
-    }
-
-    // 4. Try Flathub API (many popular apps have Flatpak versions with rich metadata)
-    let flathub_meta = flathub_state.get_metadata_for_package(&pkg_name).await;
-
-    if let Some(meta) = flathub_meta {
-        return Ok(crate::flathub_api::flathub_to_app_metadata(
-            &meta, &pkg_name,
-        ));
-    }
-
-    // 5. Try SCM Metadata (GitHub/GitLab)
-    // This is very efficient for getting icons for AUR packages hosted on GitHub
-    let scm_data = if let Some(url) = &upstream_url {
-        scm_state.0.fetch_metadata(url).await
+    // 2. Try Flathub (If AppStream failed)
+    let flathub_meta = if app_meta.is_none() {
+        flathub_state.get_metadata_for_package(&pkg_name).await
     } else {
         None
     };
 
-    if let Some(scm) = &scm_data {
-        if scm.icon_url.is_some() || scm.description.is_some() || !scm.screenshots.is_empty() {
-            return Ok(AppMetadata {
-                name: pkg_name.clone(),
-                pkg_name: Some(pkg_name.clone()),
-                icon_url: scm.icon_url.clone(),
-                app_id: pkg_name.clone(),
-                summary: scm.description.clone(),
-                screenshots: scm.screenshots.clone(),
-                version: None,
-                maintainer: None,
-                license: scm.license.clone(),
-                last_updated: None,
-                description: scm.description.clone(),
+    // Initialize our results with best available "Base" metadata
+    let mut final_meta = if let Some(meta) = app_meta {
+        meta
+    } else if let Some(meta) = flathub_meta {
+        crate::flathub_api::flathub_to_app_metadata(&meta, &pkg_name)
+    } else {
+        AppMetadata {
+            name: pkg_name.clone(),
+            pkg_name: Some(pkg_name.clone()),
+            icon_url: None,
+            app_id: pkg_name.clone(),
+            summary: None,
+            screenshots: vec![],
+            version: None,
+            maintainer: None,
+            license: None,
+            last_updated: None,
+            description: None,
+        }
+    };
+
+    // 3. Icon Fallback Chain
+    if final_meta.icon_url.is_none() {
+        // A. Try Local Heuristics (Icons folder)
+        let icon_heuristic = {
+            let loader = state.0.lock().unwrap();
+            loader.find_icon_heuristic(&pkg_name)
+        };
+
+        if let Some(icon) = icon_heuristic {
+            final_meta.icon_url = Some(icon);
+        } else {
+            // B. Try SCM (GitHub/GitLab)
+            if let Some(url) = &upstream_url {
+                if let Some(scm) = scm_state.0.fetch_metadata(url).await {
+                    if let Some(icon) = scm.icon_url {
+                        final_meta.icon_url = Some(icon);
+                    }
+                    if final_meta.summary.is_none() {
+                        final_meta.summary = scm.description.clone();
+                    }
+                }
+            }
+
+            // C. Try OG image/Favicon
+            if final_meta.icon_url.is_none() {
+                if let Some(url) = &upstream_url {
+                    if let Some(og) = fetch_og_image(url).await {
+                        final_meta.icon_url = Some(og);
+                    } else {
+                        final_meta.icon_url = Some(get_favicon_url(url));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(final_meta)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HealthIssue {
+    pub category: String,
+    pub severity: String,
+    pub message: String,
+    pub action_label: String,
+    pub action_command: Option<String>,
+}
+
+#[tauri::command]
+pub async fn check_system_health() -> Result<Vec<HealthIssue>, String> {
+    let mut issues = Vec::new();
+
+    // 1. Check dependencies
+    let deps = ["base-devel", "git"];
+    for dep in deps {
+        let has_dep = std::process::Command::new("pacman")
+            .args(["-Qq", dep])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if !has_dep {
+            issues.push(HealthIssue {
+                category: "Dependency".to_string(),
+                severity: "Critical".to_string(),
+                message: format!("Missing essential build dependency: {}", dep),
+                action_label: format!("Install {}", dep),
+                action_command: Some(format!("pkexec pacman -S --needed --noconfirm {}", dep)),
             });
         }
     }
 
-    // 6. Try Chaotic-AUR Metadata
-    let chaotic_pkg = chaotic_state.find_package(&pkg_name).await;
+    // 2. Check for sync failures (Check if monarch-store/dbs exists and has files)
+    let dbs_dir = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("monarch-store")
+        .join("dbs");
 
-    if let Some(cp) = chaotic_pkg {
-        if cp.metadata.is_some() {
-            if let Some(meta) = cp.metadata {
-                return Ok(AppMetadata {
-                    name: pkg_name.clone(),
-                    pkg_name: Some(pkg_name.clone()),
-                    icon_url: None, // Chaotic doesn't seem to have icons in this metadata struct
-                    app_id: pkg_name.clone(),
-                    summary: meta.desc,
-                    screenshots: vec![],
-                    version: cp.version,
-                    maintainer: None,
-                    license: meta.license,
-                    last_updated: None,
-                    description: None,
-                });
-            }
-        }
+    if !dbs_dir.exists()
+        || std::fs::read_dir(&dbs_dir)
+            .map(|d| d.count() == 0)
+            .unwrap_or(true)
+    {
+        issues.push(HealthIssue {
+            category: "Repository".to_string(),
+            severity: "Warning".to_string(),
+            message: "No package databases found. Browse might be empty.".to_string(),
+            action_label: "Refresh Repositories".to_string(),
+            action_command: None, // Frontend will handle triggering sync
+        });
     }
 
-    // 7. Fallback: Try OpenGraph image, then Favicon from upstream URL
-    let mut icon_url = None;
-    let mut fallback_screenshots = vec![];
+    // 3. Hardware Optimization Status
+    let opt_level = if crate::utils::is_cpu_znver4_compatible() {
+        "Zen 4/5 (Extreme)"
+    } else if crate::utils::is_cpu_v4_compatible() {
+        "v4 (AVX-512)"
+    } else if crate::utils::is_cpu_v3_compatible() {
+        "v3 (AVX2)"
+    } else {
+        "v1 (Standard x86-64)"
+    };
 
-    // Try to use SCM data first
-    if let Some(scm) = scm_data {
-        icon_url = scm.icon_url;
-        fallback_screenshots = scm.screenshots;
-    }
+    issues.push(HealthIssue {
+        category: "Hardware".to_string(),
+        severity: "Info".to_string(),
+        message: format!("Hardware Optimization Level: {}", opt_level),
+        action_label: "View Optimization Guide".to_string(),
+        action_command: None,
+    });
 
-    // If still no icon, try OpenGraph from upstream URL
-    if icon_url.is_none() {
-        if let Some(url) = &upstream_url {
-            // Try OG image (async would be better but this is fallback)
-            if let Some(og) = fetch_og_image(url).await {
-                icon_url = Some(og);
-            } else {
-                // Last resort: favicon
-                icon_url = Some(get_favicon_url(url));
-            }
-        }
-    }
-
-    Ok(AppMetadata {
-        name: pkg_name.clone(),
-        pkg_name: Some(pkg_name.clone()),
-        icon_url,
-        app_id: pkg_name,
-        summary: None,
-        screenshots: fallback_screenshots,
-        version: None,
-        maintainer: None,
-        license: None,
-        last_updated: None,
-        description: None,
-    })
+    Ok(issues)
 }
 
 #[tauri::command]
