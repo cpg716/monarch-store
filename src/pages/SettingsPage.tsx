@@ -299,295 +299,296 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                             <Package size={22} className="text-app-muted" /> Repository Priority
                         </h2>
                         <div className="bg-app-card/30 border border-app-border/50 rounded-3xl overflow-hidden p-6 space-y-3">
-                            Define the order in which sources are searched. The top-most active repository is used as the primary binary source.
-                        </p>
+                            <p className="text-sm text-app-muted mb-6 px-2">
+                                Define the order in which sources are searched. The top-most active repository is used as the primary binary source.
+                            </p>
 
-                        <div className="mx-2 mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 flex gap-3 items-start">
-                            <div className="p-1 bg-amber-500/20 rounded-full text-amber-500 mt-0.5">
-                                <div className="w-1.5 h-4 bg-current rounded-full mx-auto" />
-                                <div className="w-1.5 h-1.5 bg-current rounded-full mx-auto mt-0.5" />
-                            </div>
-                            <div className="text-xs text-amber-600/90 leading-relaxed">
-                                <strong>Partial Upgrade Risk:</strong> Avoid mixing too many optimize-focused repos (e.g., CachyOS + Manjaro).
-                                Disabling a source after installing packages from it may break dependencies during system updates.
-                            </div>
-                        </div>
-
-                        {repos.map((repo, idx) => (
-                            <div key={repo.id} className={clsx(
-                                "flex items-center justify-between p-4 rounded-2xl border transition-all duration-300",
-                                repo.enabled ? "bg-app-card/60 border-app-border/80 text-app-fg shadow-sm" : "bg-app-subtle border-transparent opacity-50 text-app-muted"
-                            )}>
-                                <div className="flex items-center gap-4">
-                                    <div className="flex flex-col gap-1 text-app-muted">
-                                        <button onClick={() => moveRepo(idx, 'up')} disabled={idx === 0} className="hover:text-app-fg disabled:opacity-20 transition-colors"><ArrowUp size={16} /></button>
-                                        <button onClick={() => moveRepo(idx, 'down')} disabled={idx === repos.length - 1} className="hover:text-app-fg disabled:opacity-20 transition-colors"><ArrowDown size={16} /></button>
-                                    </div>
-                                    <div>
-                                        <h4 className={clsx("font-bold text-base", repo.enabled ? "text-app-fg" : "text-app-muted")}>
-                                            {repo.name}
-                                            {idx === 0 && repo.enabled && <span className="ml-3 text-[10px] bg-app-accent/20 text-app-accent px-2.5 py-1 rounded-full uppercase tracking-widest font-black">Primary</span>}
-                                        </h4>
-                                        <p className="text-xs text-app-muted mt-0.5">{repo.description}</p>
-                                    </div>
+                            <div className="mx-2 mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 flex gap-3 items-start">
+                                <div className="p-1 bg-amber-500/20 rounded-full text-amber-500 mt-0.5">
+                                    <div className="w-1.5 h-4 bg-current rounded-full mx-auto" />
+                                    <div className="w-1.5 h-1.5 bg-current rounded-full mx-auto mt-0.5" />
                                 </div>
-
-                                <button
-                                    onClick={() => toggleRepo(repo.id)}
-                                    className={clsx(
-                                        "w-12 h-7 rounded-full p-1 transition-all relative",
-                                        repo.enabled ? "bg-app-accent" : "bg-app-subtle"
-                                    )}
-                                >
-                                    <div className={clsx(
-                                        "w-5 h-5 bg-white shadow-xl rounded-full transition-transform duration-300",
-                                        repo.enabled ? "translate-x-5" : "translate-x-0"
-                                    )} />
-                                </button>
-                            </div>
-                        ))}
-
-                        {/* AUR Section */}
-                        <div className="mt-8 pt-6 border-t border-app-border/30">
-                            <div className="flex items-center justify-between p-5 rounded-2xl border border-amber-500/20 bg-amber-500/5">
-                                <div className="flex items-center gap-4">
-                                    <div className="p-3 bg-amber-600/20 rounded-2xl text-amber-600">
-                                        <Lock size={20} />
-                                    </div>
-                                    <div>
-                                        <h4 className="font-bold text-amber-600 text-base">
-                                            Enable AUR Source <span className="text-[10px] bg-amber-500 text-white px-2 py-0.5 rounded ml-2 font-black">EXPERIMENTAL</span>
-                                        </h4>
-                                        <p className="text-sm text-amber-600/90 mt-0.5 max-w-md">
-                                            Build directly from the Arch User Repository. Note: This requires compilation and is significantly slower.
-                                        </p>
-                                    </div>
+                                <div className="text-xs text-amber-600/90 leading-relaxed">
+                                    <strong>Partial Upgrade Risk:</strong> Avoid mixing too many optimize-focused repos (e.g., CachyOS + Manjaro).
+                                    Disabling a source after installing packages from it may break dependencies during system updates.
                                 </div>
-
-                                <button
-                                    onClick={async () => {
-                                        const newState = !isAurEnabled;
-                                        toggleAur(newState);
-                                    }}
-                                    className={clsx(
-                                        "w-12 h-7 rounded-full p-1 transition-all relative",
-                                        isAurEnabled ? "bg-amber-500" : "bg-app-subtle"
-                                    )}
-                                >
-                                    <div className={clsx(
-                                        "w-5 h-5 bg-white shadow-xl rounded-full transition-transform duration-300",
-                                        isAurEnabled ? "translate-x-5" : "translate-x-0"
-                                    )} />
-                                </button>
                             </div>
-                        </div>
-                </div>
-            </section>
 
-            {/* Customization & DE */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
-                {/* Integration */}
-                <section>
+                            {repos.map((repo, idx) => (
+                                <div key={repo.id} className={clsx(
+                                    "flex items-center justify-between p-4 rounded-2xl border transition-all duration-300",
+                                    repo.enabled ? "bg-app-card/60 border-app-border/80 text-app-fg shadow-sm" : "bg-app-subtle border-transparent opacity-50 text-app-muted"
+                                )}>
+                                    <div className="flex items-center gap-4">
+                                        <div className="flex flex-col gap-1 text-app-muted">
+                                            <button onClick={() => moveRepo(idx, 'up')} disabled={idx === 0} className="hover:text-app-fg disabled:opacity-20 transition-colors"><ArrowUp size={16} /></button>
+                                            <button onClick={() => moveRepo(idx, 'down')} disabled={idx === repos.length - 1} className="hover:text-app-fg disabled:opacity-20 transition-colors"><ArrowDown size={16} /></button>
+                                        </div>
+                                        <div>
+                                            <h4 className={clsx("font-bold text-base", repo.enabled ? "text-app-fg" : "text-app-muted")}>
+                                                {repo.name}
+                                                {idx === 0 && repo.enabled && <span className="ml-3 text-[10px] bg-app-accent/20 text-app-accent px-2.5 py-1 rounded-full uppercase tracking-widest font-black">Primary</span>}
+                                            </h4>
+                                            <p className="text-xs text-app-muted mt-0.5">{repo.description}</p>
+                                        </div>
+                                    </div>
 
-                    <h2 className="text-xl font-bold text-app-fg mb-4 flex items-center gap-3">
-                        <Palette size={22} className="text-app-muted" /> System Integration
-                    </h2>
-                    <div className="bg-app-card/30 border border-app-border/50 rounded-3xl p-8 space-y-6">
-                        <div className="flex items-center justify-between">
-                            <div className="max-w-[70%]">
-                                <h3 className="font-bold text-app-fg text-base">Native Notifications</h3>
-                                <p className="text-xs text-app-muted mt-1 leading-relaxed">Broadcast install completions to your desktop environment's notification center.</p>
-                            </div>
-                            <button
-                                onClick={() => {
-                                    updateNotifications(!notificationsEnabled);
-                                }}
-                                className={clsx(
-                                    "w-12 h-7 rounded-full p-1 transition-all relative shadow-lg",
-                                    notificationsEnabled ? "bg-app-accent" : "bg-app-fg/20"
-                                )}
-                            >
-                                <div className={clsx(
-                                    "w-5 h-5 bg-white rounded-full transition-transform duration-300",
-                                    notificationsEnabled ? "translate-x-5" : "translate-x-0"
-                                )} />
-                            </button>
-                        </div>
-                        <div className="flex items-center justify-between border-t border-app-border/30 pt-6">
-                            <div>
-                                <h3 className="font-bold text-app-fg text-base">Interface Mode</h3>
-                                <p className="text-xs text-app-muted mt-0.5">Application-level color scheme</p>
-                            </div>
-                            <div className="flex bg-app-card/60 p-1.5 rounded-2xl border border-app-border/50 shadow-sm">
-                                {(['system', 'light', 'dark'] as const).map((mode) => (
                                     <button
-                                        key={mode}
-                                        onClick={() => setThemeMode(mode)}
+                                        onClick={() => toggleRepo(repo.id)}
                                         className={clsx(
-                                            "px-5 py-2 rounded-xl text-xs font-black transition-all",
-                                            themeMode === mode
-                                                ? "bg-app-accent text-white shadow-lg shadow-app-accent/20"
-                                                : "text-app-muted hover:text-app-fg"
+                                            "w-12 h-7 rounded-full p-1 transition-all relative",
+                                            repo.enabled ? "bg-app-accent" : "bg-app-subtle"
                                         )}
                                     >
-                                        {mode.toUpperCase()}
+                                        <div className={clsx(
+                                            "w-5 h-5 bg-white shadow-xl rounded-full transition-transform duration-300",
+                                            repo.enabled ? "translate-x-5" : "translate-x-0"
+                                        )} />
                                     </button>
-                                ))}
-                            </div>
-                        </div>
+                                </div>
+                            ))}
 
-                        <div className="flex items-center justify-between border-t border-app-border/30 pt-6">
-                            <div className="max-w-[70%]">
-                                <h3 className="font-bold text-app-fg text-base flex items-center gap-2">
-                                    <Sparkles size={16} className="text-app-accent" /> Initial Setup
-                                </h3>
-                                <p className="text-xs text-app-muted mt-1 leading-relaxed">Re-run the welcome wizard to configure repositories and aesthetic preferences.</p>
-                            </div>
-                            <button
-                                onClick={onRestartOnboarding}
-                                className="h-10 px-6 rounded-xl bg-app-subtle hover:bg-app-accent hover:text-white text-app-fg font-bold text-xs transition-all flex items-center gap-2 border border-app-border/50 hover:border-app-accent/50 shadow-sm hover:shadow-lg hover:shadow-app-accent/20 active:scale-95"
-                            >
-                                Run Setup Wizard
-                            </button>
-                        </div>
-                    </div>
-                </section>
+                            {/* AUR Section */}
+                            <div className="mt-8 pt-6 border-t border-app-border/30">
+                                <div className="flex items-center justify-between p-5 rounded-2xl border border-amber-500/20 bg-amber-500/5">
+                                    <div className="flex items-center gap-4">
+                                        <div className="p-3 bg-amber-600/20 rounded-2xl text-amber-600">
+                                            <Lock size={20} />
+                                        </div>
+                                        <div>
+                                            <h4 className="font-bold text-amber-600 text-base">
+                                                Enable AUR Source <span className="text-[10px] bg-amber-500 text-white px-2 py-0.5 rounded ml-2 font-black">EXPERIMENTAL</span>
+                                            </h4>
+                                            <p className="text-sm text-amber-600/90 mt-0.5 max-w-md">
+                                                Build directly from the Arch User Repository. Note: This requires compilation and is significantly slower.
+                                            </p>
+                                        </div>
+                                    </div>
 
-                {/* Maintenance */}
-                <section>
-                    <h2 className="text-xl font-bold text-app-fg mb-4 flex items-center gap-3">
-                        <Trash2 size={22} className="text-app-muted" /> System Maintenance
-                    </h2>
-                    <div className="bg-app-card/30 border border-app-border/50 rounded-3xl p-8 h-full space-y-6">
-                        {/* Repair Config */}
-                        <div className="flex items-center justify-between pb-6 border-b border-app-border/30">
-                            <div className="max-w-[60%]">
-                                <h3 className="text-base font-bold text-app-fg text-red-400">System Repair</h3>
-                                <p className="text-xs text-app-muted mt-1 leading-relaxed">
-                                    Reset <code className="bg-app-subtle px-1 rounded">/etc/pacman.conf</code> to defaults. Use this if official repositories stop working.
-                                </p>
+                                    <button
+                                        onClick={async () => {
+                                            const newState = !isAurEnabled;
+                                            toggleAur(newState);
+                                        }}
+                                        className={clsx(
+                                            "w-12 h-7 rounded-full p-1 transition-all relative",
+                                            isAurEnabled ? "bg-amber-500" : "bg-app-subtle"
+                                        )}
+                                    >
+                                        <div className={clsx(
+                                            "w-5 h-5 bg-white shadow-xl rounded-full transition-transform duration-300",
+                                            isAurEnabled ? "translate-x-5" : "translate-x-0"
+                                        )} />
+                                    </button>
+                                </div>
                             </div>
-                            <button
-                                onClick={async () => {
-                                    if (confirm("DANGER: This will reset /etc/pacman.conf to defaults and wipe all custom repo configs. You will need to re-enable them. Continue?")) {
-                                        setIsOptimizing(true);
-                                        try {
-                                            await invoke('reset_pacman_conf');
-                                            success("System config reset to defaults.");
-                                            // Trigger a sync after reset
-                                            await invoke('trigger_repo_sync');
-                                        } catch (e) {
-                                            error(`Reset failed: ${e}`);
-                                        } finally {
-                                            setIsOptimizing(false);
-                                        }
-                                    }
-                                }}
-                                disabled={isOptimizing}
-                                className="h-9 px-4 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 font-bold text-xs transition-all"
-                            >
-                                Repair Config
-                            </button>
                         </div>
-                        {/* Disk Cleanup */}
-                        <div className="flex items-center justify-between">
-                            <div className="max-w-[60%]">
-                                <h3 className="text-base font-bold text-app-fg">Disk Cleanup</h3>
-                                <p className="text-xs text-app-muted mt-1 leading-relaxed">Clear old package caches, temporary files, and build artifacts to free disk space.</p>
-                            </div>
-                            <button
-                                onClick={handleClearCache}
-                                disabled={isOptimizing}
-                                className={clsx(
-                                    "px-5 py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-700 rounded-2xl text-xs font-black transition-all border border-red-500/30 active:scale-95 flex items-center gap-2",
-                                    isOptimizing && "opacity-50 cursor-not-allowed"
-                                )}
-                            >
-                                <Trash2 size={16} /> WIPE CACHE
-                            </button>
-                        </div>
+                    </section>
 
-                        {/* Orphan Cleanup */}
-                        <div className="flex items-center justify-between border-t border-app-border/30 pt-6">
-                            <div className="max-w-[60%]">
-                                <h3 className="text-base font-bold text-app-fg">Orphan Packages</h3>
-                                <p className="text-xs text-app-muted mt-1 leading-relaxed">Remove unused dependencies that are no longer required by any installed package.</p>
+                    {/* Customization & DE */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
+                        {/* Integration */}
+                        <section>
+
+                            <h2 className="text-xl font-bold text-app-fg mb-4 flex items-center gap-3">
+                                <Palette size={22} className="text-app-muted" /> System Integration
+                            </h2>
+                            <div className="bg-app-card/30 border border-app-border/50 rounded-3xl p-8 space-y-6">
+                                <div className="flex items-center justify-between">
+                                    <div className="max-w-[70%]">
+                                        <h3 className="font-bold text-app-fg text-base">Native Notifications</h3>
+                                        <p className="text-xs text-app-muted mt-1 leading-relaxed">Broadcast install completions to your desktop environment's notification center.</p>
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            updateNotifications(!notificationsEnabled);
+                                        }}
+                                        className={clsx(
+                                            "w-12 h-7 rounded-full p-1 transition-all relative shadow-lg",
+                                            notificationsEnabled ? "bg-app-accent" : "bg-app-fg/20"
+                                        )}
+                                    >
+                                        <div className={clsx(
+                                            "w-5 h-5 bg-white rounded-full transition-transform duration-300",
+                                            notificationsEnabled ? "translate-x-5" : "translate-x-0"
+                                        )} />
+                                    </button>
+                                </div>
+                                <div className="flex items-center justify-between border-t border-app-border/30 pt-6">
+                                    <div>
+                                        <h3 className="font-bold text-app-fg text-base">Interface Mode</h3>
+                                        <p className="text-xs text-app-muted mt-0.5">Application-level color scheme</p>
+                                    </div>
+                                    <div className="flex bg-app-card/60 p-1.5 rounded-2xl border border-app-border/50 shadow-sm">
+                                        {(['system', 'light', 'dark'] as const).map((mode) => (
+                                            <button
+                                                key={mode}
+                                                onClick={() => setThemeMode(mode)}
+                                                className={clsx(
+                                                    "px-5 py-2 rounded-xl text-xs font-black transition-all",
+                                                    themeMode === mode
+                                                        ? "bg-app-accent text-white shadow-lg shadow-app-accent/20"
+                                                        : "text-app-muted hover:text-app-fg"
+                                                )}
+                                            >
+                                                {mode.toUpperCase()}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center justify-between border-t border-app-border/30 pt-6">
+                                    <div className="max-w-[70%]">
+                                        <h3 className="font-bold text-app-fg text-base flex items-center gap-2">
+                                            <Sparkles size={16} className="text-app-accent" /> Initial Setup
+                                        </h3>
+                                        <p className="text-xs text-app-muted mt-1 leading-relaxed">Re-run the welcome wizard to configure repositories and aesthetic preferences.</p>
+                                    </div>
+                                    <button
+                                        onClick={onRestartOnboarding}
+                                        className="h-10 px-6 rounded-xl bg-app-subtle hover:bg-app-accent hover:text-white text-app-fg font-bold text-xs transition-all flex items-center gap-2 border border-app-border/50 hover:border-app-accent/50 shadow-sm hover:shadow-lg hover:shadow-app-accent/20 active:scale-95"
+                                    >
+                                        Run Setup Wizard
+                                    </button>
+                                </div>
                             </div>
-                            <button
-                                onClick={async () => {
-                                    if (confirm("Scan for and remove unused orphan packages? This requires authentication.")) {
-                                        setIsOptimizing(true);
-                                        try {
-                                            const orphans = await invoke<string[]>('get_orphans');
-                                            if (orphans.length === 0) {
-                                                success("No orphan packages found. Your system is clean.");
-                                            } else {
-                                                if (confirm(`Found ${orphans.length} orphans:\n${orphans.slice(0, 5).join(', ')}${orphans.length > 5 ? '...' : ''}\n\nRemove them?`)) {
-                                                    await invoke('remove_orphans', { orphans });
-                                                    success(`Successfully removed ${orphans.length} packages.`);
+                        </section>
+
+                        {/* Maintenance */}
+                        <section>
+                            <h2 className="text-xl font-bold text-app-fg mb-4 flex items-center gap-3">
+                                <Trash2 size={22} className="text-app-muted" /> System Maintenance
+                            </h2>
+                            <div className="bg-app-card/30 border border-app-border/50 rounded-3xl p-8 h-full space-y-6">
+                                {/* Repair Config */}
+                                <div className="flex items-center justify-between pb-6 border-b border-app-border/30">
+                                    <div className="max-w-[60%]">
+                                        <h3 className="text-base font-bold text-app-fg text-red-400">System Repair</h3>
+                                        <p className="text-xs text-app-muted mt-1 leading-relaxed">
+                                            Reset <code className="bg-app-subtle px-1 rounded">/etc/pacman.conf</code> to defaults. Use this if official repositories stop working.
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={async () => {
+                                            if (confirm("DANGER: This will reset /etc/pacman.conf to defaults and wipe all custom repo configs. You will need to re-enable them. Continue?")) {
+                                                setIsOptimizing(true);
+                                                try {
+                                                    await invoke('reset_pacman_conf');
+                                                    success("System config reset to defaults.");
+                                                    // Trigger a sync after reset
+                                                    await invoke('trigger_repo_sync');
+                                                } catch (e) {
+                                                    error(`Reset failed: ${e}`);
+                                                } finally {
+                                                    setIsOptimizing(false);
                                                 }
                                             }
-                                        } catch (e) {
-                                            error(`Failed: ${e}`);
-                                        } finally {
-                                            setIsOptimizing(false);
-                                        }
-                                    }
-                                }}
-                                disabled={isOptimizing}
-                                className={clsx(
-                                    "px-5 py-2.5 bg-app-subtle hover:bg-app-hover text-app-fg rounded-2xl text-xs font-black transition-all border border-app-border/50 active:scale-95 flex items-center gap-2",
-                                    isOptimizing && "opacity-50 cursor-not-allowed"
-                                )}
-                            >
-                                <Package size={16} /> CLEAN ORPHANS
-                            </button>
-                        </div>
-                    </div>
-                </section>
-            </div>
-
-            {/* Appearance */}
-            <section>
-                <h2 className="text-xl font-bold text-app-fg mb-4 flex items-center gap-3">
-                    <Palette size={22} className="text-app-muted" /> Semantic Accents
-                </h2>
-                <div className="bg-app-card/30 border border-app-border/50 rounded-3xl p-8 transition-all hover:bg-app-card/40">
-                    <div className="flex gap-6 items-center">
-                        {colors.map((color) => (
-                            <button
-                                key={color.id}
-                                onClick={() => setAccentColor(color.id)}
-                                className={clsx(
-                                    "w-16 h-16 rounded-3xl border-4 transition-all relative flex-shrink-0",
-                                    color.class,
-                                    accentColor === color.id ? "border-app-fg scale-110 shadow-2xl rotate-3" : "border-transparent opacity-40 hover:opacity-100 hover:scale-105"
-                                )}
-                                title={color.label}
-                            >
-                                {accentColor === color.id && (
-                                    <motion.div
-                                        layoutId="activeColor"
-                                        className="absolute inset-0 flex items-center justify-center text-white"
+                                        }}
+                                        disabled={isOptimizing}
+                                        className="h-9 px-4 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 font-bold text-xs transition-all"
                                     >
-                                        <CheckCircle2 size={24} className="drop-shadow-md" />
-                                    </motion.div>
-                                )}
-                            </button>
-                        ))}
-                        <div className="ml-4">
-                            <h3 className="font-bold text-app-fg text-lg">Visual Signature</h3>
-                            <p className="text-sm text-app-muted">Personalize the primary interactive highlight color used throughout the MonARCH Store environment.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-        </div>
+                                        Repair Config
+                                    </button>
+                                </div>
+                                {/* Disk Cleanup */}
+                                <div className="flex items-center justify-between">
+                                    <div className="max-w-[60%]">
+                                        <h3 className="text-base font-bold text-app-fg">Disk Cleanup</h3>
+                                        <p className="text-xs text-app-muted mt-1 leading-relaxed">Clear old package caches, temporary files, and build artifacts to free disk space.</p>
+                                    </div>
+                                    <button
+                                        onClick={handleClearCache}
+                                        disabled={isOptimizing}
+                                        className={clsx(
+                                            "px-5 py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-700 rounded-2xl text-xs font-black transition-all border border-red-500/30 active:scale-95 flex items-center gap-2",
+                                            isOptimizing && "opacity-50 cursor-not-allowed"
+                                        )}
+                                    >
+                                        <Trash2 size={16} /> WIPE CACHE
+                                    </button>
+                                </div>
 
-                {/* Footer Info */ }
-    <div className="text-center text-app-muted text-xs pt-12 pb-8 border-t border-app-border/20">
-        <Info size={14} className="opacity-50" /> MonARCH Store v{pkgVersion} • Licensed under MIT • Powered by Chaotic-AUR
-    </div>
+                                {/* Orphan Cleanup */}
+                                <div className="flex items-center justify-between border-t border-app-border/30 pt-6">
+                                    <div className="max-w-[60%]">
+                                        <h3 className="text-base font-bold text-app-fg">Orphan Packages</h3>
+                                        <p className="text-xs text-app-muted mt-1 leading-relaxed">Remove unused dependencies that are no longer required by any installed package.</p>
+                                    </div>
+                                    <button
+                                        onClick={async () => {
+                                            if (confirm("Scan for and remove unused orphan packages? This requires authentication.")) {
+                                                setIsOptimizing(true);
+                                                try {
+                                                    const orphans = await invoke<string[]>('get_orphans');
+                                                    if (orphans.length === 0) {
+                                                        success("No orphan packages found. Your system is clean.");
+                                                    } else {
+                                                        if (confirm(`Found ${orphans.length} orphans:\n${orphans.slice(0, 5).join(', ')}${orphans.length > 5 ? '...' : ''}\n\nRemove them?`)) {
+                                                            await invoke('remove_orphans', { orphans });
+                                                            success(`Successfully removed ${orphans.length} packages.`);
+                                                        }
+                                                    }
+                                                } catch (e) {
+                                                    error(`Failed: ${e}`);
+                                                } finally {
+                                                    setIsOptimizing(false);
+                                                }
+                                            }
+                                        }}
+                                        disabled={isOptimizing}
+                                        className={clsx(
+                                            "px-5 py-2.5 bg-app-subtle hover:bg-app-hover text-app-fg rounded-2xl text-xs font-black transition-all border border-app-border/50 active:scale-95 flex items-center gap-2",
+                                            isOptimizing && "opacity-50 cursor-not-allowed"
+                                        )}
+                                    >
+                                        <Package size={16} /> CLEAN ORPHANS
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+
+                    {/* Appearance */}
+                    <section>
+                        <h2 className="text-xl font-bold text-app-fg mb-4 flex items-center gap-3">
+                            <Palette size={22} className="text-app-muted" /> Semantic Accents
+                        </h2>
+                        <div className="bg-app-card/30 border border-app-border/50 rounded-3xl p-8 transition-all hover:bg-app-card/40">
+                            <div className="flex gap-6 items-center">
+                                {colors.map((color) => (
+                                    <button
+                                        key={color.id}
+                                        onClick={() => setAccentColor(color.id)}
+                                        className={clsx(
+                                            "w-16 h-16 rounded-3xl border-4 transition-all relative flex-shrink-0",
+                                            color.class,
+                                            accentColor === color.id ? "border-app-fg scale-110 shadow-2xl rotate-3" : "border-transparent opacity-40 hover:opacity-100 hover:scale-105"
+                                        )}
+                                        title={color.label}
+                                    >
+                                        {accentColor === color.id && (
+                                            <motion.div
+                                                layoutId="activeColor"
+                                                className="absolute inset-0 flex items-center justify-center text-white"
+                                            >
+                                                <CheckCircle2 size={24} className="drop-shadow-md" />
+                                            </motion.div>
+                                        )}
+                                    </button>
+                                ))}
+                                <div className="ml-4">
+                                    <h3 className="font-bold text-app-fg text-lg">Visual Signature</h3>
+                                    <p className="text-sm text-app-muted">Personalize the primary interactive highlight color used throughout the MonARCH Store environment.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                {/* Footer Info */}
+                <div className="text-center text-app-muted text-xs pt-12 pb-8 border-t border-app-border/20">
+                    <Info size={14} className="opacity-50" /> MonARCH Store v{pkgVersion} • Licensed under MIT • Powered by Chaotic-AUR
+                </div>
             </div >
         </div >
     );
