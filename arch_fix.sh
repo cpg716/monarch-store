@@ -62,10 +62,12 @@ echo "🛠️  [5/7] Patching Source Code..."
 sed -i 's/src=".\/src\/main.tsx"/src="src\/main.tsx"/g' index.html
 sed -i 's/src="\/src\/main.tsx"/src="src\/main.tsx"/g' index.html
 
-# 6. Native Compilation (Matches your system perfectly)
-echo "🏗️  [6/7] Compiling Native Binary (This may take 2-5 minutes)..."
+# 6. Native Compilation (Skip bundling to avoid linuxdeploy errors)
+echo "🏗️  [6/7] Compiling Native Binary (Fast Native Only)..."
 npm install
-npm run tauri build
+npm run build # Frontend build
+cd src-tauri && cargo build --release
+cd ..
 
 # 7. Final Installation & Path Cleanup
 echo "🚀 [7/7] Installing and Clearing Path..."
