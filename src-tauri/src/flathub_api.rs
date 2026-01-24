@@ -145,10 +145,15 @@ impl FlathubApiClient {
             }
         }
 
-        // Fetch from Flathub API
+        // Fetch from Flathub API with timeout
         let url = format!("https://flathub.org/api/v2/appstream/{}", app_id);
 
-        let response = reqwest::get(&url).await.ok()?;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .ok()?;
+
+        let response = client.get(&url).send().await.ok()?;
 
         if !response.status().is_success() {
             // Cache the miss to avoid repeated requests

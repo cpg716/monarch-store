@@ -243,10 +243,19 @@ impl AppStreamLoader {
 
         #[allow(unused_assignments)]
         let icon_url = sorted_icons.iter().find_map(|icon| match icon {
-            Icon::Cached { path, .. } => {
+            Icon::Cached { path, width, .. } => {
                 // Check extracted 'icons/' dir first
                 let filename = path.file_name()?;
                 let local_path = get_icons_dir().join(filename);
+
+                if component.pkgname.as_deref() == Some("firefox") {
+                    println!(
+                        "DEBUG: Checking icon for firefox: {:?} -> Local: {:?} (Exists: {})",
+                        path,
+                        local_path,
+                        local_path.exists()
+                    );
+                }
 
                 if let Ok(bytes) = std::fs::read(&local_path) {
                     let mime = if local_path.extension().is_some_and(|e| e == "svg") {
@@ -452,6 +461,7 @@ pub async fn download_and_cache_appstream(
     let icons_dir = base_dir.join("icons");
     let _ = std::fs::create_dir_all(&icons_dir);
 
+    let mut extracted_count = 0;
     for entry in archive.entries().map_err(|e| e.to_string())? {
         let mut entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path().map_err(|e| e.to_string())?;
@@ -471,9 +481,11 @@ pub async fn download_and_cache_appstream(
             let icon_target = icons_dir.join(file_name);
             if let Ok(mut out_file) = std::fs::File::create(&icon_target) {
                 let _ = std::io::copy(&mut entry, &mut out_file);
+                extracted_count += 1;
             }
         }
     }
+    println!("Extracted {} icons to {:?}", extracted_count, icons_dir);
 
     if found_xml {
         println!("Sanitizing AppStream XML (Scorched Earth Mode)...");
@@ -598,25 +610,40 @@ pub async fn get_metadata_batch(
 ) -> Result<HashMap<String, AppMetadata>, ()> {
     let mut results = HashMap::new();
 
-    // Process in parallel or sequential?
-    // Since some involves remote API (Flathub, Chaotic), sequential in loop is simplest for now
-    // but better than multiple bridge calls.
-    for pkg_name in pkg_names {
-        // reuse existing get_metadata logic by extracting it or calling it
-        // calling get_metadata requires States which we already have here
-        if let Ok(meta) = get_metadata(
-            state.clone(),
-            scm_state.clone(),
-            chaotic_state.clone(),
-            flathub_state.clone(),
-            pkg_name.clone(),
-            None, // batch doesn't support upstream_url yet
-        )
-        .await
-        {
+    // Process in parallel using join_all
+    let futures = pkg_names.into_iter().map(|pkg_name| {
+        let state = state.clone();
+        let scm_state = scm_state.clone();
+        let chaotic_state = chaotic_state.clone();
+        let flathub_state = flathub_state.clone();
+
+        async move {
+            let meta = get_metadata(
+                state,
+                scm_state,
+                chaotic_state,
+                flathub_state,
+                pkg_name.clone(),
+                None,
+            )
+            .await;
+            (pkg_name, meta)
+        }
+    });
+
+    let results_vec = futures::future::join_all(futures).await;
+
+    for (pkg_name, result) in results_vec {
+        if let Ok(meta) = result {
             results.insert(pkg_name, meta);
         }
     }
+
+    println!(
+        "DEBUG: Backend Batch returning {} items. Keys: {:?}",
+        results.len(),
+        results.keys()
+    );
 
     Ok(results)
 }
