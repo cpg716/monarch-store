@@ -34,9 +34,8 @@ sudo pacman -Scc --noconfirm # Double 'cc' removes ALL cached packages
 echo "🔑 [3/7] Updating System Keyrings & Core Libraries (libicu)..."
 sudo pacman-key --config $TMP_CONF --init
 sudo pacman-key --config $TMP_CONF --populate archlinux
-# Refresh the specific master keys to be super safe
-sudo pacman-key --config $TMP_CONF --refresh-keys || true
 
+# Skip global refresh (too slow). Populate is enough for core Arch repos.
 sudo pacman --config $TMP_CONF -Syu --noconfirm
 
 # 4. Install Build Dependencies
