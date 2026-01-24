@@ -91,10 +91,11 @@ function App() {
     const initInfo = async () => {
       try {
         // Start stats immediately
+        // Start stats immediately
         fetchInfraStats();
 
-        // Run sync in background - do NOT await here
-        // This prevents broken mirrors from blocking the UI load
+        // [UX FIX] Re-enabled safe background sync (No Root Required)
+        // This ensures the app has content on launch without blocking UI.
         const savedInterval = localStorage.getItem('sync-interval-hours');
         const interval = savedInterval ? parseInt(savedInterval, 10) : 3;
         invoke('trigger_repo_sync', { syncIntervalHours: interval })
@@ -111,7 +112,9 @@ function App() {
   }, [fetchInfraStats]);
 
   // Migration: Infrastructure 2.0 (v0.2.25)
-  // Ensure existing users get the config fix without running onboarding
+  // [UX FIX] Disabled auto-bootstrap to prevent immediate root prompt on launch.
+  // This should be moved to a "Fix System" button in Settings or a non-blocking toast.
+  /*
   useEffect(() => {
     const migrateInfra = async () => {
       const migrated = localStorage.getItem('monarch_infra_2_0');
@@ -136,6 +139,7 @@ function App() {
     // Helper to run after app load
     setTimeout(migrateInfra, 2000);
   }, []);
+  */
 
   useEffect(() => {
     if (searchQuery) setSelectedPackage(null);
