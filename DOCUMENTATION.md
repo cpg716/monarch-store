@@ -36,20 +36,20 @@ We use a composite rating strategy:
 *   **Step 2:** Fallback to **Supabase** community reviews.
 *   **Display:** Merged 5-star rating.
 
-### 4. Self-Healing System (System Health)
-MonARCH includes a "System Health" database that automatically detects and offers fixes for common Arch Linux issues:
-*   **Stuck Updates**: Detects `db.lck` and offers a one-click unlock.
-*   **Keyring Issues**: Resets GPG keys if signatures fail.
-*   **Hero Warnings**: If a critical issue is detected, a clickable Red Banner appears on the home screen that takes you directly to the fix.
-*   **Device Care**: Includes tools to safely clean orphans and cache (migrated from Settings).
+### 4. Hardened System Health (v0.2.30 Overhaul)
+MonARCH includes a permission-aware health monitoring ecosystem:
+*   **Sequential Startup**: Intelligent initialization that fixes the system *before* the main UI loads.
+*   **AMD Hardware Rating**: ABM/LZCNT aware feature detection for high-performance architectures.
+*   **Permission-Safe Sensors**: Health checks are now non-privileged, preventing false "Corrupted Keyring" warnings.
+*   **Unified Repair Wizard**: A single authorized maintenance flow for Keyring, Security Polices, and Repo sync.
 
 ## 🛠️ Build & Release
 
 To cut a new release:
-1.  Update `version` in `package.json` and `src-tauri/tauri.conf.json`.
-2.  Update `src-tauri/Cargo.toml`.
-3.  Run `npm run tauri build`.
-4.  Tag commit with `vX.Y.Z`.
+1.  Update `version` in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
+2.  Clean build: `npm run tauri build`.
+3.  Tag commit: `git tag -a v0.2.30 -m "v0.2.30 release"`.
+4.  Push: `git push origin main --tags`.
 
 ## ☁️ Backend Configuration (Self-Hosting Community Reviews)
 
