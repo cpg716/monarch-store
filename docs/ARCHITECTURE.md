@@ -63,20 +63,24 @@ MonArch uses a "Best Effort" review pipeline implemented in `src/services/review
 - Uses standard `pkexec` for installers and system-wide configuration.
 - **Password-Free Settings**: To reduce user friction, the app uses a "Soft Disable" model. Repos are enabled at the system level once during Onboarding (via `pkexec`); future toggles in Settings only affect UI metadata visibility, requiring no password.
 
-### 2. GPG Keyring Resilience (Infrastructure 2.0)
-MonARCH Store implements a multi-layer GPG synchronization strategy to prevent "Invalid Signature" errors:
-- **System Layer**: `pacman-key --init` and `--populate` are run during Onboarding and migration.
-- **User Layer**: Specific keys for active repositories (e.g., Chaotic-AUR, CachyOS) are automatically imported into the user's local GPG keyring (`gpg --recv-keys`). This ensures manual builds like `makepkg -si` in the terminal work seamlessly alongside the app.
-- **Auto-Healing**: The `optimize_system` command provides a "one-click" fix that refreshes both system and user keyrings.
+### 2. GPG Keyring & Hardened Health (v0.2.30)
+MonARCH Store implements a multi-layer GPG synchronization and health monitoring strategy:
+- **Sequential Startup**: The app follows a strict `Initialization -> Health Check -> Startup` flow defined in `App.tsx`. 
+- **Permission-Safe Sensors**: Health checks for the keyring (`/etc/pacman.d/gnupg`) now verify directory existence rather than file contents (which are root-only), preventing false positives.
+- **AMD-Aware Hardware Detection**: The `utils::is_cpu_v3_compatible` logic is now "ABM-aware," correctly identifying advanced feature sets on AMD CPUs even if specific bitflags like `lzcnt` are reported differently.
+- **Unified Auto-Healing**: The "Smart Repair" engine in `repair.rs` unifies Keyring resets, Polkit policies, and Repository synchronization into a single user-authorized transaction.
 
-### 3. Automatic Migration
-To support existing users, the app includes a silent migration hook in `App.tsx`. Upon the first launch of a new version, it detects old infrastructure and automatically upgrades it to the modular "Infrastructure 2.0" pattern in the background.
+### 3. Automatic Migration & Initialization
+To support existing users, the app includes a mandatory initialization sequence:
+1.  **System Initialization**: Checks for essential directories and Polkit policies.
+2.  **Health Check**: Runs a broad diagnostic (`check_system_health`) to identify defects before the UI is interactive.
+3.  **Silent Repair**: If defects are found, the user is seamlessly routed to the Onboarding/Repair wizard to fix the system once and for all.
 
 ## Deployment (CI/CD)
 - **GitHub Actions**: Automated pipeline in `.github/workflows/release.yml`.
 - **Signing**: Releases are signed with Tauri Updater keys and published to GitHub Releases.
-- **Updates**: The app auto-checks the GitHub `latest.json` on launch.
+- **Updates**: Feature-aware versioning. Version `0.2.30` introduces the most significant stability overhaul in the project's history.
 
 ## Security
 - **Network**: Strict CSP (Content Security Policy) configured in `tauri.conf.json`.
-- **IPC**: Isolated Tauri commands with strict input validation.
+- **IPC**: Isolated Tauri commands with strict input validation. All system-altering commands require `pkexec`.
