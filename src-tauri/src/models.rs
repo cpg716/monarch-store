@@ -18,6 +18,20 @@ pub enum PackageSource {
     Manjaro,
 }
 
+impl PackageSource {
+    pub fn priority(&self) -> u8 {
+        match self {
+            PackageSource::Chaotic => 1,
+            PackageSource::Official => 2,
+            PackageSource::CachyOS => 3,
+            PackageSource::Manjaro => 4,
+            PackageSource::Garuda => 4,
+            PackageSource::Endeavour => 4,
+            PackageSource::Aur => 5,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Package {
     pub name: String,
@@ -38,6 +52,10 @@ pub struct Package {
     pub provides: Option<Vec<String>>,
     pub app_id: Option<String>,
     pub is_optimized: Option<bool>,
+    pub depends: Option<Vec<String>>,
+    pub make_depends: Option<Vec<String>>,
+    pub is_featured: Option<bool>,
+    pub alternatives: Option<Vec<Package>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

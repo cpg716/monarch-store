@@ -1,154 +1,205 @@
-import { useState, useEffect } from 'react';
-import { ArrowLeft, Download, Globe, Calendar, User, Zap, Package as PackageIcon, AlertTriangle, Star, MessageSquare, X, ChevronLeft, ChevronRight, Code, Loader2, Heart } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import {
+    ArrowLeft, Download, Play, Heart, Star, Code, X,
+    AlertTriangle, Trash2, User, Globe, Calendar,
+    Package as PackageIcon, ChevronRight,
+    Loader2, ShieldCheck, MessageSquare, Cpu, ChevronDown
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import RepoSelector from '../components/RepoSelector';
 import { Package } from '../components/PackageCard';
-import InstallMonitor from '../components/InstallMonitor';
-// import RepoSetupModal from '../components/RepoSetupModal';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { clsx } from 'clsx';
 import { resolveIconUrl } from '../utils/iconHelper';
 import { useFavorites } from '../hooks/useFavorites';
 import { submitReview } from '../services/reviewService';
 import { trackEvent } from '@aptabase/tauri';
-
+import { useToast } from '../context/ToastContext';
 import { usePackageReviews } from '../hooks/useRatings';
-import { usePackageMetadata } from '../hooks/usePackageMetadata';
+import { usePackageMetadata, AppMetadata, metadataCache } from '../hooks/usePackageMetadata';
 
-// Define types locally if not in shared types
+// --- Types ---
 interface PackageDetailsProps {
     pkg: Package;
     onBack: () => void;
     preferredSource?: string;
+    onInstall: (p: { name: string; source: string; repoName?: string }) => void;
+    onUninstall: (p: { name: string; source: string; repoName?: string }) => void;
 }
 
-interface ChaoticPackage {
-    id: number;
-    pkgname: string;
-    lastUpdated?: string;
+interface PackageVariant {
+    source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour' | 'manjaro';
+    version: string;
+    repo_name?: string;
+    pkg_name?: string;
+}
+
+interface InstallStatus {
+    installed: boolean;
     version?: string;
-    metadata?: {
-        buildDate?: string;
-        license?: string;
-    }
+    repo?: string;
+    source?: string;
+    actual_package_name?: string;
 }
 
-// Define types locally if not in shared types
+export function prewarmMetadataCache(pkgName: string, meta: AppMetadata) {
+    metadataCache.set(pkgName, { data: meta, timestamp: Date.now() });
+}
 
-export default function PackageDetails({ pkg, onBack, preferredSource }: PackageDetailsProps) {
-    // State
-    interface PackageVariant {
-        source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour' | 'manjaro';
-        version: string;
-        repo_name?: string;
-        pkg_name?: string;
-    }
+// --- Helper Components ---
+const Badge = ({ children, className }: { children: React.ReactNode, className?: string }) => (
+    <span className={clsx("px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border", className)}>
+        {children}
+    </span>
+);
 
-    // Global Data Optimization (Source of Truth)
+const SourceBadge = ({ source }: { source: string }) => {
+    const s = source.toLowerCase();
+    const style =
+        s === 'official' ? "bg-blue-500/10 text-blue-400 border-blue-500/20" :
+            s === 'chaotic' ? "bg-purple-500/10 text-purple-400 border-purple-500/20" :
+                s === 'aur' ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
+                    "bg-zinc-500/10 text-zinc-400 border-zinc-500/20";
+
+    return <Badge className={style}>{source}</Badge>;
+};
+
+// --- Main Component ---
+
+export default function PackageDetails({ pkg, onBack, preferredSource, onInstall, onUninstall }: PackageDetailsProps) {
+    // --- State & Hooks ---
     const { metadata: fullMeta } = usePackageMetadata(pkg.name);
-    const [chaoticInfo, setChaoticInfo] = useState<ChaoticPackage | null>(null);
+    const { success, error } = useToast();
 
-    // Unified Review System (Source of Truth)
-    // Preference: Prop app_id > Meta app_id > pkg.name
     const lookupId = pkg.app_id || fullMeta?.app_id || pkg.name;
     const { reviews, summary: rating, refresh: refreshReviews } = usePackageReviews(pkg.name, lookupId);
 
-    const [activeTab, setActiveTab] = useState<'details' | 'reviews'>('details');
+    const [variants, setVariants] = useState<PackageVariant[]>([]);
+    const [selectedSource, setSelectedSource] = useState<string>(pkg.source);
+
     const [showReviewForm, setShowReviewForm] = useState(false);
     const [reviewTitle, setReviewTitle] = useState('');
     const [reviewBody, setReviewBody] = useState('');
     const [reviewRating, setReviewRating] = useState(5);
 
-    // New State for Multi-Source
-    const [variants, setVariants] = useState<PackageVariant[]>([]);
-    const [selectedSource, setSelectedSource] = useState<string>(pkg.source);
+    // Pagination for reviews
+    const [visibleReviewsCount, setVisibleReviewsCount] = useState(5);
 
-    // Install Flow State
-    const [showInstallMonitor, setShowInstallMonitor] = useState(false);
-    const [showInstallConfirm, setShowInstallConfirm] = useState(false);
+    // Install/Status Logic
+    const [installStatus, setInstallStatus] = useState<InstallStatus | null>(null);
+    const [installedVariant, setInstalledVariant] = useState<InstallStatus | null>(null);
+    const checkRequestId = useRef(0);
 
-
-    // PKGBUILD Viewer State
+    // PKGBUILD Viewing
     const [showPkgbuild, setShowPkgbuild] = useState(false);
-    const { isFavorite, toggleFavorite } = useFavorites();
-    const isFav = isFavorite(pkg.name);
     const [pkgbuildContent, setPkgbuildContent] = useState<string | null>(null);
     const [pkgbuildLoading, setPkgbuildLoading] = useState(false);
     const [pkgbuildError, setPkgbuildError] = useState<string | null>(null);
 
-    // Lightbox State for Screenshots
+    // Lightbox
     const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
-    // Fetch Variants and Auto-Select Priority AND Meta/Reviews
-    useEffect(() => {
-        // 1. Fetch Variants
-        invoke<PackageVariant[]>('get_package_variants', { pkgName: pkg.name })
-            .then(vars => {
-                // We trust the backend: If AUR is returned here, it means the user ENABLED it in settings.
-                // We should NOT hide it, just prioritize selecting others first.
+    const { isFavorite, toggleFavorite } = useFavorites();
+    const isFav = isFavorite(pkg.name);
 
+    // --- Effects ---
+
+    // 1. Fetch Variants & Initial Selection
+    useEffect(() => {
+        invoke<PackageVariant[]>('get_package_variants', { pkgName: pkg.name })
+            .then(async (fetchedVars) => {
+                const propAlternatives = (pkg.alternatives || []).map(a => ({
+                    source: a.source,
+                    version: a.version,
+                    pkg_name: a.name,
+                    repo_name: a.source === 'chaotic' ? 'chaotic-aur' : undefined
+                } as PackageVariant));
+
+                const combined = [...fetchedVars, ...propAlternatives];
+                // Deduplicate
+                const vars = combined.filter((v, index, self) =>
+                    index === self.findIndex((t) => (
+                        t.source === v.source && t.version === v.version && t.pkg_name === v.pkg_name
+                    ))
+                );
                 setVariants(vars);
 
-                // If preferredSource is provided and exists in variants, use it
-                if (preferredSource && vars.some(v => v.source === preferredSource)) {
-                    setSelectedSource(preferredSource);
-                    return;
-                }
+                // Check installed status to auto-select
+                try {
+                    const res = await invoke<InstallStatus>('check_installed_status', { name: pkg.name });
+                    if (res.installed) {
+                        setInstallStatus(res);
+                        setInstalledVariant(res);
+                        if (res.source) {
+                            setSelectedSource(res.source);
+                            return;
+                        } else if (vars.some(v => v.source === 'aur')) {
+                            setSelectedSource('aur'); // Default to AUR if source ambiguous but AUR present
+                            return;
+                        }
+                    }
+                } catch (e) { console.error(e); }
 
-                // Default Selection Logic: Chaotic -> Official -> CachyOS/Garuda/Endeavour -> Manjaro -> AUR
-                if (vars.some(v => v.source === 'chaotic')) {
-                    setSelectedSource('chaotic');
-                } else if (vars.some(v => v.source === 'official')) {
-                    setSelectedSource('official');
-                } else if (vars.some(v => v.source === 'cachyos')) {
-                    setSelectedSource('cachyos');
-                } else if (vars.some(v => v.source === 'garuda')) {
-                    setSelectedSource('garuda');
-                } else if (vars.some(v => v.source === 'endeavour')) {
-                    setSelectedSource('endeavour');
-                } else if (vars.some(v => v.source === 'manjaro')) {
-                    setSelectedSource('manjaro');
-                } else if (vars.some(v => v.source === 'aur')) {
-                    setSelectedSource('aur');
-                } else if (vars.length > 0) {
-                    setSelectedSource(vars[0].source);
-                }
+                // Fallback selection logic
+                if (preferredSource && vars.some(v => v.source === preferredSource)) setSelectedSource(preferredSource);
+                else if (vars.some(v => v.source === pkg.source)) setSelectedSource(pkg.source);
+                else if (vars.some(v => v.source === 'chaotic')) setSelectedSource('chaotic');
+                else if (vars.some(v => v.source === 'official')) setSelectedSource('official');
+                else if (vars.length > 0) setSelectedSource(vars[0].source);
+            });
+    }, [pkg.name, preferredSource]);
+
+    // 2. Status Checking Routine
+    const checkStatus = (customName?: string) => {
+        const reqId = ++checkRequestId.current;
+        const nameToCheck = customName || installedVariant?.actual_package_name || installStatus?.actual_package_name || variants.find(v => v.source === selectedSource)?.pkg_name || pkg.name;
+
+        invoke<InstallStatus>('check_installed_status', { name: nameToCheck })
+            .then(res => {
+                if (reqId !== checkRequestId.current) return;
+                setInstallStatus(res);
+                if (res.installed) setInstalledVariant(res);
             })
             .catch(console.error);
-    }, [pkg.name, pkg.url, pkg.icon, pkg.screenshots, preferredSource]); // Removed isChaotic dep to avoid loops if source changes
-
-    // Derived state for UI consistency
-    // const isChaotic = selectedSource === 'chaotic';
-    // const isAur = selectedSource === 'aur'; // Use selectedSource directly in JSX for clarity
+    };
 
     useEffect(() => {
-        if (selectedSource === 'chaotic') {
-            invoke<ChaoticPackage>('get_chaotic_package_info', { name: pkg.name })
-                .then(setChaoticInfo)
-                .catch(console.error);
-        }
-    }, [selectedSource, pkg.name]);
+        checkStatus();
+        const unlisten = listen('install-complete', () => checkStatus());
+        return () => { unlisten.then((f: UnlistenFn) => f()); };
+    }, [pkg.name, selectedSource, variants]);
 
+
+    // --- Actions ---
+
+    const handleInstallClick = () => {
+        onInstall({
+            name: variants.find(v => v.source === selectedSource)?.pkg_name || pkg.name,
+            source: selectedSource,
+            repoName: variants.find(v => v.source === selectedSource)?.repo_name
+        });
+    };
+
+    const handleLaunch = async () => {
+        const nameToLaunch = installedVariant?.actual_package_name || installStatus?.actual_package_name || variants.find(v => v.source === selectedSource)?.pkg_name || pkg.name;
+        try {
+            await invoke('launch_app', { pkgName: nameToLaunch });
+            success("App launched");
+        } catch (e) { error("Could not launch app: " + String(e)); }
+    };
 
     const handleReviewSubmit = async () => {
         try {
-            // Need user name, for now hardcoded "You" or from auth if we had it
             await submitReview(pkg.name, reviewRating, reviewTitle + "\n\n" + reviewBody, "MonArch User");
-
             setShowReviewForm(false);
-            setReviewTitle('');
-            setReviewBody('');
-
-            // Refresh reviews via hook
+            setReviewTitle(''); setReviewBody('');
             refreshReviews();
-
             trackEvent('review_submitted', { package: pkg.name, rating: reviewRating });
-            alert("Review submitted!");
-        } catch (e) {
-            alert("Failed to submit review: " + String(e));
-        }
+            success("Review submitted!");
+        } catch (e) { error("Failed to submit: " + String(e)); }
     };
 
-    // Fetch PKGBUILD for AUR packages
     const fetchPkgbuild = async () => {
         setPkgbuildLoading(true);
         setPkgbuildError(null);
@@ -158,617 +209,398 @@ export default function PackageDetails({ pkg, onBack, preferredSource }: Package
             setShowPkgbuild(true);
         } catch (e) {
             setPkgbuildError(String(e));
-            setShowPkgbuild(true); // Show modal with error
-        } finally {
-            setPkgbuildLoading(false);
-        }
+            setShowPkgbuild(true);
+        } finally { setPkgbuildLoading(false); }
     };
 
-    // Handle install button click - shows confirmation for AUR packages
-    const handleInstallClick = async () => {
-        // DIRECT INSTALL: We assume all repos are active or handled by backend auto-sync.
-        // The "Setup Repo" check has been removed per "Zero Friction" requirements.
+    // --- Computed ---
+    const isConflict = installedVariant?.installed && (
+        !installStatus?.installed || installedVariant.source?.toLowerCase() !== selectedSource.toLowerCase()
+    );
 
+    const screenshots = (fullMeta?.screenshots && fullMeta.screenshots.length > 0)
+        ? fullMeta.screenshots
+        : (pkg.screenshots && pkg.screenshots.length > 0) ? pkg.screenshots : [];
 
-        if (selectedSource === 'aur') {
-            setShowInstallConfirm(true);
-        } else {
-            trackEvent('install_clicked', { package: pkg.name, source: selectedSource });
-            setShowInstallMonitor(true);
-        }
-    };
-
-
+    const displayedReviews = reviews.slice(0, visibleReviewsCount);
+    const hasMoreReviews = reviews.length > visibleReviewsCount;
 
     return (
-        <div className="h-full flex flex-col bg-app-bg animate-in slide-in-from-right duration-300 transition-colors">
-            {/* Header / Hero */}
-            <div className="relative">
-                <div className="absolute inset-0 h-48 bg-gradient-to-b from-app-sidebar to-app-bg -z-10" />
-
-                {/* Out of Date Warning */}
-                {pkg.out_of_date && (
-                    <div className="mx-8 mt-4 mb-2 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center gap-4 animate-in slide-in-from-top-2">
-                        <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-500 shrink-0">
-                            <AlertTriangle size={20} />
-                        </div>
-                        <div>
-                            <h3 className="text-amber-500 font-bold text-sm">Review Recommended</h3>
-                            <p className="text-amber-200/60 text-xs">
-                                This package has been flagged as out-of-date by the community. It might be unstable or missing features.
-                            </p>
-                        </div>
-                    </div>
-                )}
-
-                <div className="p-6 pb-6 flex flex-col lg:flex-row items-start gap-6 relative">
-                    {/* Back Button - Absolute on desktop to save space, or flex? Flex is safer for alignment */}
-                    <button
-                        onClick={onBack}
-                        className="absolute top-8 left-8 p-3 rounded-full bg-white/5 hover:bg-white/10 transition-colors z-10 hidden lg:block"
-                    >
-                        <ArrowLeft size={24} />
-                    </button>
-
-                    {/* Mobile Back Button */}
-                    <button
-                        onClick={onBack}
-                        className="lg:hidden mb-4 p-2 rounded-full bg-white/5 hover:bg-white/10 transition-colors"
-                    >
-                        <ArrowLeft size={24} />
-                    </button>
-
-                    {/* Main Icon - Centered on mobile, left on desktop */}
-                    <div className="w-28 h-28 lg:w-32 lg:h-32 lg:ml-16 shrink-0 rounded-2xl bg-app-card shadow-2xl flex items-center justify-center p-5 border border-app-border overflow-hidden mx-auto lg:mx-0">
-                        {(pkg.icon || fullMeta?.icon_url) ? (
-                            <img
-                                src={resolveIconUrl(pkg.icon || fullMeta?.icon_url)}
-                                alt={pkg.name}
-                                className="w-full h-full object-contain drop-shadow-lg"
-                            />
-                        ) : selectedSource === 'chaotic' ? (
-                            <Zap size={64} className="text-yellow-400" />
-                        ) : selectedSource === 'official' ? (
-                            <PackageIcon size={64} className="text-blue-400" />
-                        ) : (
-                            <PackageIcon size={64} className="text-zinc-500" />
-                        )}
-                    </div>
-
-                    {/* Center Info */}
-                    <div className="flex-1 min-w-0 pt-2 text-center lg:text-left">
-                        <div className="mb-2 flex items-center justify-center lg:justify-start gap-3 flex-wrap">
-                            <h1 className="text-3xl lg:text-4xl font-black text-app-fg truncate">
-                                {pkg.display_name || fullMeta?.name || pkg.name}
-                            </h1>
-                            <button
-                                onClick={() => toggleFavorite(pkg.name)}
-                                className={clsx(
-                                    "p-2 rounded-full transition-all active:scale-95",
-                                    isFav ? "bg-red-500/10 text-red-500" : "bg-app-subtle text-app-muted hover:bg-app-hover hover:text-red-400"
-                                )}
-                                title={isFav ? "Remove from Favorites" : "Add to Favorites"}
-                            >
-                                <Heart size={24} className={clsx(isFav && "fill-current")} />
-                            </button>
-                            <span className={clsx(
-                                "px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider",
-                                pkg.source === 'aur' ? "bg-amber-600/20 text-amber-600 border border-amber-600/30" :
-                                    pkg.source === 'chaotic' ? "bg-violet-600/20 text-violet-600 border border-violet-600/30" :
-                                        pkg.source === 'official' ? "bg-teal-600/20 text-teal-600 border border-teal-600/30" :
-                                            "bg-sky-600/20 text-sky-600 border border-sky-600/30"
-                            )}>
-                                {pkg.source === 'chaotic' ? '⚡ Instant Download' :
-                                    pkg.source === 'cachyos' ? '⚡ Optimized' :
-                                        pkg.source === 'aur' ? 'Community Build' :
-                                            pkg.source === 'official' ? 'Official' : pkg.source}
-                            </span>
-
-                        </div>
-
-                        {(pkg.display_name || fullMeta?.name) && (pkg.display_name || fullMeta?.name)?.toLowerCase() !== pkg.name.toLowerCase() && (
-                            <div className="text-sm font-mono text-app-muted opacity-60 mb-2 truncate">
-                                {pkg.name}
-                            </div>
-                        )}
-
-                        <p className="text-lg text-app-muted font-light leading-relaxed max-w-3xl mx-auto lg:mx-0">
-                            {fullMeta?.summary || pkg.description}
-                        </p>
-
-                        {/* Rating Summary */}
-                        {rating && rating.count > 0 && (
-                            <div className="flex items-center justify-center lg:justify-start gap-2 mt-3">
-                                <div className="flex text-yellow-500 gap-0.5">
-                                    {[1, 2, 3, 4, 5].map(s => (
-                                        <Star key={s} size={18} fill={s <= Math.round(rating.average) ? "currentColor" : "none"} />
-                                    ))}
-                                </div>
-                                <span className="text-sm font-bold text-app-fg ml-1">
-                                    {rating.average.toFixed(1)}
-                                </span>
-                                <span className="text-sm text-app-muted">
-                                    ({rating.count} reviews)
-                                </span>
-                            </div>
-                        )}
-
-                        <div className="flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-3 mt-6">
-                            {/* Install Button */}
-                            <button
-                                onClick={handleInstallClick}
-                                className="w-full sm:w-auto min-w-[180px] bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl font-bold text-lg shadow-xl shadow-blue-900/20 active:scale-95 transition-all flex items-center justify-center gap-2"
-                            >
-                                <Download size={20} /> Install
-                            </button>
-
-                            {/* View PKGBUILD Button - only for AUR */}
-                            {selectedSource === 'aur' && (
-                                <button
-                                    onClick={fetchPkgbuild}
-                                    disabled={pkgbuildLoading}
-                                    className="px-4 py-3 rounded-xl border border-app-border bg-app-card/50 hover:bg-app-card text-app-fg font-medium flex items-center gap-2 transition-all disabled:opacity-50"
-                                >
-                                    {pkgbuildLoading ? <Loader2 size={18} className="animate-spin" /> : <Code size={18} />}
-                                    View PKGBUILD
-                                </button>
-                            )}
-
-                            {variants.length > 1 && (
-                                <div className="flex flex-col items-start text-left">
-                                    <span className="text-xs text-app-muted mb-1 font-bold uppercase tracking-wider">Download Source:</span>
-                                    <div className="relative z-10 w-full">
-                                        <RepoSelector
-                                            variants={variants.map(v => ({
-                                                source: v.source,
-                                                version: v.version,
-                                                repo_name: v.repo_name
-                                            }))}
-                                            selectedSource={selectedSource}
-                                            onChange={(s) => setSelectedSource(s as any)}
-                                        />
-                                    </div>
-                                    {/* Helper text under dropdown */}
-                                    <p className="text-xs text-app-muted mt-2 max-w-[320px]">
-                                        {selectedSource === 'chaotic' && 'Pre-compiled binary. Installs instantly without building from source.'}
-                                        {selectedSource === 'aur' && 'Compiles from source code. May take longer to install, but provides the latest version.'}
-                                        {selectedSource === 'official' && 'Official Arch repository. Most stable and well-tested option.'}
-                                        {selectedSource === 'cachyos' && 'Performance-optimized build with CPU-specific tuning for speed.'}
-                                        {selectedSource === 'garuda' && 'Gaming-focused build with extra performance tweaks.'}
-                                        {selectedSource === 'endeavour' && 'Community-maintained build, often with additional patches.'}
-                                        {selectedSource === 'manjaro' && 'Tested and delayed release for extra stability.'}
-                                    </p>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* AUR Safety Warning */}
-                        {selectedSource === 'aur' && (
-                            <div className="mt-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-3">
-                                <AlertTriangle size={20} className="text-amber-500 shrink-0 mt-0.5" />
-                                <div>
-                                    <p className="text-amber-500 font-bold text-sm">AUR Package Warning</p>
-                                    <p className="text-amber-500/80 text-xs mt-1">
-                                        This package is from the Arch User Repository and has not been reviewed by Arch maintainers.
-                                        Always inspect the PKGBUILD before installing. Use at your own risk.
-                                    </p>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Horizontal Package Info Bar */}
-                        <div className="mt-6 w-full bg-white/5 backdrop-blur-md rounded-xl p-4 border border-white/10">
-                            <div className="flex flex-wrap items-center justify-start gap-6 text-sm">
-                                <div className="flex items-center gap-2">
-                                    <User size={14} className="text-app-muted" />
-                                    <span className="text-app-muted">Maintainer:</span>
-                                    <span className="text-app-fg font-medium">
-                                        {fullMeta?.maintainer || pkg.maintainer || (selectedSource === 'chaotic' ? 'Chaotic-AUR Team' : selectedSource === 'aur' ? 'AUR Contributor' : 'Arch Linux')}
-                                    </span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <Globe size={14} className="text-app-muted" />
-                                    <span className="text-app-muted">License:</span>
-                                    <span className="text-app-fg font-medium">
-                                        {fullMeta?.license || chaoticInfo?.metadata?.license || pkg.license?.join(', ') || 'Open Source'}
-                                    </span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <Calendar size={14} className="text-app-muted" />
-                                    <span className="text-app-muted">Updated:</span>
-                                    <span className="text-app-fg font-medium">
-                                        {(() => {
-                                            const selectedVariant = variants.find(v => v.source === selectedSource);
-                                            if (selectedVariant?.version) {
-                                                // Try to use chaotic build date if available
-                                                if (selectedSource === 'chaotic' && chaoticInfo?.lastUpdated) {
-                                                    return new Date(chaoticInfo.lastUpdated).toLocaleDateString();
-                                                }
-                                            }
-                                            if (fullMeta?.last_updated) {
-                                                return new Date(fullMeta.last_updated * 1000).toLocaleDateString();
-                                            }
-                                            if (pkg.last_modified) {
-                                                return new Date(pkg.last_modified * 1000).toLocaleDateString();
-                                            }
-                                            return 'Recently';
-                                        })()}
-                                    </span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <PackageIcon size={14} className="text-app-muted" />
-                                    <span className="text-app-muted">Version:</span>
-                                    <span className="text-app-fg font-medium font-mono text-xs">
-                                        {variants.find(v => v.source === selectedSource)?.version || pkg.version}
-                                    </span>
-                                </div>
-                                {pkg.url && (
-                                    <a href={pkg.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-blue-400 hover:text-blue-300 transition-colors ml-auto">
-                                        <Globe size={14} /> Website
-                                    </a>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* Scrollable Content Area */}
-            <div className="flex-1 overflow-y-auto min-h-0 relative">
-                {/* Screenshots Carousel */}
-                {((fullMeta?.screenshots && fullMeta.screenshots.length > 0) || (pkg.screenshots && pkg.screenshots.length > 0)) && (
-                    <div className="py-6 px-4 md:px-8 border-b border-app-border/30">
-                        <div className="overflow-x-auto scrollbar-hide snap-x snap-mandatory pb-4">
-                            <div className="flex gap-4 w-max">
-                                {(fullMeta?.screenshots?.length ? fullMeta.screenshots : pkg.screenshots || []).map((url: string, i: number) => (
-                                    <div
-                                        key={i}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            setLightboxIndex(i);
-                                        }}
-                                        className="flex-shrink-0 w-[280px] sm:w-[320px] md:w-[400px] lg:w-[480px] aspect-video bg-app-card rounded-xl overflow-hidden shadow-lg border border-app-border snap-center cursor-pointer group relative"
-                                    >
-                                        <img
-                                            src={url}
-                                            alt={`Screenshot ${i + 1} `}
-                                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                                        />
-                                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 poineter-events-none">
-                                            <span className="bg-black/60 px-3 py-1 rounded-full text-xs text-white font-medium">Click to enlarge</span>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* Lightbox Modal - Portal recommended but inline works if fixed properly */}
-                {lightboxIndex !== null && (
-                    <div
-                        className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-md flex items-center justify-center"
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            setLightboxIndex(null);
-                        }}
-                    >
-                        {/* Close Button */}
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                setLightboxIndex(null);
-                            }}
-                            className="absolute top-6 right-6 p-3 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-white z-[101]"
-                        >
-                            <X size={28} />
-                        </button>
-
-                        {/* Previous Button */}
-                        {lightboxIndex > 0 && (
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    setLightboxIndex(lightboxIndex - 1);
-                                }}
-                                className="absolute left-6 p-4 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-white z-[101]"
-                            >
-                                <ChevronLeft size={48} />
-                            </button>
-                        )}
-
-                        {/* Next Button */}
-                        {lightboxIndex < (fullMeta?.screenshots?.length || pkg.screenshots?.length || 1) - 1 && (
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    setLightboxIndex(lightboxIndex + 1);
-                                }}
-                                className="absolute right-6 p-4 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-white z-[101]"
-                            >
-                                <ChevronRight size={48} />
-                            </button>
-                        )}
-
-                        {/* Image */}
-                        <div className="relative max-w-[90vw] max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
-                            <img
-                                src={(fullMeta?.screenshots?.length ? fullMeta.screenshots : pkg.screenshots || [])[lightboxIndex]}
-                                alt={`Screenshot ${lightboxIndex + 1} `}
-                                className="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl"
-                            />
-                        </div>
-
-                        {/* Counter */}
-                        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-black/60 px-6 py-2 rounded-full text-white text-sm font-medium backdrop-blur-sm pointer-events-none">
-                            {lightboxIndex + 1} / {(fullMeta?.screenshots?.length || pkg.screenshots?.length || 0)}
-                        </div>
-                    </div>
-                )}
-
-                {/* Content Tabs */}
-                <div className="p-8 pt-6 max-w-5xl mx-auto">
-                    <div className="flex items-center gap-8 border-b border-app-border mb-8">
-                        <button
-                            onClick={() => setActiveTab('details')}
-                            className={clsx("pb-4 text-sm font-bold uppercase tracking-wider transition-all border-b-2", activeTab === 'details' ? "border-blue-500 text-app-fg" : "border-transparent text-app-muted hover:text-app-fg")}
-                        >
-                            Details
-                        </button>
-                        <button
-                            onClick={() => setActiveTab('reviews')}
-                            className={clsx("pb-4 text-sm font-bold uppercase tracking-wider transition-all border-b-2", activeTab === 'reviews' ? "border-blue-500 text-app-fg" : "border-transparent text-app-muted hover:text-app-fg")}
-                        >
-                            Reviews ({rating?.count || 0})
-                        </button>
-                    </div>
-
-                    {activeTab === 'details' ? (
-                        <div className="space-y-8">
-                            {/* Description */}
-                            <div className="bg-app-card/30 rounded-2xl p-8 border border-app-border/50">
-                                <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-                                    <Globe size={18} className="text-blue-500" /> Description
-                                </h3>
-                                {fullMeta?.description ? (
-                                    <div
-                                        className="prose prose-invert prose-lg max-w-none text-app-muted leading-relaxed"
-                                        dangerouslySetInnerHTML={{ __html: fullMeta.description }}
-                                    />
-                                ) : (
-                                    <p className="text-app-muted leading-relaxed text-lg">
-                                        {fullMeta?.summary || pkg.description || "No description available."}
-                                    </p>
-                                )}
-                            </div>
-
-                            {/* Keywords/Tags */}
-                            {pkg.keywords && (
-                                <div className="flex flex-wrap gap-2">
-                                    {pkg.keywords.map(k => (
-                                        <span key={k} className="px-3 py-1.5 rounded-lg bg-app-card border border-app-border text-sm text-app-muted">
-                                            #{k}
-                                        </span>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    ) : (
-                        <div className="space-y-8 max-w-4xl">
-                            <div className="flex justify-between items-center bg-blue-600/10 border border-blue-500/20 p-6 rounded-2xl">
-                                <div>
-                                    <h3 className="font-bold text-lg text-blue-400">What do you think?</h3>
-                                    <p className="text-sm text-app-muted">Share your experience with the community.</p>
-                                </div>
-                                <button
-                                    onClick={() => setShowReviewForm(true)}
-                                    className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-500 transition-colors"
-                                >
-                                    Write a Review
-                                </button>
-                            </div>
-
-                            {showReviewForm && (
-                                <div className="bg-app-card p-6 rounded-2xl border border-blue-500/30 animate-in zoom-in-95 duration-200">
-                                    <h3 className="font-bold mb-4 text-app-fg">New Review</h3>
-                                    <div className="space-y-4">
-                                        <div className="flex gap-2 mb-4">
-                                            {[1, 2, 3, 4, 5].map(s => (
-                                                <Star
-                                                    key={s}
-                                                    size={24}
-                                                    className="cursor-pointer transition-colors"
-                                                    fill={s <= reviewRating ? "#EAB308" : "none"}
-                                                    color={s <= reviewRating ? "#EAB308" : "currentColor"}
-                                                    onClick={() => setReviewRating(s)}
-                                                />
-                                            ))}
-                                        </div>
-                                        <input
-                                            type="text"
-                                            placeholder="Summary (e.g. Amazing app!)"
-                                            className="w-full bg-app-bg border border-app-border rounded-lg p-3 text-app-fg focus:border-blue-500 outline-none placeholder:text-app-muted/50"
-                                            value={reviewTitle}
-                                            onChange={(e) => setReviewTitle(e.target.value)}
-                                        />
-                                        <textarea
-                                            placeholder="Tell us more about your experience..."
-                                            rows={4}
-                                            className="w-full bg-app-bg border border-app-border rounded-lg p-3 text-app-fg focus:border-blue-500 outline-none placeholder:text-app-muted/50"
-                                            value={reviewBody}
-                                            onChange={(e) => setReviewBody(e.target.value)}
-                                        />
-                                        <div className="flex justify-end gap-3">
-                                            <button onClick={() => setShowReviewForm(false)} className="px-6 py-2 text-app-muted hover:text-app-fg transition-colors">Cancel</button>
-                                            <button
-                                                onClick={handleReviewSubmit}
-                                                disabled={!reviewTitle || !reviewBody}
-                                                className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50"
-                                            >
-                                                Submit Review
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            <div className="space-y-6">
-                                <div className="space-y-6">
-                                    {/* Unified Reviews List */}
-                                    {reviews.map(review => (
-                                        <div key={review.id} className={clsx(
-                                            "p-6 rounded-2xl border relative overflow-hidden",
-                                            review.source === 'monarch' ? "bg-blue-600/5 border-blue-500/20" : "bg-app-card/50 border-app-border"
-                                        )}>
-                                            {review.source === 'monarch' && (
-                                                <div className="absolute top-2 right-4 text-[9px] font-bold text-blue-500/50 uppercase">Community Review</div>
-                                            )}
-                                            {review.source === 'odrs' && (
-                                                <div className="absolute top-2 right-4 text-[9px] font-bold text-app-muted/50 uppercase">ODRS</div>
-                                            )}
-
-                                            <div className="flex justify-between items-start mb-2">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-bold text-app-fg">{review.userName || 'Anonymous'}</span>
-                                                </div>
-                                                <div className="flex text-yellow-500 gap-0.5">
-                                                    {[...Array(5)].map((_, i) => (
-                                                        <Star key={i} size={14} fill={i < review.rating ? "currentColor" : "none"} />
-                                                    ))}
-                                                </div>
-                                            </div>
-                                            <p className="text-app-muted text-sm leading-relaxed whitespace-pre-line">{review.comment}</p>
-                                            <p className="text-xs text-app-muted opacity-60 mt-4">Posted {new Date(review.date).toLocaleDateString()}</p>
-                                        </div>
-                                    ))}
-
-                                    {reviews.length === 0 && (
-                                        <div className="text-center py-12 text-app-muted bg-app-card/30 rounded-2xl border border-app-border border-dashed">
-                                            <MessageSquare size={32} className="mx-auto mb-2 opacity-50" />
-                                            <p>No reviews available yet.</p>
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
+        <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            className="h-full flex flex-col bg-app-bg text-app-fg overflow-hidden"
+        >
+            {/* --- HERO SECTION --- */}
+            <div className="relative min-h-[250px] lg:min-h-[300px] flex items-end">
+                {/* Background Gradient / Image */}
+                <div className="absolute inset-0 z-0 overflow-hidden">
+                    <div className="absolute inset-0 bg-gradient-to-b from-blue-900/40 to-app-bg z-10" />
+                    <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-10" />
+                    {screenshots.length > 0 && (
+                        <div className="absolute inset-0 blur-3xl opacity-30 scale-110">
+                            <img src={screenshots[0]} alt="" className="w-full h-full object-cover" />
                         </div>
                     )}
                 </div>
 
-                {/* Install Monitor Overlay */}
-                {showInstallMonitor && (
-                    <InstallMonitor
-                        pkg={{
-                            name: variants.find(v => v.source === selectedSource)?.pkg_name || pkg.name,
-                            source: selectedSource
-                        }}
-                        onClose={() => setShowInstallMonitor(false)}
-                    />
-                )}
+                {/* Back Button */}
+                <button
+                    onClick={onBack}
+                    className="absolute top-6 left-6 z-50 p-3 rounded-full bg-black/20 hover:bg-black/40 backdrop-blur-md text-white transition-all border border-white/10"
+                >
+                    <ArrowLeft size={24} />
+                </button>
 
-                {/* PKGBUILD Viewer Modal */}
-                {showPkgbuild && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-                        <div className="bg-app-card border border-app-border rounded-2xl w-full max-w-4xl max-h-[80vh] flex flex-col shadow-2xl">
-                            <div className="flex items-center justify-between p-4 border-b border-app-border">
-                                <div className="flex items-center gap-3">
-                                    <Code size={20} className="text-app-accent" />
-                                    <h3 className="font-bold text-app-fg">PKGBUILD - {pkg.name}</h3>
-                                </div>
-                                <button
-                                    onClick={() => setShowPkgbuild(false)}
-                                    className="p-2 hover:bg-app-fg/10 rounded-lg transition-colors"
-                                >
-                                    <X size={20} className="text-app-muted" />
-                                </button>
+                {/* Content Container */}
+                <div className="relative z-20 w-full max-w-7xl mx-auto px-6 pt-24 pb-8 lg:pb-12 flex flex-col lg:flex-row items-end gap-8">
+
+                    {/* Icon Card */}
+                    <motion.div
+                        initial={{ scale: 0.9, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ delay: 0.1 }}
+                        className="w-32 h-32 lg:w-48 lg:h-48 rounded-4xl bg-app-card shadow-2xl shadow-black/50 border border-white/10 flex items-center justify-center p-6 shrink-0 backdrop-blur-xl"
+                    >
+                        {(pkg.icon || fullMeta?.icon_url) ? (
+                            <img src={resolveIconUrl(pkg.icon || fullMeta?.icon_url)} alt={pkg.name} className="w-full h-full object-contain filter drop-shadow-xl" />
+                        ) : (
+                            <PackageIcon size={80} className="text-white/20" />
+                        )}
+                    </motion.div>
+
+                    {/* Text & Actions */}
+                    <div className="flex-1 min-w-0 mb-1">
+                        <motion.h1
+                            initial={{ y: 20, opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            transition={{ delay: 0.2 }}
+                            className="text-4xl lg:text-6xl font-black text-white tracking-tight leading-none mb-3 drop-shadow-2xl"
+                        >
+                            {pkg.display_name || fullMeta?.name || pkg.name}
+                        </motion.h1>
+
+                        <div className="flex flex-wrap items-center gap-4 mb-6 text-app-muted/80 font-medium">
+                            {/* Restored Source Badge */}
+                            <SourceBadge source={selectedSource} />
+
+                            <div className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-sm flex items-center gap-2 text-white/80">
+                                <Cpu size={14} /> <span>v{variants.find(v => v.source === selectedSource)?.version || pkg.version}</span>
                             </div>
-                            <div className="flex-1 overflow-auto p-4">
-                                {pkgbuildError ? (
-                                    <div className="flex flex-col items-center justify-center py-12 text-center">
-                                        <AlertTriangle size={48} className="text-amber-500 mb-4" />
-                                        <p className="text-app-fg font-bold">Failed to load PKGBUILD</p>
-                                        <p className="text-app-muted text-sm mt-2">{pkgbuildError}</p>
+                            <div className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-sm flex items-center gap-2 text-white/80">
+                                <MessageSquare size={14} /> <span>{reviews.length} Reviews</span>
+                            </div>
+                            {pkg.out_of_date && <span className="text-amber-400 flex items-center gap-1 font-bold"><AlertTriangle size={14} /> Outdated</span>}
+                        </div>
+
+                        {/* WARNINGS BLOCK - Prominent */}
+                        <div className="space-y-2 mb-6 max-w-2xl">
+                            {selectedSource === 'aur' && (
+                                <div className="flex items-start gap-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 backdrop-blur-sm">
+                                    <div className="p-2 bg-amber-500/20 rounded-lg text-amber-500"><AlertTriangle size={20} /></div>
+                                    <div>
+                                        <h4 className="text-amber-500 font-bold text-sm">Community Package (AUR)</h4>
+                                        <p className="text-amber-200/60 text-xs mt-1">
+                                            This package comes from the Arch User Repository. It is not officially reviewed.
+                                            Verify validity before installing.
+                                        </p>
                                     </div>
-                                ) : (
-                                    <pre className="text-xs font-mono text-app-fg bg-app-bg p-4 rounded-lg overflow-x-auto whitespace-pre-wrap">
-                                        {pkgbuildContent}
-                                    </pre>
+                                </div>
+                            )}
+                            {isConflict && (
+                                <div className="flex items-start gap-4 p-4 rounded-xl bg-red-500/10 border border-red-500/20 backdrop-blur-sm">
+                                    <div className="p-2 bg-red-500/20 rounded-lg text-red-500"><AlertTriangle size={20} /></div>
+                                    <div>
+                                        <h4 className="text-red-500 font-bold text-sm">Dependency Conflict</h4>
+                                        <p className="text-red-200/60 text-xs mt-1">
+                                            You have the <b>{installedVariant?.source}</b> version active. Switch sources or uninstall first.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* ACTION ROW */}
+                        <motion.div
+                            initial={{ y: 20, opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            transition={{ delay: 0.3 }}
+                            className="flex flex-wrap items-center gap-3"
+                        >
+                            {/* Variant Selector - MOVED UP */}
+                            {variants.length > 1 && (
+                                <div className="relative z-50 mr-2">
+                                    <RepoSelector
+                                        variants={variants}
+                                        selectedSource={selectedSource}
+                                        onChange={(s) => setSelectedSource(s as any)}
+                                    />
+                                </div>
+                            )}
+
+                            {installedVariant?.installed ? (
+                                <>
+                                    <button
+                                        onClick={handleLaunch}
+                                        className="h-14 px-8 bg-emerald-500 hover:bg-emerald-400 text-white rounded-2xl font-bold shadow-xl shadow-emerald-500/20 active:scale-95 transition-all flex items-center gap-3 text-lg"
+                                    >
+                                        <Play size={24} fill="currentColor" /> Launch
+                                    </button>
+                                    <button
+                                        onClick={() => onUninstall({
+                                            name: installedVariant?.actual_package_name || pkg.name,
+                                            source: installedVariant?.source || 'official'
+                                        })}
+                                        className="h-14 px-6 bg-white/5 hover:bg-white/10 text-red-400 border border-white/10 rounded-2xl font-bold active:scale-95 transition-all flex items-center gap-2"
+                                    >
+                                        <Trash2 size={20} /> Uninstall
+                                    </button>
+                                </>
+                            ) : (
+                                <button
+                                    onClick={handleInstallClick}
+                                    className="h-14 px-10 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-bold shadow-xl shadow-blue-600/20 active:scale-95 transition-all flex items-center gap-3 text-lg"
+                                >
+                                    <Download size={24} /> Install
+                                </button>
+                            )}
+
+                            <button
+                                onClick={() => toggleFavorite(pkg.name)}
+                                className={clsx(
+                                    "h-14 w-14 rounded-2xl border flex items-center justify-center transition-colors active:scale-95",
+                                    isFav ? "bg-red-500/20 border-red-500/50 text-red-500" : "bg-white/5 border-white/10 text-white/50 hover:bg-white/10 hover:text-white"
+                                )}
+                            >
+                                <Heart size={24} className={isFav ? "fill-current" : ""} />
+                            </button>
+
+                            {selectedSource === 'aur' && (
+                                <button onClick={fetchPkgbuild} className="h-14 w-14 rounded-2xl border border-white/10 bg-white/5 flex items-center justify-center text-white/50 hover:text-white hover:bg-white/10 transition-colors" title="View PKGBUILD">
+                                    {pkgbuildLoading ? <Loader2 size={24} className="animate-spin" /> : <Code size={24} />}
+                                </button>
+                            )}
+                        </motion.div>
+                    </div>
+                </div>
+            </div>
+
+            {/* --- MAIN CONTENT GRID --- */}
+            <div className="flex-1 overflow-y-auto bg-app-bg">
+                <div className="max-w-7xl mx-auto p-6 lg:p-10 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-16">
+
+                    {/* LEFT COLUMN (Details) */}
+                    <div className="lg:col-span-8 space-y-12">
+                        {/* SCREENSHOTS GALLERY */}
+                        {screenshots.length > 0 && (
+                            <section>
+                                <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                                    <Globe size={24} className="text-blue-500" /> Preview
+                                </h3>
+                                <div className="flex gap-4 overflow-x-auto pb-6 snap-x scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                                    {screenshots.map((url, i) => (
+                                        <motion.div
+                                            key={i}
+                                            whileHover={{ scale: 1.02 }}
+                                            onClick={() => setLightboxIndex(i)}
+                                            className="shrink-0 w-[400px] aspect-video rounded-2xl overflow-hidden bg-black/20 border border-white/10 cursor-pointer snap-center shadow-xl"
+                                        >
+                                            <img
+                                                src={url}
+                                                alt="Screenshot"
+                                                className="w-full h-full object-cover"
+                                                loading="lazy"
+                                                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                            />
+                                        </motion.div>
+                                    ))}
+                                </div>
+                            </section>
+                        )}
+
+                        {/* DESCRIPTION */}
+                        <section>
+                            <h3 className="text-xl font-bold text-white mb-6">About this App</h3>
+                            <div className="bg-app-card/30 rounded-3xl p-8 border border-white/5 leading-loose">
+                                <div
+                                    className="prose prose-invert prose-lg prose-blue max-w-none text-app-muted/90 font-light"
+                                    dangerouslySetInnerHTML={{ __html: fullMeta?.description || pkg.description || "No description available." }}
+                                />
+                                {pkg.keywords && (
+                                    <div className="flex flex-wrap gap-2 mt-8 pt-6 border-t border-white/5">
+                                        {pkg.keywords.map(k => (
+                                            <span key={k} className="px-3 py-1 bg-white/5 rounded-lg text-xs font-mono text-blue-300 border border-blue-500/20">#{k}</span>
+                                        ))}
+                                    </div>
                                 )}
                             </div>
-                            <div className="p-4 border-t border-app-border flex justify-between items-center">
-                                <p className="text-xs text-app-muted">
-                                    Review the build script carefully before installing. Look for suspicious commands like curl piped to bash.
-                                </p>
-                                <button
-                                    onClick={() => setShowPkgbuild(false)}
-                                    className="px-4 py-2 bg-app-accent text-white rounded-lg font-medium hover:opacity-90 transition-all"
-                                >
-                                    Close
-                                </button>
+                        </section>
+
+                        {/* REVIEWS TAB */}
+                        <section>
+                            <div className="flex items-center justify-between mb-8">
+                                <h3 className="text-xl font-bold text-white">User Reviews ({reviews.length})</h3>
+                                <button onClick={() => setShowReviewForm(true)} className="px-4 py-2 bg-blue-600/10 text-blue-400 rounded-lg hover:bg-blue-600/20 font-bold transition-colors">Write a Review</button>
+                            </div>
+
+                            {/* Review Form */}
+                            {showReviewForm && (
+                                <div className="bg-app-card p-6 rounded-2xl border border-blue-500/30 mb-8 animate-in slide-in-from-top-4">
+                                    <h4 className="font-bold text-white mb-4">Write your review</h4>
+                                    <div className="flex gap-2 mb-4">
+                                        {[1, 2, 3, 4, 5].map(s => <Star key={s} size={28} fill={s <= reviewRating ? "#fbbf24" : "none"} className={s <= reviewRating ? "text-amber-400" : "text-zinc-600 stroke-2"} onClick={() => setReviewRating(s)} />)}
+                                    </div>
+                                    <input value={reviewTitle} onChange={e => setReviewTitle(e.target.value)} placeholder="Title (e.g. Works great!)" className="w-full bg-black/20 border border-white/10 rounded-xl p-4 mb-3 text-white focus:border-blue-500 outline-none transition-colors" />
+                                    <textarea value={reviewBody} onChange={e => setReviewBody(e.target.value)} placeholder="Share your experience..." className="w-full bg-black/20 border border-white/10 rounded-xl p-4 mb-3 text-white focus:border-blue-500 outline-none transition-colors" rows={4} />
+                                    <div className="flex justify-end gap-3">
+                                        <button onClick={() => setShowReviewForm(false)} className="px-6 py-2 text-zinc-400 hover:text-white transition-colors">Cancel</button>
+                                        <button onClick={handleReviewSubmit} className="px-8 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold shadow-lg shadow-blue-600/20">Submit</button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Review List - PAGINATED */}
+                            <div className="space-y-4">
+                                {reviews.length === 0 ? (
+                                    <div className="p-8 text-center bg-white/5 rounded-2xl border border-white/5 text-app-muted">
+                                        No reviews yet. Be the first to share your thoughts!
+                                    </div>
+                                ) : (
+                                    displayedReviews.map((review, idx) => (
+                                        <div key={idx} className="p-6 bg-app-card rounded-2xl border border-white/5 hover:border-white/10 transition-colors">
+                                            <div className="flex justify-between items-start mb-2">
+                                                <div className="flex items-center gap-2">
+                                                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white">
+                                                        {review.userName.charAt(0)}
+                                                    </div>
+                                                    <span className="font-bold text-white">{review.userName}</span>
+                                                    <span className="text-xs text-app-muted">• {review.date ? new Date(review.date).toLocaleDateString() : 'Unknown Date'}</span>
+                                                </div>
+                                                <div className="flex gap-0.5">
+                                                    {[1, 2, 3, 4, 5].map(s => <Star key={s} size={14} fill={s <= review.rating ? "#fbbf24" : "none"} className={s <= review.rating ? "text-amber-400" : "text-zinc-700"} />)}
+                                                </div>
+                                            </div>
+                                            {/* We don't have a distinct separate title field in the interface unless we parse it. For now, showing comment. */}
+                                            <p className="text-app-muted text-sm leading-relaxed whitespace-pre-line mt-2">{review.comment}</p>
+                                        </div>
+                                    ))
+                                )}
+
+                                {/* Show More Button */}
+                                {hasMoreReviews && (
+                                    <div className="pt-4 flex justify-center">
+                                        <button
+                                            onClick={() => setVisibleReviewsCount(prev => prev + 5)}
+                                            className="px-6 py-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-white font-medium flex items-center gap-2 transition-colors"
+                                        >
+                                            Show More Reviews <ChevronDown size={16} />
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </section>
+                    </div>
+
+                    {/* RIGHT COLUMN (Sidebar) */}
+                    <div className="lg:col-span-4 space-y-6">
+
+                        {/* Ratings Card */}
+                        <div className="bg-gradient-to-br from-yellow-500/10 to-transparent rounded-3xl p-8 border border-yellow-500/20 text-center">
+                            <h4 className="text-sm font-bold text-yellow-500 uppercase tracking-wider mb-2">Community Rating</h4>
+                            <div className="flex items-center justify-center gap-3">
+                                <span className="text-6xl font-black text-white">{rating?.average.toFixed(1) || "0.0"}</span>
+                                <div className="flex flex-col items-start">
+                                    <div className="flex gap-1 mb-1">
+                                        {[1, 2, 3, 4, 5].map(s => <Star key={s} size={16} fill={s <= Math.round(rating?.average || 0) ? "#EAB308" : "none"} className="text-yellow-500" />)}
+                                    </div>
+                                    <span className="text-xs text-white/50">{rating?.count || 0} reviews</span>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                )}
 
-                {/* AUR Install Confirmation Modal */}
-                {showInstallConfirm && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-                        <div className="bg-app-card border border-app-border rounded-2xl w-full max-w-md shadow-2xl">
-                            <div className="p-6">
-                                <div className="flex items-center gap-3 mb-4">
-                                    <div className="p-3 bg-amber-500/20 rounded-xl">
-                                        <AlertTriangle size={24} className="text-amber-500" />
-                                    </div>
-                                    <div>
-                                        <h3 className="font-bold text-app-fg text-lg">Install from AUR?</h3>
-                                        <p className="text-app-muted text-sm">Unreviewed community package</p>
-                                    </div>
+                        {/* Metadata Grid */}
+                        <div className="bg-app-card rounded-3xl p-2 border border-white/5 overflow-hidden">
+                            <div className="grid grid-cols-1 divide-y divide-white/5">
+                                <div className="p-5 flex items-start justify-between gap-4 hover:bg-white/5 transition-colors">
+                                    <span className="text-sm text-app-muted flex items-center gap-3 shrink-0"><User size={18} className="text-blue-500" /> Maintainer</span>
+                                    <span className="text-sm text-white font-medium text-right break-words">{fullMeta?.maintainer || pkg.maintainer || "Community"}</span>
                                 </div>
-
-                                <div className="bg-app-bg rounded-xl p-4 mb-4 space-y-2">
-                                    <div className="flex justify-between text-sm">
-                                        <span className="text-app-muted">Package:</span>
-                                        <span className="text-app-fg font-medium">{pkg.name}</span>
-                                    </div>
-                                    <div className="flex justify-between text-sm">
-                                        <span className="text-app-muted">Version:</span>
-                                        <span className="text-app-fg font-medium">{variants.find(v => v.source === 'aur')?.version || pkg.version}</span>
-                                    </div>
-                                    <div className="flex justify-between text-sm">
-                                        <span className="text-app-muted">Source:</span>
-                                        <span className="text-amber-500 font-medium">Arch User Repository</span>
-                                    </div>
+                                <div className="p-5 flex items-start justify-between gap-4 hover:bg-white/5 transition-colors">
+                                    <span className="text-sm text-app-muted flex items-center gap-3 shrink-0"><ShieldCheck size={18} className="text-emerald-500" /> License</span>
+                                    <span className="text-sm text-white font-medium text-right break-words">{fullMeta?.license || pkg.license || "Unknown"}</span>
                                 </div>
-
-                                <p className="text-xs text-app-muted mb-4">
-                                    AUR packages are user-submitted and not officially reviewed. They may contain malicious code.
-                                    We recommend viewing the PKGBUILD first.
-                                </p>
-
-                                <div className="flex gap-3">
-                                    <button
-                                        onClick={() => setShowInstallConfirm(false)}
-                                        className="flex-1 px-4 py-3 rounded-xl border border-app-border bg-app-card/50 hover:bg-app-card text-app-fg font-medium transition-all"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={() => {
-                                            trackEvent('install_clicked', { package: pkg.name, source: 'aur' });
-                                            setShowInstallConfirm(false);
-                                            setShowInstallMonitor(true);
-                                        }}
-                                        className="flex-1 px-4 py-3 rounded-xl bg-amber-500 text-white font-bold shadow-lg shadow-amber-900/20 active:scale-95 transition-all"
-                                    >
-                                        Install Now
-                                    </button>
+                                <div className="p-5 flex items-start justify-between gap-4 hover:bg-white/5 transition-colors">
+                                    <span className="text-sm text-app-muted flex items-center gap-3 shrink-0"><Calendar size={18} className="text-purple-500" /> Updated</span>
+                                    <span className="text-sm text-white font-medium text-right">
+                                        {fullMeta?.last_updated ? new Date(fullMeta.last_updated * 1000).toLocaleDateString() : 'Unknown'}
+                                    </span>
                                 </div>
-                            </div>
+                                {pkg.url && (
+                                    <a href={pkg.url} target="_blank" className="p-5 flex items-center justify-between gap-4 hover:bg-white/10 transition-colors group">
+                                        <span className="text-sm text-blue-400 flex items-center gap-3 shrink-0"><Globe size={18} /> Website</span>
+                                        <ChevronRight size={18} className="text-white/30 group-hover:text-white transition-colors ml-auto" />
+                                    </a>
+                                )}                            </div>
                         </div>
                     </div>
-                )}
-
-
+                </div>
             </div>
-        </div>
+
+            {/* LIGHTBOX PORTAL */}
+            <AnimatePresence>
+                {lightboxIndex !== null && (
+                    <motion.div
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                        onClick={() => setLightboxIndex(null)}
+                        className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4"
+                    >
+                        <button className="absolute top-6 right-6 p-4 text-white/50 hover:text-white"><X size={32} /></button>
+                        <img
+                            src={screenshots[lightboxIndex]}
+                            className="max-h-[90vh] max-w-[90vw] rounded-lg shadow-2xl"
+                            onClick={e => e.stopPropagation()}
+                        />
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* PKGBUILD Modal */}
+            <AnimatePresence>
+                {showPkgbuild && (
+                    <motion.div
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+                        onClick={() => setShowPkgbuild(false)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9 }} animate={{ scale: 1 }} exit={{ scale: 0.9 }}
+                            onClick={e => e.stopPropagation()}
+                            className="bg-app-card w-full max-w-4xl h-[80vh] rounded-2xl border border-white/10 flex flex-col overflow-hidden shadow-2xl"
+                        >
+                            <div className="p-4 border-b border-white/10 flex justify-between items-center bg-white/5">
+                                <h3 className="font-bold text-white flex items-center gap-2"><Code size={20} className="text-blue-400" /> PKGBUILD Preview</h3>
+                                <button onClick={() => setShowPkgbuild(false)}><X size={24} className="text-white/50 hover:text-white" /></button>
+                            </div>
+                            <div className="flex-1 overflow-auto p-4 bg-[#1e1e1e]">
+                                {pkgbuildLoading ? (
+                                    <div className="h-full flex flex-col items-center justify-center text-white/50 gap-4">
+                                        <Loader2 size={40} className="animate-spin text-blue-500" />
+                                        <p>Fetching PKGBUILD...</p>
+                                    </div>
+                                ) : pkgbuildError ? (
+                                    <div className="h-full flex flex-col items-center justify-center text-red-400 gap-4 p-8 text-center">
+                                        <AlertTriangle size={40} />
+                                        <p>{pkgbuildError}</p>
+                                    </div>
+                                ) : (
+                                    <pre className="font-mono text-sm text-gray-300 whitespace-pre-wrap">{pkgbuildContent}</pre>
+                                )}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </motion.div>
     );
 }

@@ -177,12 +177,21 @@ pub async fn fetch_repo_packages<C: RepoClient>(
                 let _ = std::fs::write(&cache_path, &data);
                 data
             }
-            None => {
-                return Err(format!(
-                    "All mirrors failed for {}. Errors: [{}]",
-                    repo_name,
-                    accumulated_errors.join("; ")
-                ))
+            Option::None => {
+                // FALLBACK: Try to use stale cache if download failed
+                if cache_path.exists() {
+                    println!(
+                        "WARN: Network sync failed for {}. Using stale cache.",
+                        repo_name
+                    );
+                    std::fs::read(&cache_path).map_err(|e| e.to_string())?
+                } else {
+                    return Err(format!(
+                        "All mirrors failed for {}. Errors: [{}]",
+                        repo_name,
+                        accumulated_errors.join("; ")
+                    ));
+                }
             }
         }
     };
@@ -300,6 +309,10 @@ fn parse_desc(content: &str, source: PackageSource) -> Option<Package> {
             provides,
             app_id: None,
             is_optimized: None,
+            depends: None,
+            make_depends: None,
+            is_featured: None,
+            alternatives: None,
         })
     } else {
         None

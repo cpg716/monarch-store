@@ -11,7 +11,7 @@ pub fn check_repo_status(name: &str) -> bool {
 }
 
 #[command]
-pub async fn reset_pacman_conf() -> Result<String, String> {
+pub async fn reset_pacman_conf(password: Option<String>) -> Result<String, String> {
     let script = r#"
         echo "--- Resetting MonARCH Infrastructure ---"
         # 1. Backup Pacman Config
@@ -28,6 +28,7 @@ pub async fn reset_pacman_conf() -> Result<String, String> {
         # 3. Wipe MonARCH modular configs
         rm -f /etc/pacman.d/monarch/*.conf
         mkdir -p /etc/pacman.d/monarch
+        touch /etc/pacman.d/monarch/00-monarch-placeholder.conf
         
         # 4. Ensure Modular Include is present (Infrastructure 2.0)
         if ! grep -q "/etc/pacman.d/monarch/\*.conf" /etc/pacman.conf; then
@@ -38,11 +39,14 @@ pub async fn reset_pacman_conf() -> Result<String, String> {
         pacman -Sy --noconfirm
     "#;
 
-    run_pkexec_script(script, "reset_config").await
+    crate::utils::run_privileged_script(script, password, false).await
 }
 
 #[command]
-pub async fn set_repo_priority(order: Vec<String>) -> Result<String, String> {
+pub async fn set_repo_priority(
+    order: Vec<String>,
+    password: Option<String>,
+) -> Result<String, String> {
     // Pacman reads files in alphabetical order in Include directories.
     // We achieve priority by renaming existing .conf files with numerical prefixes.
     // name examples: "chaotic-aur", "cachyos"
@@ -64,13 +68,14 @@ pub async fn set_repo_priority(order: Vec<String>) -> Result<String, String> {
         ));
     }
 
-    run_pkexec_script(&script, "priority").await
+    crate::utils::run_privileged_script(&script, password, false).await
 }
 
 #[command]
 pub async fn enable_repos_batch(
     _app: tauri::AppHandle,
     names: Vec<String>,
+    password: Option<String>,
 ) -> Result<String, String> {
     if names.is_empty() {
         return Ok("No repos to enable.".to_string());
@@ -88,197 +93,246 @@ pub async fn enable_repos_batch(
     full_script.push_str("\n\necho '--- Batch Setup Complete ---'\n");
 
     // Run all in one go
-    run_pkexec_script(&full_script, "batch_setup").await
+    crate::utils::run_privileged_script(&full_script, password, false).await
 }
 
 #[command]
-pub async fn enable_repo(_app: tauri::AppHandle, name: &str) -> Result<String, String> {
+pub async fn enable_repo(
+    _app: tauri::AppHandle,
+    name: &str,
+    password: Option<String>,
+) -> Result<String, String> {
     let script = get_repo_script(name);
-    run_pkexec_script(&script, name).await
+    crate::utils::run_privileged_script(&script, password, false).await
 }
 
 #[command]
-pub async fn bootstrap_infrastructure() -> Result<String, String> {
+pub async fn set_one_click_control(
+    state: tauri::State<'_, crate::repo_manager::RepoManager>,
+    enabled: bool,
+    password: Option<String>,
+) -> Result<String, String> {
+    let allow_active = if enabled { "yes" } else { "auth_admin_keep" };
     let script = r#"
-        echo "--- Initializing MonARCH Infrastructure 2.0 ---"
-        mkdir -p /etc/pacman.d/monarch
-        
-        # 1. Clean up old direct injections to avoid duplicates
-        # We target the most common ones we used: cachyos, chaotic-aur, garuda, endeavouros, manjaro
-        cp /etc/pacman.conf /etc/pacman.conf.bak.inf2
-        
-        # This sed command deletes sections starting with these names until the next section or EOF
-        # It's a "Best Effort" cleanup.
-        sed -i '/\[cachyos\]/,/^\s*$/{d}' /etc/pacman.conf
-        sed -i '/\[chaotic-aur\]/,/^\s*$/{d}' /etc/pacman.conf
-        sed -i '/\[garuda\]/,/^\s*$/{d}' /etc/pacman.conf
-        sed -i '/\[endeavouros\]/,/^\s*$/{d}' /etc/pacman.conf
-        sed -i '/\[manjaro-core\]/,/^\s*$/{d}' /etc/pacman.conf
-        sed -i '/\[manjaro-extra\]/,/^\s*$/{d}' /etc/pacman.conf
+        echo "Updating MonARCH Access Control..."
+        cat <<'EOF' > /usr/share/polkit-1/actions/com.monarch.store.policy
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>MonARCH Store</vendor>
+  <action id="com.monarch.store.package-manage">
+    <description>Manage system packages</description>
+    <message>Authentication required</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>{{ALLOW_ACTIVE}}</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/monarch-pk-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
+  </action>
+</policyconfig>
+EOF
+        echo "Rules updated."
+    "#
+    .replace("{{ALLOW_ACTIVE}}", allow_active);
 
-        # 2. Add the Modular Include line if missing
-        if ! grep -q "/etc/pacman.d/monarch/\*.conf" /etc/pacman.conf; then
-            echo -e "\n# MonARCH Managed Repositories\nInclude = /etc/pacman.d/monarch/*.conf" >> /etc/pacman.conf
-            echo "Modular Include added."
-        else
-            echo "Modular Include already present."
+    let res = crate::utils::run_privileged_script(&script, password, false).await?;
+    state.inner().set_one_click_enabled(enabled).await;
+    Ok(res)
+}
+
+#[command]
+pub async fn bootstrap_system(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::repo_manager::RepoManager>,
+    password: Option<String>,
+    one_click: Option<bool>,
+) -> Result<String, String> {
+    let is_one_click = one_click.unwrap_or(false);
+    let allow_active = if is_one_click {
+        "yes"
+    } else {
+        "auth_admin_keep"
+    };
+
+    let script = r##"
+        echo "--- Initializing MonARCH Infrastructure 2.1 (Full Keyring & DB Reset) ---"
+        
+        # 0. Forced Cleanup
+        echo "Clearing locks and corrupted databases..."
+        rm -f /var/lib/pacman/db.lck 2>/dev/null || true
+        rm -rf /var/lib/pacman/sync/* 2>/dev/null || true
+        
+        # 0.5 Permission Repair (Critical)
+        echo "Repairing filesystem permissions..."
+        chown root:root /etc/pacman.d/gnupg 2>/dev/null || true
+        chmod 700 /etc/pacman.d/gnupg 2>/dev/null || true
+        mkdir -p /etc/pacman.d/monarch
+        chmod 755 /etc/pacman.d/monarch
+        
+        # Infrastructure 2.1: Nuke any existing monarch configs to prevent "Database already registered"
+        rm -f /etc/pacman.d/monarch/*.conf
+        
+        # Ensure placeholder exists to satisfy glob
+        echo "# Placeholder" > /etc/pacman.d/monarch/00-monarch-placeholder.conf
+        
+        if [ ! -f /etc/pacman.d/monarch/00-monarch-placeholder.conf ]; then
+             echo "CRITICAL ERROR: Failed to create placeholder conf!"
+             exit 1
         fi
 
-        echo "Bootstrap complete. Using /etc/pacman.d/monarch/ for modular configs."
-    "#;
+        # 1. Nuke and Pave GPG Keyring
+        echo "Resetting GPG Keyring..."
+        killall gpg-agent dirmngr 2>/dev/null || true
+        rm -rf /etc/pacman.d/gnupg
+        
+        pacman-key --init
+        pacman-key --populate archlinux
+        
+        # 2. Update Official Keyring Package
+        echo "Syncing archlinux-keyring..."
+        pacman -Sy --noconfirm archlinux-keyring
 
-    run_pkexec_script(script, "bootstrap").await
+        # 2.5 Force Re-Import CachyOS Keys (Fix invalid signature)
+        echo "Refreshing CachyOS Keys..."
+        pacman-key --recv-key F3B607488DB35A47 --keyserver keyserver.ubuntu.com
+        pacman-key --lsign-key F3B607488DB35A47
+        
+        # 3. Import Chaotic Keys
+        echo "Refreshing Chaotic Keys..."
+        pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com
+        pacman-key --lsign-key 3056513887B78AEB
+        
+        # 4. Cleanup old direct injections
+        sed -i '/\[cachyos/d' /etc/pacman.conf
+        sed -i '/\[chaotic-aur/d' /etc/pacman.conf
+        sed -i '/\[garuda/d' /etc/pacman.conf
+        sed -i '/\[endeavouros/d' /etc/pacman.conf
+        sed -i '/\[manjaro/d' /etc/pacman.conf
+
+        # 5. Add the Modular Include line
+        if ! grep -q "/etc/pacman.d/monarch/\*.conf" /etc/pacman.conf; then
+            echo -e "\n# MonARCH Managed Repositories\nInclude = /etc/pacman.d/monarch/*.conf" >> /etc/pacman.conf
+        fi
+
+        # 6. Install MonARCH Polkit Policy
+        echo "Configuring Seamless Auth Helper..."
+        cat <<'EOF' > /usr/bin/monarch-pk-helper
+#!/bin/bash
+case "${1##*/}" in
+  pacman|pacman-key|yay|paru|aura|rm|cat|mkdir|chmod|killall|cp|sed|bash|ls|grep|touch|checkupdates)
+    exec "$@" ;;
+  *)
+    echo "Unauthorized: $1"; exit 1 ;;
+esac
+EOF
+        chmod +x /usr/bin/monarch-pk-helper
+        
+        cat <<'EOF' > /usr/share/polkit-1/actions/com.monarch.store.policy
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>MonARCH Store</vendor>
+  <action id="com.monarch.store.package-manage">
+    <description>Manage system packages</description>
+    <message>Authentication required</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>{{ALLOW_ACTIVE}}</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/monarch-pk-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
+  </action>
+</policyconfig>
+EOF
+        echo "Final Database Sync..."
+        pacman -Sy --noconfirm
+
+        echo "Bootstrap complete. Keys & Databases healthy ({{ALLOW_ACTIVE}})."
+    "##
+    .replace("{{ALLOW_ACTIVE}}", allow_active);
+
+    let res = crate::utils::run_privileged_script_with_progress(
+        app,
+        "bootstrap-progress",
+        &script,
+        password,
+        true, // MUST bypass helper for bootstrap/repair to work
+    )
+    .await;
+    if res.is_ok() {
+        state.inner().set_one_click_enabled(is_one_click).await;
+    }
+    res
 }
 
 fn get_repo_script(name: &str) -> String {
     match name.to_lowercase().as_str() {
         "cachyos" => {
             r#"
-            echo "--- CachyOS Modular Setup ---"
-            pacman -U "https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst" --noconfirm || true
-            CONF="/etc/pacman.d/monarch/cachyos.conf"
-            echo "[cachyos]" > $CONF
-            echo "Include = /etc/pacman.d/cachyos-mirrorlist" >> $CONF
+            echo "--- CachyOS Trust & Mirror Setup ---"
+            pacman-key --recv-key F3B607488DB35A47 --keyserver keyserver.ubuntu.com
+            pacman-key --lsign-key F3B607488DB35A47
             
-            # v3 Optimization (AVX2)
-            if grep -q "avx2" /proc/cpuinfo; then
-                echo "[cachyos-v3]" >> $CONF
-                echo "Include = /etc/pacman.d/cachyos-v3-mirrorlist" >> $CONF
-                echo "[cachyos-core-v3]" >> $CONF
-                echo "Include = /etc/pacman.d/cachyos-v3-mirrorlist" >> $CONF
-                echo "[cachyos-extra-v3]" >> $CONF
-                echo "Include = /etc/pacman.d/cachyos-v3-mirrorlist" >> $CONF
+            # CachyOS requires mirrorlists for their standard Include structure
+            if [ ! -f /etc/pacman.d/cachyos-mirrorlist ]; then
+                echo "Server = https://mirror.cachyos.org/repo/x86_64/\$repo" > /etc/pacman.d/cachyos-mirrorlist
             fi
-
-            # v4 Optimization (AVX512)
-            if grep -q "avx512f" /proc/cpuinfo; then
-                echo "[cachyos-v4]" >> $CONF
-                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
-                echo "[cachyos-core-v4]" >> $CONF
-                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
-                echo "[cachyos-extra-v4]" >> $CONF
-                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
+            if [ ! -f /etc/pacman.d/cachyos-v4-mirrorlist ]; then
+                echo "Server = https://mirror.cachyos.org/repo/x86_64_v4/\$repo" > /etc/pacman.d/cachyos-v4-mirrorlist
             fi
-
-            # znver4 Optimization (AMD Zen 4)
-            # This is a bit trickier via flags, but checking for 'avx512_fp16' is a good indicator for Zen 4
-            if grep -q "avx512_fp16" /proc/cpuinfo; then
-                echo "[cachyos-core-znver4]" >> $CONF
-                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
-                echo "[cachyos-extra-znver4]" >> $CONF
-                echo "Include = /etc/pacman.d/cachyos-v4-mirrorlist" >> $CONF
+            if [ ! -f /etc/pacman.d/cachyos-znver4-mirrorlist ]; then
+                echo "Server = https://mirror.cachyos.org/repo/x86_64_v4/\$repo" > /etc/pacman.d/cachyos-znver4-mirrorlist
             fi
-
-            pacman -Sy --noconfirm
             "#
         }
         "chaotic-aur" | "chaotic" => {
             r#"
-            echo "--- Chaotic-AUR Modular Setup ---"
-            pacman -U 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst' --noconfirm
-            echo "[chaotic-aur]" > /etc/pacman.d/monarch/chaotic-aur.conf
-            echo "Include = /etc/pacman.d/chaotic-mirrorlist" >> /etc/pacman.d/monarch/chaotic-aur.conf
-            pacman -Sy --noconfirm
+            echo "--- Chaotic-AUR Trust Setup ---"
+            pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com
+            pacman-key --lsign-key 3056513887B78AEB
+
+            echo "Installing Chaotic-AUR support packages..."
+            pacman -U 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst' --noconfirm || true
             "#
         }
         "garuda" => {
             r#"
-            echo "--- Garuda Modular Setup ---"
-            pacman -U https://builds.garudalinux.org/repos/garuda/x86_64/garuda-keyring-20240128-1-any.pkg.tar.zst --noconfirm || true
-            CONF="/etc/pacman.d/monarch/garuda.conf"
-            echo "[garuda]" > $CONF
-            echo "Server = https://builds.garudalinux.org/repos/garuda/\$arch" >> $CONF
-            pacman -Sy --noconfirm
+            echo "--- Garuda Trust Setup ---"
+            pacman-key --recv-key DD499313D4057A27 --keyserver keyserver.ubuntu.com
+            pacman-key --lsign-key DD499313D4057A27
             "#
         }
         "endeavouros" => {
             r#"
-            echo "--- EndeavourOS Modular Setup ---"
-            curl -f -s -L "https://raw.githubusercontent.com/endeavouros-team/mirrors/master/mirrorlist" -o /etc/pacman.d/endeavouros-mirrorlist
-            CONF="/etc/pacman.d/monarch/endeavouros.conf"
-            echo "[endeavouros]" > $CONF
-            echo "SigLevel = PackageRequired" >> $CONF
-            echo "Include = /etc/pacman.d/endeavouros-mirrorlist" >> $CONF
-            pacman -Sy endeavouros-keyring --noconfirm || true
+            echo "--- EndeavourOS Trust Setup ---"
+            if [ ! -f /etc/pacman.d/endeavouros-mirrorlist ]; then
+                curl -f -s -L "https://raw.githubusercontent.com/endeavouros-team/mirrors/master/mirrorlist" -o /etc/pacman.d/endeavouros-mirrorlist
+            fi
             "#
-        }
-        "arch" | "official" => {
-             r#"
-             echo "--- Arch Official Modular Setup ---"
-             CONF="/etc/pacman.d/monarch/arch-official.conf"
-             echo "[core]" > $CONF
-             echo "Include = /etc/pacman.d/mirrorlist" >> $CONF
-             echo "" >> $CONF
-             echo "[extra]" >> $CONF
-             echo "Include = /etc/pacman.d/mirrorlist" >> $CONF
-             if [ "$(uname -m)" = "x86_64" ]; then
-                echo "" >> $CONF
-                echo "[multilib]" >> $CONF
-                echo "Include = /etc/pacman.d/mirrorlist" >> $CONF
-             fi
-             if [ ! -s /etc/pacman.d/mirrorlist ]; then
-                 echo "Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
-             fi
-             pacman -Sy --noconfirm
-             "#
         }
         "manjaro" => {
             r#"
-            echo "--- Manjaro Modular Setup ---"
-            pacman -U https://mirror.init7.net/manjaro/stable/core/x86_64/manjaro-keyring-20251003-1-any.pkg.tar.zst --noconfirm || true
-            CONF="/etc/pacman.d/monarch/manjaro.conf"
-            echo "[core]" > $CONF
-            echo "SigLevel = PackageRequired" >> $CONF
-            echo "Server = https://mirror.init7.net/manjaro/stable/core/\$arch" >> $CONF
-            echo "" >> $CONF
-            echo "[extra]" >> $CONF
-            echo "SigLevel = PackageRequired" >> $CONF
-            echo "Server = https://mirror.init7.net/manjaro/stable/extra/\$arch" >> $CONF
-            pacman -Sy --noconfirm
+            echo "--- Manjaro Trust & Security Setup ---"
+            # Ensure Manjaro keyring is present first
+            pacman -Sy --needed manjaro-keyring --noconfirm || true
+            pacman-key --init
+            pacman-key --populate manjaro
+            
+            pacman-key --recv-key 279E7CF5D8D56EC8 --keyserver keyserver.ubuntu.com
+            pacman-key --lsign-key 279E7CF5D8D56EC8
             "#
         }
         "aur" => {
             r#"
-            echo "--- AUR Setup ---"
+            echo "--- AUR Build Environment Setup ---"
             pacman -S --needed base-devel git --noconfirm
             "#
         }
         _ => "",
     }.to_string()
-}
-
-async fn run_pkexec_script(script: &str, _name: &str) -> Result<String, String> {
-    use std::process::Stdio;
-    use tokio::io::AsyncWriteExt;
-
-    // Use /bin/bash -s to read script from stdin
-    // This avoids the insecure temporary file creation (TOCTOU vulnerability)
-    let mut child = tokio::process::Command::new("pkexec")
-        .arg("/bin/bash")
-        .arg("-s") // Read commands from stdin
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn pkexec: {}", e))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = stdin.write_all(script.as_bytes()).await {
-            return Err(format!("Failed to write script to stdin: {}", e));
-        }
-    }
-
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("Failed to wait on pkexec: {}", e))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(format!(
-            "Setup Failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ))
-    }
 }

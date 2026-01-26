@@ -29,11 +29,16 @@ MonARCH detects your CPU capabilities (AVX2, AVX-512) and automatically prioriti
 *   **10-20% Faster**: Python, compilers, and rendering apps run significantly faster.
 *   **Automatic**: No configuration needed. If your CPU supports it, we use it.
 
-### 🩺 System Repair Dashboard
-Arch Linux can be fragile. MonARCH includes a built-in **"Click-to-Repair"** suite:
-*   **Fix Stuck Updates**: Removes stuck `pacman.db.lck` files.
-*   **Fix Security Keys**: Resets GPG keys if signatures fail.
-*   **Force System Update**: Forces a database refresh if you get stuck in a "Partial Upgrade" state.
+### 🩺 Hardened System Health
+MonARCH v0.2.30 introduces a robust, permission-safe health monitoring system:
+*   **Sequential Startup**: Intelligent initialization that fixes the system *before* you enter the store.
+*   **AMD-Aware Optimization**: Correctly detects CPU feature sets (ABM/LZCNT) for Zen 4/5 architectures.
+*   **Unified Maintenance Wizard**: A single "God Mode" repair engine for Keyring, Security Policies, and Repository synchronization.
+
+### 🛡️ Smart Repository Management
+*   **Soft Disable Architecture**: Disabling a repo hides clutter but keeps system updates secure in the background.
+*   **Chaotic Binary Support**: Native integration with Chaotic-AUR and CachyOS.
+*   **Zero-Compile Experience**: Prioritizes pre-built binaries to save time and battery.
 
 ### 🧠 Intelligent Package Merging
 Stop guessing which "firefox" is the right one. MonARCH intelligently merges results from all sources into a single, clean view.

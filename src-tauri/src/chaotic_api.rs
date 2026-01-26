@@ -137,6 +137,10 @@ impl ChaoticApiClient {
                 "graphics" | "design" => {
                     vec!["image", "photo", "draw", "paint", "design", "color", "font"]
                 }
+                "essentials" | "featured" => vec![
+                    "browser", "code", "spotify", "discord", "steam", "vlc", "obs", "office",
+                    "driver", "kernel", "monitor",
+                ],
                 _ => vec![],
             };
 
@@ -201,7 +205,7 @@ impl ChaoticApiClient {
                 Ok(pkg) => packages.push(pkg),
                 Err(e) => {
                     // Log the error but don't fail the whole batch
-                    println!("WARN: Failed to parse package at index {}: {}", i, e);
+                    eprintln!("WARN: Failed to parse package at index {}: {}", i, e);
                 }
             }
         }
@@ -222,6 +226,7 @@ impl ChaoticApiClient {
     }
 
     /// Find metadata for a specific package from the cached Chaotic-AUR list
+    #[allow(dead_code)]
     pub async fn find_package(&self, pkg_name: &str) -> Option<ChaoticPackage> {
         // Try to get from cache first
         if let Some(packages) = self.package_cache.get("all_packages").await {
@@ -343,6 +348,7 @@ impl ChaoticApiClient {
         results
     }
 
+    #[allow(dead_code)]
     pub async fn get_packages_providing(&self, name: &str) -> Vec<ChaoticPackage> {
         if self.package_cache.get("all_packages").await.is_none() {
             let _ = self.fetch_packages().await;

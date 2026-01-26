@@ -8,6 +8,7 @@ import logoSmall from '../assets/logo_small.png';
 
 interface OnboardingModalProps {
     onComplete: () => void;
+    reason?: string;
 }
 
 interface RepoFamily {
@@ -20,28 +21,69 @@ interface RepoFamily {
     recommendation?: string | null;
 }
 
-export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
+export default function OnboardingModal({ onComplete, reason }: OnboardingModalProps) {
     const [step, setStep] = useState(0);
     const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
     const [aurEnabled, setAurEnabled] = useState(false);
+    const [oneClickEnabled, setOneClickEnabled] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [repoFamilies, setRepoFamilies] = useState<RepoFamily[]>([]);
 
     // Chaotic & System State
-    const [systemInfo, setSystemInfo] = useState<{ distro: string; has_avx2: boolean } | null>(null);
     const [missingChaotic, setMissingChaotic] = useState<boolean>(false);
     const [chaoticStatus, setChaoticStatus] = useState<"idle" | "checking" | "enabling" | "success" | "error">("checking");
     const [chaoticLogs, setChaoticLogs] = useState<string[]>([]);
 
+    // System Bootstrap State
+    // System Bootstrap State
+    const [bootstrapStatus, setBootstrapStatus] = useState<"idle" | "running" | "success" | "error">("idle");
+
+    useEffect(() => {
+        let unlisten: any;
+        const setup = async () => {
+        };
+        setup();
+        return () => { if (unlisten) unlisten(); };
+    }, []);
+
+    const enableSystem = async (): Promise<boolean> => {
+        setBootstrapStatus("running");
+        try {
+            await invoke("bootstrap_system", { password: null, oneClick: oneClickEnabled });
+            setBootstrapStatus("success");
+            localStorage.setItem('monarch_infra_v2_2', 'true'); // Keep infra flag
+            localStorage.setItem('monarch_onboarding_v3', 'true'); // Set migration flag early just in case
+            return true;
+        } catch (e: any) {
+            console.error(e);
+            setChaoticLogs(prev => [...prev, `Bootstrap Error: ${e}`]);
+            setBootstrapStatus("error");
+            return false;
+        }
+    };
+
     // Initial Load & System Detection
     useEffect(() => {
-        // 1. Detect System Info for Recommendations
         invoke<any>('get_system_info').then(info => {
-            setSystemInfo(info);
-
-            // 2. Load Repo States and apply intelligent badges
             invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states').then(backendRepos => {
                 const families: RepoFamily[] = [
+                    {
+                        id: 'chaotic-aur',
+                        name: 'Chaotic-AUR',
+                        description: 'Pre-built binaries for Community Apps',
+                        members: ['chaotic-aur'],
+                        icon: Zap,
+                        enabled: true,
+                        recommendation: "Essential"
+                    },
+                    {
+                        id: 'official-arch',
+                        name: 'Official Arch Linux',
+                        description: 'The foundation (Core, Extra, Multilib)',
+                        members: ['core', 'extra', 'multilib'],
+                        icon: ShieldCheck,
+                        enabled: true,
+                    },
                     {
                         id: 'cachyos',
                         name: 'CachyOS',
@@ -49,13 +91,13 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                         members: ['cachyos', 'cachyos-v3', 'cachyos-core-v3', 'cachyos-extra-v3', 'cachyos-v4', 'cachyos-core-v4', 'cachyos-extra-v4', 'cachyos-znver4'],
                         icon: Zap,
                         enabled: false,
-                        recommendation: info.has_avx2 ? "Performance Pick" : null
+                        recommendation: info.cpu_optimization.includes('v3') || info.cpu_optimization.includes('v4') ? "Performance Pick" : null
                     },
                     {
                         id: 'manjaro',
                         name: 'Manjaro',
-                        description: 'Stable & Tested updates',
-                        members: ['manjaro-core', 'manjaro-extra', 'manjaro-multilib'],
+                        description: 'Stable Manjaro packages (Experimental on Arch)',
+                        members: ['manjaro-core', 'manjaro-extra'],
                         icon: Database,
                         enabled: false,
                         recommendation: info.distro.toLowerCase().includes('manjaro') ? "Matches your OS" : null
@@ -65,20 +107,17 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                 ];
 
                 const mapped = families.map(fam => {
-                    const isEnabled = backendRepos.some(r => fam.members.includes(r.name) && r.enabled);
-                    // Pre-select recommended repos for a smoother experience
-                    const shouldAutoEnable = !isEnabled && fam.recommendation;
-                    return { ...fam, enabled: isEnabled || !!shouldAutoEnable };
+                    const isEnabledInBackend = backendRepos.some(r => fam.members.includes(r.name.toLowerCase()) && r.enabled);
+                    const shouldAutoEnable = !isEnabledInBackend && (fam.recommendation || fam.id === 'official-arch' || fam.id === 'chaotic-aur');
+                    return { ...fam, enabled: isEnabledInBackend || !!shouldAutoEnable };
                 });
                 setRepoFamilies(mapped);
             }).catch(console.error);
 
         }).catch(console.error);
 
-        // 3. Load AUR state
         invoke<boolean>('is_aur_enabled').then(setAurEnabled).catch(console.error);
 
-        // 4. Check Chaotic Status
         invoke<boolean>('check_repo_status', { name: 'chaotic-aur' })
             .then(exists => {
                 setMissingChaotic(!exists);
@@ -92,15 +131,23 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
 
     const enableChaotic = async () => {
         setChaoticStatus("enabling");
-        setChaoticLogs(prev => [...prev, "Requesting root privileges..."]);
+        setChaoticLogs(prev => [...prev, "Checking system requirements..."]);
         try {
-            await invoke("bootstrap_infrastructure");
-            const res = await invoke<string>("enable_repo", { name: "chaotic-aur" });
+            // If already bootstrapped or currently bootstrapping, wait/skip
+            if (bootstrapStatus !== 'success') {
+                setChaoticLogs(prev => [...prev, "System bootstrap required. Starting..."]);
+                const success = await enableSystem();
+
+                if (!success) throw new Error("Bootstrap failed. Check logs.");
+            }
+
+            setChaoticLogs(prev => [...prev, "System ready. Enabling Chaotic-AUR..."]);
+            const res = await invoke<string>("enable_repo", { name: "chaotic-aur", password: null });
             setChaoticLogs(prev => [...prev, res, "Setup complete!"]);
             setChaoticStatus("success");
             setMissingChaotic(false);
         } catch (e: any) {
-            setChaoticLogs(prev => [...prev, `Error: ${e}`]);
+            setChaoticLogs(prev => [...prev, `Error: ${e.message || e}`]);
             setChaoticStatus("error");
         }
     };
@@ -108,26 +155,21 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
     const handleFinish = async () => {
         setIsSaving(true);
         try {
-            await invoke("bootstrap_infrastructure");
             await invoke('set_aur_enabled', { enabled: aurEnabled });
 
-            // 1. Update UI Preferences (repos.json)
-            // We just call toggle_repo_family for user choices to save them to JSON
+            // Sync UI state
             for (const fam of repoFamilies) {
-                await invoke('toggle_repo_family', { family: fam.name, enabled: fam.enabled });
+                await invoke('toggle_repo_family', { family: fam.name, enabled: fam.enabled, skipOsSync: true });
             }
 
-            // 2. System Level: Enable ALL known valid repos
-            // This ensures they are present in infrastructure so we don't need passwords later.
-            // Even if "disabled" in JSON, we want them enabled in System.
+            // Batch system setup
             const allSupportedRepos = [
-                'cachyos', 'garuda', 'endeavouros', 'manjaro', 'chaotic-aur'
+                'chaotic-aur', 'cachyos', 'garuda', 'endeavouros', 'manjaro'
             ];
 
             try {
-                // This creates the .conf files for everything.
-                // Pacman will now track them, but Store UI filters them.
-                await invoke('enable_repos_batch', { names: allSupportedRepos });
+                await invoke('enable_repos_batch', { names: allSupportedRepos, password: null });
+                await invoke('optimize_system', { password: null });
             } catch (e) {
                 console.error("System batch setup failed (non-fatal):", e);
             }
@@ -154,12 +196,6 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             icon: <ShieldCheck size={48} className="text-white" />
         },
         {
-            title: "Software Sources",
-            subtitle: "The bridge between Official & Community repos.",
-            color: "bg-slate-700",
-            icon: <Server size={48} className="text-white" />
-        },
-        {
             title: "Configure Repos",
             subtitle: "Intelligent selection based on your hardware.",
             color: "bg-indigo-600",
@@ -180,12 +216,17 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
     ];
 
     const nextStep = () => {
+        // Step 0: Chaotic Check
+        if (step === 0 && (chaoticStatus !== 'success' || missingChaotic)) {
+            return;
+        }
+        // Step 1: System Bootstrap check
+        if (step === 1 && bootstrapStatus !== 'success') {
+            return;
+        }
+
         if (step < steps.length - 1) {
             setStep(step + 1);
-            // Proactive Check Trigger
-            if (step === 0) {
-                invoke('optimize_system').catch(console.error);
-            }
         } else {
             handleFinish();
         }
@@ -200,7 +241,7 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             <motion.div
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="w-full max-w-4xl bg-app-card border border-app-border rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-[600px]"
+                className="w-full max-w-4xl bg-app-card border border-app-border rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row min-h-[500px] max-h-[90vh]"
             >
                 {/* Left Panel */}
                 <div className={clsx(
@@ -216,7 +257,17 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                         </svg>
                     </div>
 
-                    <div className="text-white/80 font-bold tracking-wider text-xs uppercase z-10">Step {step + 1} of {steps.length}</div>
+                    {reason && (
+                        <div className="bg-amber-500/20 text-white p-4 rounded-xl border border-amber-500/30 mb-4 backdrop-blur-md animate-in slide-in-from-top-4 z-20 shadow-lg">
+                            <div className="flex items-center gap-2 font-bold text-sm mb-1">
+                                <AlertTriangle size={16} className="text-amber-400" />
+                                <span>Maintenance Required</span>
+                            </div>
+                            <p className="text-xs opacity-90 leading-tight">{reason}</p>
+                        </div>
+                    )}
+
+                    <div className="text-white font-black tracking-widest text-sm uppercase z-10 drop-shadow-md hidden md:block">Step {step + 1} of {steps.length}</div>
 
                     <div className="flex flex-col items-center text-center space-y-8 z-10">
                         <motion.div
@@ -249,23 +300,8 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                             >
                                 {steps[step].subtitle}
                             </motion.p>
-                            {step === 0 && systemInfo && (
-                                <div className="mt-4 text-[10px] text-white/40 uppercase tracking-widest font-bold">
-                                    Detected: {systemInfo.distro}
-                                </div>
-                            )}
                         </div>
                     </div>
-
-                    {/* Quick Start Button - Only on Step 0 */}
-                    {step === 0 && (
-                        <button
-                            onClick={handleFinish}
-                            className="mt-4 px-4 py-2 bg-white/20 hover:bg-white/30 text-white rounded-xl text-xs font-bold transition-all border border-white/20 backdrop-blur-md flex items-center justify-center gap-2 self-center"
-                        >
-                            Express Quick Start <ChevronRight size={14} />
-                        </button>
-                    )}
 
                     <div className="flex justify-center gap-2 z-10 mt-auto pt-4">
                         {steps.map((_, i) => (
@@ -284,54 +320,70 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                 <div className="w-full md:w-8/12 p-10 bg-app-bg flex flex-col relative">
                     <div className="flex-1 flex flex-col items-center justify-center overflow-y-auto">
                         <AnimatePresence mode='wait'>
-
-                            {/* STEP 0: Welcome & Chaotic */}
                             {step === 0 && (
                                 <motion.div key="step0" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
                                     <h3 className="text-2xl font-bold text-app-fg">Supercharged Repository</h3>
                                     <p className="text-app-muted text-base leading-relaxed">
-                                        MonARCH Store is powered by <strong className="text-blue-500">Chaotic-AUR</strong>.
+                                        MonARCH Store is optimized by <strong className="text-blue-500">Chaotic-AUR</strong> for instant binary installs.
                                     </p>
                                     <div className="bg-blue-500/10 border border-blue-500/20 p-5 rounded-2xl flex gap-4 items-start">
                                         <Zap className="text-blue-500 shrink-0 mt-1" />
                                         <div>
-                                            <h4 className="font-bold text-blue-500 mb-1">Pre-built Binaries</h4>
+                                            <h4 className="font-bold text-blue-500 mb-1">Fast Community Apps</h4>
                                             <p className="text-sm text-app-muted">
-                                                Fast, reliable, and pre-compiled. We host thousands of AUR packages so you don't have to compile them from source.
+                                                We host thousands of pre-built apps. No more waiting for compilation.
                                             </p>
                                         </div>
                                     </div>
 
-                                    {/* Chaotic Setup */}
                                     <div className="pt-2">
                                         {chaoticStatus === 'checking' && (
-                                            <div className="flex items-center gap-2 text-app-muted text-sm"><RefreshCw size={14} className="animate-spin" /> Checking system status...</div>
+                                            <div className="flex items-center gap-2 text-app-muted text-sm"><RefreshCw size={14} className="animate-spin" /> Verifying environment...</div>
                                         )}
                                         {chaoticStatus === 'success' && !missingChaotic && (
-                                            <div className="bg-green-500/10 border border-green-500/20 p-3 rounded-xl flex items-center gap-3 text-green-500 text-sm font-bold"><Check size={18} /> System Configured & Ready</div>
+                                            <div className="bg-green-500/10 border border-green-500/20 p-3 rounded-xl flex items-center gap-3 text-green-500 text-sm font-bold"><Check size={18} /> System Verified & Ready</div>
                                         )}
                                         {(chaoticStatus === 'idle' || chaoticStatus === 'error' || chaoticStatus === 'enabling') && missingChaotic && (
                                             <div className="space-y-3 bg-app-card border border-app-border p-4 rounded-xl shadow-inner">
                                                 <div className="flex items-start gap-3">
                                                     <AlertTriangle className="text-orange-500 shrink-0 mt-0.5" size={18} />
                                                     <div>
-                                                        <h4 className="text-sm font-bold text-app-fg">Setup Required</h4>
-                                                        <p className="text-xs text-app-muted">Chaotic-AUR is missing. Enable it to get instant binary installs.</p>
+                                                        <h4 className="text-sm font-bold text-app-fg">Configuration Recommended</h4>
+                                                        <p className="text-xs text-app-muted">Optimize your system sources for the best experience.</p>
                                                     </div>
                                                 </div>
 
-                                                {/* Logs */}
-                                                {(chaoticStatus === 'enabling' || chaoticLogs.length > 0) && (
-                                                    <div className="h-20 overflow-auto bg-black/50 rounded-lg p-2 font-mono text-[9px] text-white/70">
+                                                {chaoticStatus === 'enabling' && (
+                                                    <div className="space-y-2 py-2">
+                                                        <div className="flex justify-between text-xs text-app-muted">
+                                                            <span className="font-medium text-purple-500">Optimizing System...</span>
+                                                            <span>{chaoticLogs[chaoticLogs.length - 1] || "Initializing..."}</span>
+                                                        </div>
+                                                        <div className="h-1.5 bg-app-fg/5 rounded-full overflow-hidden w-full">
+                                                            <motion.div
+                                                                initial={{ x: "-100%" }}
+                                                                animate={{ x: "100%" }}
+                                                                transition={{
+                                                                    duration: 1.5,
+                                                                    ease: "linear",
+                                                                    repeat: Infinity
+                                                                }}
+                                                                className="h-full bg-purple-500 w-[50%]"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {(chaoticStatus === 'error' && chaoticLogs.length > 0) && (
+                                                    <div className="h-20 overflow-auto bg-red-500/10 border border-red-500/20 rounded-lg p-2 font-mono text-[9px] text-red-500">
                                                         {chaoticLogs.map((l, i) => (
-                                                            <div key={i} className="mb-0.5"><span className="text-purple-400 mr-1">➜</span>{l}</div>
+                                                            <div key={i} className="mb-0.5">{l}</div>
                                                         ))}
-                                                        {chaoticStatus === 'enabling' && <span className="animate-pulse">_</span>}
                                                     </div>
                                                 )}
 
                                                 <button onClick={enableChaotic} disabled={chaoticStatus === 'enabling'} className={clsx("w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all", chaoticStatus === 'enabling' ? "bg-app-fg/10 text-app-muted" : "bg-purple-600 text-white hover:bg-purple-500 shadow-lg")}>
-                                                    {chaoticStatus === 'enabling' ? <><Terminal size={16} className="animate-pulse" /> Configuring...</> : <><Cpu size={16} /> Auto-Configure Now</>}
+                                                    {chaoticStatus === 'enabling' ? <><Terminal size={16} className="animate-pulse" /> Running Fix...</> : <><Cpu size={16} /> Auto-Configure System</>}
                                                 </button>
                                             </div>
                                         )}
@@ -339,161 +391,184 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                                 </motion.div>
                             )}
 
-                            {/* STEP 1: System Prep (Proactive Health Check) */}
                             {step === 1 && (
                                 <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
                                     <div className="text-center">
-                                        <h3 className="text-2xl font-bold text-app-fg">Securing Your Environment</h3>
-                                        <p className="text-app-muted text-base">We are initializing the Pacman keyring to prevent signature errors.</p>
+                                        <h3 className="text-2xl font-bold text-app-fg">One-Click Preparation</h3>
+                                        <p className="text-app-muted text-base">Authorize MonARCH to manage your software securely.</p>
                                     </div>
 
-                                    <div className="bg-emerald-500/10 border border-emerald-500/20 p-6 rounded-2xl flex flex-col items-center gap-4">
-                                        <div className="relative">
-                                            <div className="absolute inset-0 bg-emerald-500/20 rounded-full animate-ping" />
-                                            <ShieldCheck size={48} className="text-emerald-500 relative z-10" />
-                                        </div>
-                                        <div className="w-full space-y-2">
-                                            <div className="flex justify-between text-xs font-bold text-emerald-700">
-                                                <span>Optimizing Keyring...</span>
-                                                <span className="animate-pulse">Processing</span>
+                                    {bootstrapStatus !== 'success' ? (
+                                        <div className="bg-app-card border border-app-border p-6 rounded-2xl flex flex-col items-center gap-6 shadow-sm w-full">
+                                            {/* ... existing loading/error state ... */}
+                                            <div className="p-4 rounded-full bg-emerald-500/10 text-emerald-500">
+                                                <ShieldCheck size={48} className={bootstrapStatus === 'running' ? "animate-pulse" : ""} />
                                             </div>
-                                            <div className="h-2 bg-emerald-500/10 rounded-full overflow-hidden">
-                                                <motion.div
-                                                    className="h-full bg-emerald-500"
-                                                    initial={{ width: "0%" }}
-                                                    animate={{ width: "100%" }}
-                                                    transition={{ duration: 2.5, ease: "easeInOut" }}
-                                                />
-                                            </div>
-                                        </div>
-                                        <p className="text-xs text-app-muted text-center max-w-xs">
-                                            Running: <code className="bg-app-fg/5 px-1 rounded">pacman-key --init && --populate</code>
-                                        </p>
-                                    </div>
+                                            {/* ... */}
+                                            {!bootstrapStatus || bootstrapStatus === 'idle' || bootstrapStatus === 'error' ? (
+                                                <>
+                                                    <div className="bg-app-bg border border-app-border p-4 rounded-xl space-y-3 w-full">
+                                                        <div className="flex items-center justify-between">
+                                                            <div>
+                                                                <h4 className="text-sm font-bold text-app-fg">One-Click Authentication</h4>
+                                                                <p className="text-[11px] text-app-muted mt-1">
+                                                                    {oneClickEnabled
+                                                                        ? "MonARCH manages permissions securely (Recommended)."
+                                                                        : <span className="text-orange-500 font-bold">Manual Mode: You must enter password for every action.</span>
+                                                                    }
+                                                                </p>
+                                                            </div>
+                                                            <button
+                                                                onClick={() => setOneClickEnabled(!oneClickEnabled)}
+                                                                className={clsx(
+                                                                    "w-10 h-5 rounded-full p-1 transition-all",
+                                                                    oneClickEnabled ? "bg-blue-600" : "bg-app-fg/20"
+                                                                )}
+                                                            >
+                                                                <div className={clsx(
+                                                                    "w-3 h-3 bg-white rounded-full transition-transform",
+                                                                    oneClickEnabled ? "translate-x-5" : "translate-x-0"
+                                                                )} />
+                                                            </button>
+                                                        </div>
+                                                    </div>
 
-                                    <div className="bg-app-card border border-app-border p-4 rounded-xl flex items-start gap-3 shadow-sm">
-                                        <Check size={20} className="text-blue-500 shrink-0 mt-0.5" />
-                                        <div>
-                                            <h4 className="font-bold text-sm text-app-fg">Why this matters?</h4>
-                                            <p className="text-xs text-app-muted">
-                                                Arch Linux rolling releases rely on up-to-date PGP signatures.
-                                                This step ensures you won't face "Invalid Signature" errors when installing apps.
-                                            </p>
+                                                    <button onClick={enableSystem} className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition-all flex items-center justify-center gap-2">
+                                                        <Terminal size={18} /> {bootstrapStatus === 'error' ? "Retry Preparation" : "Initialize Keyring"}
+                                                    </button>
+                                                </>
+                                            ) : (
+                                                <div className="text-center py-4">
+                                                    <RefreshCw className="animate-spin mx-auto text-emerald-500 mb-2" size={32} />
+                                                    <p className="text-xs font-bold text-emerald-500 uppercase tracking-widest">Running Security Setup...</p>
+                                                </div>
+                                            )}
                                         </div>
-                                    </div>
+                                    ) : (
+                                        <div className="bg-emerald-500/10 border border-emerald-500/20 p-6 rounded-2xl flex flex-col items-center gap-4 w-full relative overflow-hidden">
+                                            <div className="absolute top-0 right-0 p-4 opacity-10">
+                                                <ShieldCheck size={100} />
+                                            </div>
+                                            <div className="flex items-center gap-4 w-full z-10">
+                                                <div className="p-3 bg-emerald-500 rounded-full shadow-lg shadow-emerald-500/40 shrink-0">
+                                                    <Check size={24} className="text-white" />
+                                                </div>
+                                                <div className="text-left flex-1">
+                                                    <h4 className="text-lg font-bold text-emerald-500">Infrastructure Ready</h4>
+                                                    <p className="text-xs text-app-muted">System security layer is active.</p>
+                                                </div>
+                                            </div>
+
+                                            {/* Retroactive Toggle */}
+                                            <div className="w-full bg-white/5 p-4 rounded-xl border border-white/10 flex items-center justify-between z-10 mt-2">
+                                                <div>
+                                                    <h4 className="text-xs font-bold text-app-fg">One-Click Permission</h4>
+                                                    <p className="text-[10px] text-app-muted">
+                                                        {oneClickEnabled ? "Enabled (Recommended)" : "Disabled (Password Required)"}
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    onClick={async () => {
+                                                        const newVal = !oneClickEnabled;
+                                                        setOneClickEnabled(newVal);
+                                                        // Immediate Apply since we are already successful
+                                                        try {
+                                                            await invoke('set_one_click_control', { enabled: newVal, password: null });
+                                                        } catch (e) { console.error(e); }
+                                                    }}
+                                                    className={clsx(
+                                                        "w-10 h-5 rounded-full p-1 transition-all",
+                                                        oneClickEnabled ? "bg-emerald-500" : "bg-app-fg/20"
+                                                    )}
+                                                >
+                                                    <div className={clsx(
+                                                        "w-3 h-3 bg-white rounded-full transition-transform",
+                                                        oneClickEnabled ? "translate-x-5" : "translate-x-0"
+                                                    )} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </motion.div>
                             )}
 
-                            {/* STEP 2: Software Sources */}
                             {step === 2 && (
-                                <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
-                                    <h3 className="text-2xl font-bold text-app-fg">The Unified Architecture</h3>
-                                    <p className="text-app-muted text-base leading-relaxed">
-                                        MonARCH seamlessly merges multiple software worlds into one interface.
-                                    </p>
-                                    <div className="space-y-3">
-                                        <div className="bg-app-card border border-app-border p-4 rounded-xl flex items-center gap-4">
-                                            <Server className="text-blue-500" size={24} />
-                                            <div><h4 className="font-bold text-sm text-app-fg">Official Core</h4><p className="text-xs text-app-muted">Arch Linux stable repositories (Immutable core).</p></div>
-                                        </div>
-                                        <div className="bg-app-card border border-app-border p-4 rounded-xl flex items-center gap-4">
-                                            <Zap className="text-violet-500" size={24} />
-                                            <div><h4 className="font-bold text-sm text-app-fg">Chaotic Ecosystem</h4><p className="text-xs text-app-muted">Pre-compiled AUR binaries for everything else.</p></div>
-                                        </div>
-                                        <div className="bg-app-card border border-app-border p-4 rounded-xl flex items-center gap-4">
-                                            <Globe className="text-emerald-500" size={24} />
-                                            <div><h4 className="font-bold text-sm text-app-fg">Partner Repos</h4><p className="text-xs text-app-muted">Manual control over CachyOS, Manjaro, and more.</p></div>
-                                        </div>
+                                <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full max-w-lg flex flex-col">
+                                    <div className="mb-4">
+                                        <h3 className="text-2xl font-bold text-app-fg">Software Sources</h3>
+                                        <p className="text-app-muted text-sm">Recommended sources are pre-selected based on your hardware.</p>
                                     </div>
-                                </motion.div>
-                            )}
-
-                            {/* STEP 3: Intelligent Config */}
-                            {step === 3 && (
-                                <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full max-w-lg space-y-4">
-                                    <div>
-                                        <h3 className="text-2xl font-bold text-app-fg">Smart Configuration</h3>
-                                        <p className="text-app-muted text-sm">We've pre-selected sources based on your architecture.</p>
-                                    </div>
-                                    <div className="space-y-2 max-h-[350px] overflow-y-auto pr-2">
+                                    <div className="space-y-2 flex-1 overflow-y-auto pr-2 min-h-0">
                                         {repoFamilies.map((fam) => (
                                             <div key={fam.id} onClick={() => toggleRepoFamily(fam.id)} className={clsx("flex items-center justify-between p-4 rounded-xl border cursor-pointer transition-all", fam.enabled ? "bg-indigo-500/10 border-indigo-500/50 shadow-sm" : "bg-app-card border-app-border hover:border-app-fg/30")}>
-                                                <div className="flex items-center gap-4">
+                                                <div className="flex items-center gap-4 text-left">
                                                     <div className={clsx("p-2 rounded-lg", fam.enabled ? "bg-indigo-500 text-white" : "bg-app-fg/5 text-app-muted")}><fam.icon size={20} /></div>
                                                     <div>
                                                         <div className="flex items-center gap-2">
                                                             <h4 className="font-bold text-app-fg text-sm">{fam.name}</h4>
                                                             {fam.recommendation && <span className="text-[9px] bg-green-500/20 text-green-500 px-2 py-0.5 rounded-full border border-green-500/30 flex items-center gap-1"><Star size={8} fill="currentColor" /> {fam.recommendation}</span>}
                                                         </div>
-                                                        <p className="text-xs text-app-muted">{fam.description}</p>
+                                                        <p className="text-[11px] text-app-muted leading-tight">{fam.description}</p>
                                                     </div>
                                                 </div>
-                                                <div className={clsx("w-10 h-6 rounded-full p-1 transition-colors", fam.enabled ? "bg-indigo-500" : "bg-app-fg/20")}><div className={clsx("w-4 h-4 bg-white rounded-full transition-transform", fam.enabled ? "translate-x-4" : "translate-x-0")} /></div>
+                                                <div className={clsx("w-10 h-6 rounded-full p-1 transition-colors shrink-0", fam.enabled ? "bg-indigo-500" : "bg-app-fg/20")}><div className={clsx("w-4 h-4 bg-white rounded-full transition-transform", fam.enabled ? "translate-x-4" : "translate-x-0")} /></div>
                                             </div>
                                         ))}
                                     </div>
                                 </motion.div>
                             )}
 
-                            {/* STEP 4: AUR */}
-                            {step === 4 && (
+                            {step === 3 && (
                                 <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
-                                    <h3 className="text-2xl font-bold text-app-fg">Community Power (AUR)</h3>
-                                    <div className="bg-amber-500/10 border border-amber-500/20 p-5 rounded-2xl">
-                                        <div className="flex items-center gap-3 mb-2"><Lock size={20} className="text-amber-500" /><h4 className="font-bold text-amber-500">Powerful but Risky</h4></div>
-                                        <p className="text-sm text-app-fg/80 leading-relaxed mb-4">The Arch User Repository allows you to compile software from source. It contains almost everything imaginable, but use it with care.</p>
+                                    <h3 className="text-2xl font-bold text-app-fg">Arch User Repository</h3>
+                                    <div className="bg-amber-500/10 border border-amber-500/20 p-5 rounded-2xl text-left">
+                                        <div className="flex items-center gap-3 mb-2"><Lock size={20} className="text-amber-500" /><h4 className="font-bold text-amber-500 text-lg">Vast Community Catalog</h4></div>
+                                        <p className="text-sm text-app-fg/80 leading-relaxed">The AUR allows you to build software from source. It contains almost every Linux app ever made.</p>
                                     </div>
-                                    <div onClick={() => setAurEnabled(!aurEnabled)} className={clsx("cursor-pointer border-2 rounded-2xl p-4 transition-all hover:scale-[1.02] flex items-center justify-between", aurEnabled ? "border-amber-500 bg-amber-500/5" : "border-app-border bg-app-card/30")}>
-                                        <div><span className="font-bold text-app-fg block">Enable AUR Support</span><span className="text-xs text-app-muted">Allow searching and building packages from source</span></div>
-                                        <div className={clsx("w-12 h-6 rounded-full p-1 transition-colors", aurEnabled ? "bg-amber-500" : "bg-app-fg/20")}><div className={clsx("w-4 h-4 bg-white rounded-full transition-transform", aurEnabled ? "translate-x-6" : "translate-x-0")} /></div>
+                                    <div onClick={() => setAurEnabled(!aurEnabled)} className={clsx("cursor-pointer border-2 rounded-2xl p-4 transition-all flex items-center justify-between text-left", aurEnabled ? "border-amber-500 bg-amber-500/5" : "border-app-border bg-app-card/30")}>
+                                        <div><span className="font-bold text-app-fg block text-base">Enable AUR Support</span><span className="text-xs text-app-muted">Search and build millions of packages</span></div>
+                                        <div className={clsx("w-12 h-6 rounded-full p-1 transition-colors shrink-0", aurEnabled ? "bg-amber-500" : "bg-app-fg/20")}><div className={clsx("w-4 h-4 bg-white rounded-full transition-transform", aurEnabled ? "translate-x-6" : "translate-x-0")} /></div>
                                     </div>
                                 </motion.div>
                             )}
 
-                            {/* STEP 5: Aesthetics & Live Preview */}
-                            {step === 5 && (
-                                <motion.div key="step5" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full max-w-lg space-y-8">
-                                    <div className="text-center"><h3 className="text-2xl font-bold text-app-fg mb-1">Make it Yours</h3><p className="text-app-muted">Customize the look and feel of MonARCH.</p></div>
-
-                                    {/* Live Preview Card */}
-                                    <div className="bg-app-card/50 border border-app-border rounded-2xl p-4 animate-in slide-in-from-bottom-4 shadow-2xl">
-                                        <p className="text-[10px] font-bold text-app-muted uppercase tracking-wider mb-3">Live Preview</p>
-                                        <div className="bg-app-bg rounded-xl p-4 border border-app-border flex items-center gap-4">
-                                            <div className="w-12 h-12 rounded-lg flex items-center justify-center text-white" style={{ backgroundColor: accentColor }}>
-                                                <Zap fill="currentColor" />
-                                            </div>
-                                            <div className="flex-1">
-                                                <h4 className="font-bold text-app-fg">Awesome App</h4>
-                                                <p className="text-xs text-app-muted">Version 1.2.3</p>
-                                            </div>
-                                            <button className="px-4 py-2 rounded-lg text-white font-bold text-xs" style={{ backgroundColor: accentColor }}>Install</button>
-                                        </div>
-                                    </div>
-
+                            {step === 4 && (
+                                <motion.div key="step4" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full max-w-lg space-y-8">
+                                    <div className="text-center"><h3 className="text-2xl font-bold text-app-fg mb-1 uppercase tracking-tight">Style your MonARCH</h3><p className="text-app-muted">Personalize your visual experience.</p></div>
                                     <div className="grid grid-cols-2 gap-4">
-                                        <button onClick={() => setThemeMode('light')} className={clsx("p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all", themeMode === 'light' ? "border-app-accent bg-app-accent/10" : "border-app-border bg-app-card")}>
-                                            <Sun size={24} className={themeMode === 'light' ? "text-app-accent" : "text-app-muted"} /><span className="font-bold text-sm">Light</span>
+                                        <button onClick={() => setThemeMode('light')} className={clsx("p-5 rounded-xl border-2 flex flex-col items-center gap-2 transition-all", themeMode === 'light' ? "border-app-accent bg-app-accent/10 scale-[1.02]" : "border-app-border bg-app-card hover:border-app-fg/20")}>
+                                            <Sun size={32} /><span className="font-bold text-sm">Light Mode</span>
                                         </button>
-                                        <button onClick={() => setThemeMode('dark')} className={clsx("p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all", themeMode === 'dark' ? "border-app-accent bg-app-accent/10" : "border-app-border bg-app-card")}>
-                                            <Moon size={24} className={themeMode === 'dark' ? "text-app-accent" : "text-app-muted"} /><span className="font-bold text-sm">Dark</span>
+                                        <button onClick={() => setThemeMode('dark')} className={clsx("p-5 rounded-xl border-2 flex flex-col items-center gap-2 transition-all", themeMode === 'dark' ? "border-app-accent bg-app-accent/10 scale-[1.02]" : "border-app-border bg-app-card hover:border-app-fg/20")}>
+                                            <Moon size={32} /><span className="font-bold text-sm">Dark Mode</span>
                                         </button>
                                     </div>
-
-                                    <div className="flex justify-center gap-4 flex-wrap">
+                                    <div className="flex justify-center gap-4 flex-wrap mt-6">
                                         {['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'].map((color) => (
-                                            <button key={color} onClick={() => setAccentColor(color)} className={clsx("w-8 h-8 rounded-full border-2 transition-all hover:scale-110", accentColor === color ? "border-app-fg scale-110 ring-2 ring-offset-2 ring-app-fg/20" : "border-transparent")} style={{ backgroundColor: color }} />
+                                            <button key={color} onClick={() => setAccentColor(color)} className={clsx("w-10 h-10 rounded-full border-2 transition-transform hover:scale-110", accentColor === color ? "border-app-fg scale-125 ring-4 ring-app-fg/10" : "border-transparent")} style={{ backgroundColor: color }} />
                                         ))}
                                     </div>
                                 </motion.div>
                             )}
-
                         </AnimatePresence>
                     </div>
 
                     <div className="flex justify-between items-center pt-8 border-t border-app-border/50 mt-auto">
-                        <button onClick={() => setStep(step - 1)} disabled={step === 0} className={clsx("text-sm font-medium transition-colors px-4 py-2 rounded-lg", step === 0 ? "opacity-0 pointer-events-none" : "text-app-muted hover:text-app-fg hover:bg-app-fg/5")}>Back</button>
-                        <button onClick={nextStep} disabled={isSaving} className="text-white px-8 py-3 rounded-xl font-bold text-sm hover:opacity-90 active:scale-95 transition-all flex items-center gap-2 shadow-xl" style={{ backgroundColor: step === steps.length - 1 ? accentColor : (steps[step].color.includes('blue') ? '#2563eb' : steps[step].color.includes('slate') ? '#475569' : steps[step].color.includes('indigo') ? '#4f46e5' : steps[step].color.includes('amber') ? '#d97706' : accentColor) }}>
-                            {isSaving ? <span>Configuring...</span> : <>{step === steps.length - 1 ? "Finish Setup" : "Next Step"} <ChevronRight size={16} /></>}
+                        <button onClick={() => setStep(step - 1)} disabled={step === 0 || isSaving} className={clsx("text-sm font-bold transition-colors px-6 py-2 rounded-lg", step === 0 ? "opacity-0 pointer-events-none" : "text-app-muted hover:text-app-fg hover:bg-app-fg/5")}>Back</button>
+                        <button
+                            onClick={nextStep}
+                            disabled={
+                                isSaving ||
+                                (step === 0 && (chaoticStatus !== 'success' || missingChaotic)) ||
+                                (step === 1 && bootstrapStatus !== 'success')
+                            }
+                            className={clsx(
+                                "text-white px-10 py-3 rounded-xl font-black text-sm active:scale-95 transition-all flex items-center gap-2 shadow-2xl uppercase tracking-wider",
+                                (isSaving || (step === 0 && (chaoticStatus !== 'success' || missingChaotic)) || (step === 1 && bootstrapStatus !== 'success')) ? "opacity-30 grayscale cursor-not-allowed" : "hover:opacity-90 hover:scale-[1.02]"
+                            )}
+                            style={{ backgroundColor: accentColor }}
+                        >
+                            {isSaving ? <span>Configuring...</span> : <>{step === steps.length - 1 ? "Start Shopping" : "Next Step"} <ChevronRight size={18} /></>}
                         </button>
                     </div>
                 </div>

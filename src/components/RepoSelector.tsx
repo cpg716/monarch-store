@@ -39,22 +39,22 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
 
         switch (source) {
             case 'chaotic':
-                return { label: 'Instant Download (Recommended)', badge: 'INSTANT', icon: ShieldCheck, color: 'text-green-500', bg: 'bg-green-500/10 border-green-500/20' };
+                return { label: 'Chaotic-AUR', badge: 'CHAOTIC', icon: ShieldCheck, color: 'text-green-500', bg: 'bg-green-500/10 border-green-500/20' };
             case 'cachyos':
                 if (isOptimized) {
-                    return { label: 'CPU Optimized', badge: 'OPTIMIZED', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
+                    return { label: 'CachyOS (Optimized)', badge: 'OPTIMIZED', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
                 }
-                return { label: 'CachyOS Repo', badge: 'CACHYOS', icon: Zap, color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/20' };
+                return { label: 'CachyOS', badge: 'CACHYOS', icon: Zap, color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/20' };
             case 'manjaro':
-                return { label: 'Manjaro Stable', badge: 'MANJARO', icon: ShieldCheck, color: 'text-teal-500', bg: 'bg-teal-500/10 border-teal-500/20' };
+                return { label: 'Manjaro', badge: 'MANJARO', icon: ShieldCheck, color: 'text-teal-500', bg: 'bg-teal-500/10 border-teal-500/20' };
             case 'garuda':
-                return { label: 'Garuda Extras', badge: 'GARUDA', icon: Zap, color: 'text-orange-500', bg: 'bg-orange-500/10 border-orange-500/20' };
+                return { label: 'Garuda', badge: 'GARUDA', icon: Zap, color: 'text-orange-500', bg: 'bg-orange-500/10 border-orange-500/20' };
             case 'endeavour':
                 return { label: 'EndeavourOS', badge: 'ENDEAVOUR', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
             case 'official':
                 return { label: 'Official Arch', badge: 'OFFICIAL', icon: Server, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/20' };
             case 'aur':
-                return { label: 'Build from Source', badge: 'SOURCE', icon: Hammer, color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/20' };
+                return { label: 'AUR (Source Build)', badge: 'AUR', icon: Hammer, color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/20' };
             default:
                 return { label: source, badge: source.toUpperCase(), icon: Server, color: 'text-app-muted', bg: 'bg-app-subtle border-app-border' };
         }
@@ -128,9 +128,16 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                                                 <span className={clsx("text-sm font-medium", isSelected ? "text-app-fg" : "text-app-muted")}>
                                                     {vInfo.label}
                                                 </span>
-                                                <span className="text-[10px] text-app-muted font-mono mt-1 opacity-60">
-                                                    {vInfo.badge} • v{v.version}
-                                                </span>
+                                                <div className="flex items-center gap-2 mt-1">
+                                                    <span className="text-[10px] text-app-muted font-mono opacity-60">
+                                                        {vInfo.badge} • v{v.version}
+                                                    </span>
+                                                    {v.source !== 'aur' ? (
+                                                        <span className="text-[8px] bg-green-500/10 text-green-500 px-1 rounded font-bold">INSTANT</span>
+                                                    ) : (
+                                                        <span className="text-[8px] bg-amber-500/10 text-amber-500 px-1 rounded font-bold">SLOW BUILD</span>
+                                                    )}
+                                                </div>
                                             </div>
                                         </div>
                                         {isSelected && <Check size={14} className="text-app-accent" />}

@@ -1,17 +1,16 @@
 import { useState, useEffect } from 'react';
 import { RefreshCw, ArrowRight, CheckCircle2, Download, AlertCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import ConfirmationModal from '../components/ConfirmationModal';
 import { clsx } from 'clsx';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 interface PendingUpdate {
-    id: string;
     name: string;
-    current_version: string;
+    old_version: string;
     new_version: string;
-    size: string;
-    update_type: string;
+    repo: string;
 }
 
 interface UpdateProgress {
@@ -21,10 +20,13 @@ interface UpdateProgress {
 }
 
 // Helper component for Icon
+import archLogo from '../assets/arch-logo.png';
+
 const AppIcon = ({ pkgId }: { pkgId: string }) => {
     const [icon, setIcon] = useState<string | null>(null);
 
     useEffect(() => {
+        if (!pkgId) return;
         invoke<string | null>('get_package_icon', { pkgName: pkgId })
             .then(localIcon => {
                 if (localIcon) {
@@ -40,12 +42,9 @@ const AppIcon = ({ pkgId }: { pkgId: string }) => {
             .catch(() => { });
     }, [pkgId]);
 
-    if (icon) return <img src={icon} alt={pkgId} className="w-full h-full object-contain" />;
-    return (
-        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-500/20 to-purple-500/20 rounded-lg">
-            <span className="text-sm font-bold text-app-fg/50">{pkgId[0]?.toUpperCase()}</span>
-        </div>
-    );
+    const displayIcon = icon || archLogo;
+
+    return <img src={displayIcon} alt={pkgId} className={clsx("w-full h-full object-contain", !icon && "opacity-50 grayscale")} />;
 };
 
 export default function UpdatesPage() {
@@ -96,7 +95,13 @@ export default function UpdatesPage() {
         }
     };
 
-    const handleUpdateAll = async () => {
+    const [showConfirm, setShowConfirm] = useState(false);
+
+    const handleUpdateAll = () => {
+        setShowConfirm(true);
+    };
+
+    const performUpdate = async () => {
         setIsUpdating(true);
         setProgress(0);
         setStatusMessage('Initializing update...');
@@ -114,28 +119,24 @@ export default function UpdatesPage() {
         }
     };
 
-    const calculateTotalSize = (updates: PendingUpdate[]): string => {
-        const total = updates.reduce((acc, pkg) => {
-            const match = pkg.size.match(/(\d+\.?\d*)/);
-            return acc + (match ? parseFloat(match[1]) : 0);
-        }, 0);
-        return `${total.toFixed(0)} MiB`;
-    };
+
 
     return (
         <div className="h-full flex flex-col bg-app-bg animate-in slide-in-from-right duration-300 transition-colors">
             {/* Header */}
-            <div className="p-8 pb-4 border-b border-app-border bg-app-card/50 backdrop-blur-xl z-10 transition-colors">
-                <div className="flex items-center justify-between">
+            <div className="p-8 pb-6 border-b border-black/5 dark:border-white/5 bg-app-bg/95 backdrop-blur-3xl z-10 transition-colors shadow-sm dark:shadow-2xl dark:shadow-black/20 sticky top-0">
+                <div className="flex items-end justify-between">
                     <div>
-                        <h1 className="text-2xl font-bold flex items-center gap-2 text-app-fg">
-                            <RefreshCw className={clsx("text-blue-500", (isUpdating || isChecking) && "animate-spin")} size={24} />
-                            System Updates
+                        <h1 className="text-4xl lg:text-5xl font-black flex items-center gap-4 text-slate-900 dark:text-white tracking-tight leading-none mb-2">
+                            <span className={clsx("p-2 rounded-2xl bg-blue-500/10 text-blue-500", (isUpdating || isChecking) && "animate-spin")}>
+                                <RefreshCw size={32} />
+                            </span>
+                            Updates
                         </h1>
-                        <p className="text-app-muted text-sm">
+                        <p className="text-lg text-slate-500 dark:text-app-muted font-medium ml-1">
                             {isChecking ? "Checking for updates..." :
                                 updates.length === 0 ? "Your system is up to date" :
-                                    `${updates.length} updates available • ${calculateTotalSize(updates)} to download`}
+                                    `${updates.length} updates available`}
                         </p>
                     </div>
 
@@ -143,18 +144,18 @@ export default function UpdatesPage() {
                         <button
                             onClick={checkForUpdates}
                             disabled={isChecking || isUpdating}
-                            className="px-4 py-2 rounded-xl bg-app-subtle hover:bg-app-hover text-app-fg font-medium text-sm border border-app-border transition-all disabled:opacity-50 flex items-center gap-2"
+                            className="px-6 py-3 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-slate-900 dark:text-white font-bold text-sm border border-black/10 dark:border-white/10 transition-all disabled:opacity-50 flex items-center gap-2 active:scale-95"
                         >
-                            <RefreshCw size={16} className={isChecking ? "animate-spin" : ""} />
-                            Refresh
+                            <RefreshCw size={18} className={isChecking ? "animate-spin" : ""} />
+                            Check Now
                         </button>
 
                         {updates.length > 0 && !isUpdating && (
                             <button
                                 onClick={handleUpdateAll}
-                                className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-xl font-bold text-sm shadow-lg shadow-blue-900/20 active:scale-95 transition-all flex items-center gap-2"
+                                className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-xl font-bold text-sm shadow-lg shadow-blue-900/20 active:scale-95 transition-all flex items-center gap-2 border border-white/10 hover:shadow-blue-500/20"
                             >
-                                <Download size={18} /> Update All
+                                <Download size={20} /> Update All
                             </button>
                         )}
                     </div>
@@ -167,18 +168,20 @@ export default function UpdatesPage() {
                             initial={{ height: 0, opacity: 0 }}
                             animate={{ height: 'auto', opacity: 1 }}
                             exit={{ height: 0, opacity: 0 }}
-                            className="mt-6"
+                            className="mt-8 bg-black/5 dark:bg-black/20 rounded-2xl p-6 border border-black/5 dark:border-white/10"
                         >
-                            <div className="flex justify-between text-xs text-app-muted mb-1">
+                            <div className="flex justify-between text-xs font-bold text-slate-900 dark:text-white mb-2 uppercase tracking-wider">
                                 <span>{statusMessage || 'Updating system...'}</span>
                                 <span>{Math.round(progress)}%</span>
                             </div>
-                            <div className="h-2 bg-app-subtle rounded-full overflow-hidden">
+                            <div className="h-4 bg-black/10 dark:bg-black/40 rounded-full overflow-hidden border border-black/5 dark:border-white/5">
                                 <motion.div
-                                    className="h-full bg-blue-500"
+                                    className="h-full bg-gradient-to-r from-blue-500 to-purple-500 relative"
                                     initial={{ width: 0 }}
                                     animate={{ width: `${progress}%` }}
-                                />
+                                >
+                                    <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                                </motion.div>
                             </div>
                         </motion.div>
                     )}
@@ -186,65 +189,63 @@ export default function UpdatesPage() {
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto p-8">
+            <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
                 {isChecking ? (
-                    <div className="flex flex-col items-center justify-center h-full text-app-muted gap-4">
-                        <Loader2 size={32} className="animate-spin text-blue-500" />
-                        <p>Checking for updates...</p>
+                    <div className="flex flex-col items-center justify-center h-full text-app-muted gap-6">
+                        <Loader2 size={48} className="animate-spin text-blue-500" />
+                        <p className="text-xl font-medium">Checking repositories...</p>
                     </div>
                 ) : updates.length === 0 && !isUpdating ? (
-                    <div className="flex flex-col items-center justify-center h-full text-app-muted gap-4">
-                        <div className="w-16 h-16 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center">
-                            <CheckCircle2 size={32} />
+                    <div className="flex flex-col items-center justify-center p-20 bg-white dark:bg-app-card/30 rounded-3xl border border-black/5 dark:border-white/5 mt-10 max-w-2xl mx-auto backdrop-blur-sm shadow-sm dark:shadow-none">
+                        <div className="w-24 h-24 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mb-6 ring-4 ring-green-500/5">
+                            <CheckCircle2 size={48} />
                         </div>
                         <div className="text-center">
-                            <h3 className="text-lg font-bold text-app-fg">All Good!</h3>
-                            <p>Your system is completely up to date.</p>
+                            <h3 className="text-3xl font-black text-slate-900 dark:text-white mb-2">All Clear!</h3>
+                            <p className="text-lg text-slate-500 dark:text-app-muted">Your system is optimally configured and up to date.</p>
                             {updateResult && (
-                                <pre className="mt-4 text-left text-xs bg-app-card/50 border border-app-border rounded-lg p-4 max-w-md mx-auto whitespace-pre-wrap">
+                                <pre className="mt-8 text-left text-xs bg-slate-50 dark:bg-black/40 border border-black/10 dark:border-white/10 rounded-xl p-6 w-full max-w-lg mx-auto whitespace-pre-wrap font-mono text-green-600 dark:text-green-400 overflow-x-auto shadow-inner">
                                     {updateResult}
                                 </pre>
                             )}
                         </div>
                     </div>
                 ) : (
-                    <div className="space-y-3">
+                    <div className="space-y-3 max-w-5xl mx-auto">
                         {updates.map((pkg) => (
                             <div
-                                key={pkg.id}
-                                className="bg-app-card/40 border border-app-border rounded-xl p-4 flex items-center justify-between hover:bg-app-card/60 transition-colors group"
+                                key={pkg.name}
+                                className="bg-white dark:bg-app-card border border-black/5 dark:border-white/5 rounded-2xl p-5 flex items-center justify-between hover:bg-white/80 dark:hover:bg-white/5 transition-all group hover:scale-[1.01] hover:shadow-xl hover:border-black/10 dark:hover:border-white/10"
                             >
-                                <div className="flex items-center gap-4">
-                                    <div className="w-10 h-10 rounded-lg bg-app-subtle flex items-center justify-center shrink-0 overflow-hidden relative p-1.5">
-                                        <AppIcon pkgId={pkg.id} />
+                                <div className="flex items-center gap-6">
+                                    <div className="w-14 h-14 rounded-xl bg-slate-50 dark:bg-black/20 flex items-center justify-center shrink-0 overflow-hidden relative p-2 border border-black/5 dark:border-white/5 shadow-inner">
+                                        <AppIcon pkgId={pkg.name} />
                                     </div>
                                     <div>
-                                        <h3 className="font-bold flex items-center gap-2 text-app-fg">
+                                        <h3 className="font-bold flex items-center gap-3 text-xl text-slate-900 dark:text-white mb-1">
                                             {pkg.name}
                                             <span className={clsx(
-                                                "text-[10px] px-1.5 py-0.5 rounded uppercase font-bold tracking-wider",
-                                                pkg.update_type === 'official' ? "bg-teal-600/20 text-teal-600" :
-                                                    pkg.update_type === 'chaotic' ? "bg-violet-600/20 text-violet-600" :
-                                                        "bg-amber-600/20 text-amber-600"
+                                                "text-[10px] px-2 py-0.5 rounded-full uppercase font-black tracking-widest border",
+                                                pkg.repo === 'official' ? "bg-teal-100 dark:bg-teal-500/10 text-teal-700 dark:text-teal-400 border-teal-200 dark:border-teal-500/20" :
+                                                    pkg.repo === 'chaotic' ? "bg-violet-100 dark:bg-violet-500/10 text-violet-700 dark:text-violet-400 border-violet-200 dark:border-violet-500/20" :
+                                                        "bg-amber-100 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/20"
                                             )}>
-                                                {pkg.update_type}
+                                                {pkg.repo}
                                             </span>
                                         </h3>
-                                        <div className="flex items-center gap-2 text-sm">
-                                            <span className="text-app-muted">{pkg.current_version}</span>
-                                            <ArrowRight size={12} className="text-app-muted opacity-50" />
-                                            <span className="text-emerald-700 font-medium">{pkg.new_version}</span>
+                                        <div className="flex items-center gap-3 text-sm font-medium">
+                                            <span className="text-slate-400 dark:text-app-muted line-through opacity-50">{pkg.old_version}</span>
+                                            <ArrowRight size={14} className="text-slate-300 dark:text-white/20" />
+                                            <span className="text-emerald-600 dark:text-emerald-400">{pkg.new_version}</span>
                                         </div>
                                     </div>
                                 </div>
 
                                 <div className="flex items-center gap-6">
-                                    <div className="text-right">
-                                        <p className="text-sm text-app-muted">{pkg.size}</p>
-                                    </div>
-                                    {pkg.update_type === 'aur' && (
-                                        <div title="AUR Package: May take longer to build" className="text-amber-500">
-                                            <AlertCircle size={16} />
+                                    {pkg.repo === 'aur' && (
+                                        <div title="AUR Package: May take longer to build" className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-100 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-500 text-xs font-bold">
+                                            <AlertCircle size={14} />
+                                            <span>Compassion Needed</span>
                                         </div>
                                     )}
                                 </div>
@@ -253,6 +254,16 @@ export default function UpdatesPage() {
                     </div>
                 )}
             </div>
+
+            <ConfirmationModal
+                isOpen={showConfirm}
+                onClose={() => setShowConfirm(false)}
+                onConfirm={performUpdate}
+                title="Update System"
+                message="This will update all system packages. This process cannot be interrupted. Are you ready to proceed?"
+                confirmLabel="Start Update"
+                variant="info"
+            />
         </div>
     );
 }

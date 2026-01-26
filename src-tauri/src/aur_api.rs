@@ -22,6 +22,7 @@ struct AurResponse {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct AurPackage {
     #[serde(rename = "Name")]
     name: String,
@@ -45,6 +46,16 @@ struct AurPackage {
     first_submitted: Option<i64>,
     #[serde(rename = "OutOfDate")]
     out_of_date: Option<i64>,
+    #[serde(rename = "Depends")]
+    depends: Option<Vec<String>>,
+    #[serde(rename = "MakeDepends")]
+    make_depends: Option<Vec<String>>,
+    #[serde(rename = "CheckDepends")]
+    check_depends: Option<Vec<String>>,
+    #[serde(rename = "Conflicts")]
+    conflicts: Option<Vec<String>>,
+    #[serde(rename = "Provides")]
+    provides: Option<Vec<String>>,
 }
 
 // Common function to fetch from AUR API
@@ -89,9 +100,13 @@ fn aur_to_package(p: AurPackage) -> Package {
         out_of_date: p.out_of_date,
         icon: None,
         screenshots: None,
-        provides: None,
+        provides: p.provides,
         app_id: None,
         is_optimized: None,
+        depends: p.depends,
+        make_depends: p.make_depends,
+        is_featured: None,
+        alternatives: None,
     }
 }
 
@@ -109,6 +124,7 @@ pub async fn search_aur(query: &str) -> Result<Vec<Package>, String> {
     Ok(results.into_iter().map(aur_to_package).collect())
 }
 
+#[allow(dead_code)]
 pub async fn search_aur_by_provides(query: &str) -> Result<Vec<Package>, String> {
     if query.len() < 2 {
         return Ok(vec![]);
@@ -122,5 +138,19 @@ pub async fn search_aur_by_provides(query: &str) -> Result<Vec<Package>, String>
 
     results.sort_by(|a, b| b.num_votes.unwrap_or(0).cmp(&a.num_votes.unwrap_or(0)));
 
+    Ok(results.into_iter().map(aur_to_package).collect())
+}
+
+pub async fn get_multi_info(names: &[&str]) -> Result<Vec<Package>, String> {
+    if names.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut url = "https://aur.archlinux.org/rpc/v5/info?".to_string();
+    for name in names {
+        url.push_str(&format!("arg[]={}&", name));
+    }
+
+    let results = fetch_aur(&url).await?;
     Ok(results.into_iter().map(aur_to_package).collect())
 }

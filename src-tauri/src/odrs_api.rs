@@ -32,7 +32,8 @@ pub struct Review {
 }
 
 // Fetch basic rating summary
-pub async fn get_app_rating(app_id: &str) -> Result<Option<OdrsRating>, String> {
+#[tauri::command]
+pub async fn get_app_rating(app_id: String) -> Result<Option<OdrsRating>, String> {
     let url = format!("https://odrs.gnome.org/1.0/reviews/api/ratings/{}", app_id);
 
     let client = reqwest::Client::new();
@@ -45,11 +46,12 @@ pub async fn get_app_rating(app_id: &str) -> Result<Option<OdrsRating>, String> 
     // ODRS returns a map { "app.id": { ... } } wrapped in an object
     let body: OdrsResponse = resp.json().await.map_err(|e| e.to_string())?;
 
-    Ok(body.ratings.get(app_id).cloned())
+    Ok(body.ratings.get(&app_id).cloned())
 }
 
 // Fetch detailed reviews
-pub async fn get_app_reviews(app_id: &str) -> Result<Vec<Review>, String> {
+#[tauri::command]
+pub async fn get_app_reviews(app_id: String) -> Result<Vec<Review>, String> {
     // ODRS usually returns reviews via a different endpoint or POST
     // For simplicity, we might just stick to ratings first, but let's try the fetch
     // URL: https://odrs.gnome.org/1.0/reviews/api/app/{app_id}

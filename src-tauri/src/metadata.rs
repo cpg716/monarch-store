@@ -1,6 +1,6 @@
 use appstream::{enums::Icon, Collection, Component};
 
-// use lazy_static::lazy_static;
+use lazy_static::lazy_static;
 // use regex::Regex;
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -87,16 +87,17 @@ impl AppStreamLoader {
 
             // 1. Package Index
             if let Some(pkg_name) = &meta.pkg_name {
-                pkg_idx.insert(pkg_name.clone(), meta.clone());
+                pkg_idx.insert(pkg_name.to_lowercase(), meta.clone());
 
                 // 2. Icon Index (Exact Match)
                 if let Some(icon) = &meta.icon_url {
-                    icon_idx.insert(pkg_name.clone(), icon.clone());
+                    icon_idx.insert(pkg_name.to_lowercase(), icon.clone());
                 }
             }
             // Also index by ID if different
-            if !pkg_idx.contains_key(&meta.app_id) {
-                pkg_idx.insert(meta.app_id.clone(), meta.clone());
+            let app_id_lower = meta.app_id.to_lowercase();
+            if !pkg_idx.contains_key(&app_id_lower) {
+                pkg_idx.insert(app_id_lower, meta.clone());
             }
 
             // 3. Category Index
@@ -119,20 +120,111 @@ impl AppStreamLoader {
     }
 
     pub fn find_app_id(&self, pkg_name: &str) -> Option<String> {
+        let pkg_lower = pkg_name.to_lowercase();
+
         // 1. Exact match
-        if let Some(meta) = self.pkg_index.get(pkg_name) {
+        if let Some(meta) = self.pkg_index.get(&pkg_lower) {
             return Some(meta.app_id.clone());
         }
 
         // 2. Try Suffix Stripping (e.g. brave-bin -> brave)
-        let base_name = crate::utils::strip_package_suffix(pkg_name);
-        if base_name != pkg_name {
+        let base_name = crate::utils::strip_package_suffix(&pkg_lower);
+        if base_name != pkg_lower {
             if let Some(meta) = self.pkg_index.get(base_name) {
                 return Some(meta.app_id.clone());
             }
         }
 
-        None
+        // 3. Manual Overrides (High-profile Bidirectional Mapping)
+        match pkg_lower.as_str() {
+            "steam" => Some("com.valvesoftware.steam".to_string()),
+            "gimp" | "gimp-git" => Some("org.gimp.gimp".to_string()),
+            "teams-for-linux" => Some("com.github.ismaelmartinez.teams_for_linux".to_string()),
+            "teams" | "teams-insiders" => Some("com.microsoft.teams".to_string()),
+            "spotify" | "spotify-launcher" => Some("com.spotify.client".to_string()),
+            "discord" | "discord-canary" | "discord-ptb" => {
+                Some("com.discordapp.discord".to_string())
+            }
+            "visual-studio-code-bin" | "code" | "vscode" => {
+                Some("com.visualstudio.code".to_string())
+            }
+            "vlc" | "vlc-git" => Some("org.videolan.vlc".to_string()),
+            "google-chrome" => Some("com.google.chrome".to_string()),
+            "firefox" | "firefox-developer-edition" => Some("org.mozilla.firefox".to_string()),
+            "telegram-desktop" | "telegram-desktop-bin" => Some("org.telegram.desktop".to_string()),
+            "obs-studio" | "obs-studio-git" => Some("com.obsproject.studio".to_string()),
+            "inkscape" => Some("org.inkscape.inkscape".to_string()),
+            "blender" => Some("org.blender.blender".to_string()),
+            "kdenlive" => Some("org.kde.kdenlive".to_string()),
+            "element-desktop" => Some("im.riot.riot".to_string()),
+            "pamac-manager" | "pamac" => Some("org.manjaro.pamac.manager".to_string()),
+            "endeavouros-welcome" => Some("com.endeavouros.welcome".to_string()),
+            "garuda-welcome" => Some("org.garudalinux.welcome".to_string()),
+            "brave" | "brave-bin" | "brave-browser" => Some("com.brave.Browser".to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn resolve_package_name(&self, input: &str) -> String {
+        let input_lower = input.to_lowercase();
+
+        // 1. If it doesn't look like an App ID (no dots), it's probably already a package name
+        if !input_lower.contains('.') {
+            return input_lower;
+        }
+
+        // 2. Manual Inverse Overrides (High-profile mismatches)
+        match input_lower.as_str() {
+            "com.valvesoftware.steam" | "com.valvesoftware.steam.desktop" | "steam" => {
+                return "steam".to_string()
+            }
+            "org.gimp.gimp" | "org.gimp.gimp.desktop" | "gimp" => return "gimp".to_string(),
+            "com.github.ismaelmartinez.teams_for_linux" | "teams-for-linux" => {
+                return "teams-for-linux".to_string()
+            }
+            "com.microsoft.teams" | "com.microsoft.teams.desktop" => return "teams".to_string(),
+            "com.spotify.client" => return "spotify".to_string(),
+            "com.discordapp.discord" => return "discord".to_string(),
+            "com.visualstudio.code" => return "visual-studio-code-bin".to_string(),
+            "org.videolan.vlc" => return "vlc".to_string(),
+            "com.google.chrome" => return "google-chrome".to_string(),
+            "org.mozilla.firefox" => return "firefox".to_string(),
+            "org.telegram.desktop" => return "telegram-desktop".to_string(),
+            "com.obsproject.studio" => return "obs-studio".to_string(),
+            "org.inkscape.inkscape" => return "inkscape".to_string(),
+            "org.blender.blender" => return "blender".to_string(),
+            "org.kde.kdenlive" => return "kdenlive".to_string(),
+            "im.riot.riot" => return "element-desktop".to_string(),
+            _ => {}
+        }
+
+        // 3. Metadata Lookup
+        if let Some(meta) = self.pkg_index.get(&input_lower) {
+            if let Some(pkg) = &meta.pkg_name {
+                return pkg.to_lowercase();
+            }
+        }
+
+        // 4. SMART FALLBACK (User's Strategy: "Check the installed section")
+        // If we still don't know, we scan installed packages to see if any claim this App ID.
+        if let Ok(output) = std::process::Command::new("pacman").arg("-Qq").output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for pkg_name in stdout.lines() {
+                if let Some(found_id) = self.find_app_id(pkg_name) {
+                    if found_id.to_lowercase() == input_lower {
+                        return pkg_name.to_string();
+                    }
+                }
+            }
+        }
+
+        // 5. Heuristic: Reverse DNS last part
+        if let Some(last) = input_lower.split('.').last() {
+            let last_lower = last.to_lowercase().replace('_', "-");
+            return last_lower;
+        }
+
+        input_lower
     }
 
     pub fn find_icon_heuristic(&self, pkg_name: &str) -> Option<String> {
@@ -279,8 +371,26 @@ impl AppStreamLoader {
     }
 
     pub fn get_apps_by_category(&self, category: &str) -> Vec<AppMetadata> {
+        let cat_lower = category.to_lowercase();
+        let query_key = match cat_lower.as_str() {
+            "utilities" => "utility",
+            "games" => "game",
+            "multimedia" => "audiovideo", // AudioVideo is XDG standard
+            "graphics" => "graphics",
+            "network" | "internet" => "network",
+            "office" | "productivity" => "office",
+            "development" | "develop" => "development",
+            "system" => "system",
+            k => k,
+        };
+
+        if let Some(res) = self.category_index.get(query_key) {
+            return res.clone();
+        }
+
+        // Fallback: Try generic lookup if alias failed or exact match wanted
         self.category_index
-            .get(&category.to_lowercase())
+            .get(&cat_lower)
             .cloned()
             .unwrap_or_default()
     }
@@ -358,7 +468,7 @@ impl AppStreamLoader {
                     .or_else(|| s.images.first())
                     .map(|i| i.url.to_string())
             })
-            .collect();
+            .collect::<Vec<String>>();
 
         let version = component.releases.first().map(|r| r.version.clone());
         let last_updated = component
@@ -377,7 +487,7 @@ impl AppStreamLoader {
             .as_ref()
             .and_then(|d| d.0.values().next().cloned());
 
-        AppMetadata {
+        let meta = AppMetadata {
             name: component
                 .name
                 .0
@@ -392,35 +502,101 @@ impl AppStreamLoader {
                 .summary
                 .as_ref()
                 .and_then(|s| s.0.values().next().cloned()),
-            screenshots,
+            screenshots: screenshots.clone(), // Clone here if needed or just move
             version,
             maintainer,
             license,
             last_updated,
             description,
-        }
+        };
+
+        if component
+            .pkgname
+            .clone()
+            .unwrap_or_default()
+            .contains("gimp")
+        {}
+
+        meta
     }
 }
 
+lazy_static! {
+    static ref RE_URL: regex::Regex =
+        regex::Regex::new(r#"(?s)<url\b([^>]*)>(.*?)</url>"#).unwrap();
+    static ref RE_IMG: regex::Regex =
+        regex::Regex::new(r#"(?s)<image\b([^>]*)>(.*?)</image>"#).unwrap();
+    static ref RE_ICON: regex::Regex =
+        regex::Regex::new(r#"(?s)<icon\b([^>]*)>(.*?)</icon>"#).unwrap();
+}
+
 pub fn sanitize_xml(content: &str) -> String {
-    // 1. Strip null bytes (Essential)
+    // Strip null bytes immediately
     let mut content = content.replace('\0', "");
 
-    // 2. Fix known Enum variant incompatibilities
-    // "service" and "web-application" are not supported by the old appstream crate we might be using,
-    // or cause issues. Mapping them to "console-application" (generic) is safe.
     content = content
         .replace("type=\"service\"", "type=\"console-application\"")
         .replace("type=\"web-application\"", "type=\"console-application\"");
 
-    // 3. Fix &amp; entities double encoding if present (common issue)
-    // content = content.replace("&amp;amp;", "&amp;");
+    // Helper closure to sanitize URL content inside tags
+    let sanitize_tag = |caps: &regex::Captures, is_url_tag: bool| -> String {
+        let attrs = &caps[1];
+        let raw_content = &caps[2];
+        let url_content = raw_content.trim();
 
-    // NOTE: We disabled the aggressive Regex sanitization for URLs/Icons because
-    // it was causing "Unexpected end of stream" errors on the 25MB+ XML file,
-    // likely due to regex buffer limits or accidental tag stripping.
-    // The AppStream parser is reasonably robust, so we accept a few malformed URLs
-    // in exchange for successfully loading the cache.
+        if url_content.is_empty() {
+            return String::new();
+        }
+
+        if url_content.contains('<') || url_content.contains('>') {
+            return String::new();
+        }
+
+        if !url_content.contains("://") && !url_content.starts_with("mailto:") {
+            // For <icon> tags, we only check if it is remote type or looks relative
+            if !is_url_tag {
+                if attrs.contains(r#"type="remote""#) || !url_content.contains("://") {
+                    return format!("<icon{}>https://{}</icon>", attrs, url_content);
+                }
+                return caps[0].to_string();
+            }
+
+            // For <url> and <image> tags, always ensure protocol
+            let tag_name = if is_url_tag { "url" } else { "image" };
+            format!(
+                "<{}{}>https://{}</{}>",
+                tag_name, attrs, url_content, tag_name
+            )
+        } else {
+            caps[0].to_string()
+        }
+    };
+
+    content = RE_URL
+        .replace_all(&content, |caps: &regex::Captures| sanitize_tag(caps, true))
+        .to_string();
+    content = RE_IMG
+        .replace_all(&content, |caps: &regex::Captures| sanitize_tag(caps, false))
+        .to_string(); // treat image like url for proto check
+
+    // Icon has special logic in original code, but effectively it was just ensuring https:// for remote/relative icons
+    content = RE_ICON
+        .replace_all(&content, |caps: &regex::Captures| {
+            let attrs = &caps[1];
+            let url_content = &caps[2];
+            let url_trimmed = url_content.trim();
+
+            if attrs.contains(r#"type="remote""#) {
+                if !url_trimmed.contains("://") {
+                    format!("<icon{}>https://{}</icon>", attrs, url_trimmed)
+                } else {
+                    caps[0].to_string()
+                }
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .to_string();
 
     content
 }
@@ -547,36 +723,33 @@ impl MetadataState {
     pub async fn init(&self, interval_hours: u64) {
         // Run on all platforms (Linux/macOS) to ensure consistent cache
         let cache_dir = get_cache_dir();
-        std::fs::create_dir_all(&cache_dir).ok();
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            eprintln!("Failed to create cache dir: {}", e);
+            return;
+        }
 
         match download_and_cache_appstream(interval_hours, &cache_dir).await {
             Ok(path) => match Collection::from_path(path.clone()) {
                 Ok(col) => {
-                    println!("Loaded AppStream data from {:?}", path);
+                    eprintln!("Loaded AppStream data from {:?}", path);
                     let mut loader = self.0.lock().unwrap();
                     loader.set_collection(col);
                 }
                 Err(e) => {
-                    println!(
-                        "Failed to parse AppStream data: {}. Deleting corrupted cache...",
+                    eprintln!(
+                        "Failed to parse AppStream data: {}. Marking cache as invalid.",
                         e
                     );
-                    let _ = std::fs::remove_file(&path);
 
-                    // Optional: Retry immediately once
-                    println!("Retrying download...");
-                    if let Ok(new_path) = download_and_cache_appstream(0, &cache_dir).await {
-                        // 0 interval forces check/download
-                        if let Ok(col) = Collection::from_path(new_path) {
-                            println!("Retry successful!");
-                            let mut loader = self.0.lock().unwrap();
-                            loader.set_collection(col);
-                        }
-                    }
+                    // Instead of deleting and retrying immediately (which causes loops),
+                    // we flag it for next time or just wait.
+                    // If the user manually clears cache, it will retry.
+                    // This prevents the infinite "download-fail-retry" loop.
+                    let _ = std::fs::remove_file(&path);
                 }
             },
             Err(e) => {
-                println!("Failed to download AppStream: {}", e);
+                eprintln!("Failed to download AppStream: {}", e);
             }
         }
     }
@@ -654,17 +827,17 @@ pub async fn get_metadata_batch(
 
     // Process in parallel using join_all
     let futures = pkg_names.into_iter().map(|pkg_name| {
-        let state = state.clone();
+        let state = state.inner();
         let scm_state = scm_state.clone();
         let chaotic_state = chaotic_state.clone();
         let flathub_state = flathub_state.clone();
 
         async move {
-            let meta = get_metadata(
-                state,
-                scm_state,
-                chaotic_state,
-                flathub_state,
+            let meta = get_metadata_core(
+                &state,
+                &scm_state,
+                &chaotic_state,
+                &flathub_state,
                 pkg_name.clone(),
                 None,
             )
@@ -694,8 +867,27 @@ pub async fn get_metadata_batch(
 pub async fn get_metadata(
     state: State<'_, MetadataState>,
     scm_state: State<'_, crate::ScmState>,
-    _chaotic_state: State<'_, crate::chaotic_api::ChaoticApiClient>,
+    chaotic_state: State<'_, crate::chaotic_api::ChaoticApiClient>,
     flathub_state: State<'_, crate::flathub_api::FlathubApiClient>,
+    pkg_name: String,
+    upstream_url: Option<String>,
+) -> Result<AppMetadata, ()> {
+    get_metadata_core(
+        state.inner(),
+        scm_state.inner(),
+        chaotic_state.inner(),
+        flathub_state.inner(),
+        pkg_name,
+        upstream_url,
+    )
+    .await
+}
+
+pub async fn get_metadata_core(
+    state: &MetadataState,
+    scm_state: &crate::ScmState,
+    _chaotic_state: &crate::chaotic_api::ChaoticApiClient,
+    flathub_state: &crate::flathub_api::FlathubApiClient,
     pkg_name: String,
     upstream_url: Option<String>,
 ) -> Result<AppMetadata, ()> {
@@ -783,12 +975,12 @@ pub async fn get_metadata(
         }
     }
     // Final Check: Log if icon is still missing for debugging
-    if final_meta.icon_url.is_none() {
-        println!(
-            "WARN: No icon found for package '{}' after all fallbacks.",
-            pkg_name
-        );
-    }
+    // if final_meta.icon_url.is_none() {
+    //     println!(
+    //         "DEBUG: No icon found for package '{}' after all fallbacks.",
+    //         pkg_name
+    //     );
+    // }
 
     Ok(final_meta)
 }
@@ -802,11 +994,99 @@ pub struct HealthIssue {
     pub action_command: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InitializationStatus {
+    pub needs_policy: bool,
+    pub needs_keyring: bool,
+    pub needs_migration: bool,
+    pub is_healthy: bool,
+}
+
+#[tauri::command]
+pub async fn check_initialization_status() -> Result<InitializationStatus, String> {
+    // 1. Check Policy
+    let needs_policy =
+        !std::path::Path::new("/usr/share/polkit-1/actions/com.monarch.store.policy").exists()
+            || !std::path::Path::new(crate::utils::MONARCH_PK_HELPER).exists();
+
+    // 2. Check Keyring (Quick check for existence of gnupg dir)
+    // We check the directory itself because files inside have 600/700 perms
+    let needs_keyring = !std::path::Path::new("/etc/pacman.d/gnupg").exists();
+
+    // 3. Check Migration (Modular Include)
+    let conf = std::fs::read_to_string("/etc/pacman.conf").unwrap_or_default();
+    let needs_migration = !conf.contains("/etc/pacman.d/monarch/*.conf");
+
+    // 4. Check Essential Repos (Chaotic-AUR is our core binary source)
+    let has_chaotic = conf.contains("[chaotic-aur]") || {
+        let monarch_dir = std::path::Path::new("/etc/pacman.d/monarch");
+        monarch_dir.exists()
+            && std::fs::read_dir(monarch_dir)
+                .map(|entries| {
+                    entries.flatten().any(|e| {
+                        let p = e.path();
+                        p.extension().map_or(false, |ex| ex == "conf")
+                            && std::fs::read_to_string(p)
+                                .map_or(false, |c| c.contains("[chaotic-aur]"))
+                    })
+                })
+                .unwrap_or(false)
+    };
+    let needs_repos = !has_chaotic;
+
+    Ok(InitializationStatus {
+        needs_policy,
+        needs_keyring,
+        needs_migration,
+        is_healthy: !needs_policy && !needs_keyring && !needs_migration && !needs_repos,
+    })
+}
+
 #[tauri::command]
 pub async fn check_system_health() -> Result<Vec<HealthIssue>, String> {
     let mut issues = Vec::new();
 
-    // 1. Check dependencies
+    // 1. Check for pacman executable
+    if !std::path::Path::new("/usr/bin/pacman").exists() {
+        issues.push(HealthIssue {
+            category: "System".to_string(),
+            severity: "Critical".to_string(),
+            message: "Pacman package manager not found.".to_string(),
+            action_label: "Install Pacman".to_string(),
+            action_command: None,
+        });
+    }
+
+    // 2. Hardware/CPU Check
+    let opt_level = if crate::utils::is_cpu_znver4_compatible() {
+        "Zen 4/5 (Extreme)"
+    } else if crate::utils::is_cpu_v4_compatible() {
+        "v4 (AVX-512)"
+    } else if crate::utils::is_cpu_v3_compatible() {
+        "v3 (AVX2)"
+    } else {
+        "v1 (Standard x86-64)"
+    };
+    issues.push(HealthIssue {
+        category: "Hardware".to_string(),
+        severity: "Info".to_string(),
+        message: format!("Hardware Optimization Level: {}", opt_level),
+        action_label: "View Optimization Guide".to_string(),
+        action_command: None,
+    });
+
+    // 3. Critical Keyring Check
+    if !std::path::Path::new("/etc/pacman.d/gnupg").exists() {
+        issues.push(HealthIssue {
+            category: "Keyring".to_string(),
+            severity: "Critical".to_string(),
+            message: "System Keyring is corrupted or uninitialized.".to_string(),
+            action_label: "Initialize Keyring".to_string(),
+            action_command: Some("keyring".to_string()),
+        });
+    }
+
+    // 4. Check dependencies (Non-root)
     let deps = ["base-devel", "git"];
     for dep in deps {
         let has_dep = std::process::Command::new("pacman")
@@ -826,12 +1106,8 @@ pub async fn check_system_health() -> Result<Vec<HealthIssue>, String> {
         }
     }
 
-    // 2. Check for sync failures (Check if monarch-store/dbs exists and has files)
-    let dbs_dir = dirs::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("monarch-store")
-        .join("dbs");
-
+    // 5. Check for sync failures
+    let dbs_dir = get_cache_dir().join("dbs");
     if !dbs_dir.exists()
         || std::fs::read_dir(&dbs_dir)
             .map(|d| d.count() == 0)
@@ -842,28 +1118,24 @@ pub async fn check_system_health() -> Result<Vec<HealthIssue>, String> {
             severity: "Warning".to_string(),
             message: "No package databases found. Browse might be empty.".to_string(),
             action_label: "Refresh Repositories".to_string(),
-            action_command: None, // Frontend will handle triggering sync
+            action_command: None,
         });
     }
 
-    // 3. Hardware Optimization Status
-    let opt_level = if crate::utils::is_cpu_znver4_compatible() {
-        "Zen 4/5 (Extreme)"
-    } else if crate::utils::is_cpu_v4_compatible() {
-        "v4 (AVX-512)"
-    } else if crate::utils::is_cpu_v3_compatible() {
-        "v3 (AVX2)"
-    } else {
-        "v1 (Standard x86-64)"
-    };
+    // 6. Polkit One-Click Install Check
+    let has_policy = std::path::Path::new("/usr/share/polkit-1/actions/com.monarch.store.policy")
+        .exists()
+        && std::path::Path::new(crate::utils::MONARCH_PK_HELPER).exists();
 
-    issues.push(HealthIssue {
-        category: "Hardware".to_string(),
-        severity: "Info".to_string(),
-        message: format!("Hardware Optimization Level: {}", opt_level),
-        action_label: "View Optimization Guide".to_string(),
-        action_command: None,
-    });
+    if !has_policy {
+        issues.push(HealthIssue {
+            category: "Security".to_string(),
+            severity: "Info".to_string(),
+            message: "Seamless 'One-Click' Installs are disabled.".to_string(),
+            action_label: "Enable One-Click Installs".to_string(),
+            action_command: Some("install_monarch_policy".to_string()),
+        });
+    }
 
     Ok(issues)
 }

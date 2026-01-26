@@ -1,11 +1,100 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
-import { ArrowLeft, LayoutGrid, Filter } from 'lucide-react';
+import { ArrowLeft, LayoutGrid, Filter, Check, ChevronDown } from 'lucide-react';
+import clsx from 'clsx';
 import { invoke } from '@tauri-apps/api/core';
 import PackageCard, { Package, ChaoticPackage } from '../components/PackageCard';
 import PackageCardSkeleton from '../components/PackageCardSkeleton';
 import EmptyState from '../components/EmptyState';
 import { CATEGORIES } from '../components/CategoryGrid';
+
+// Multi-Select Dropdown Component
+
+const MultiSelectDropdown = ({
+    options,
+    selected,
+    onChange
+}: {
+    options: { value: string, label: string }[],
+    selected: string[],
+    onChange: (newSelected: string[]) => void
+}) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const dropdownRef = React.useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+                setIsOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    const toggleOption = (value: string) => {
+        if (value === 'all') {
+            onChange(['all']);
+            return;
+        }
+
+        const newSelected = selected.includes('all') ? [] : [...selected];
+
+        if (newSelected.includes(value)) {
+            const next = newSelected.filter(v => v !== value);
+            onChange(next.length === 0 ? ['all'] : next);
+        } else {
+            onChange([...newSelected, value]);
+        }
+    };
+
+    const displayText = selected.includes('all') || selected.length === 0
+        ? "All Repos"
+        : `${selected.length} Selected`;
+
+    return (
+        <div className="relative" ref={dropdownRef}>
+            <button
+                onClick={() => setIsOpen(!isOpen)}
+                className="flex items-center gap-2 bg-app-subtle border border-app-border rounded-lg px-3 py-1.5 text-sm text-app-fg hover:border-blue-500 transition-colors"
+            >
+                <Filter size={14} className="text-app-muted" />
+                <span>{displayText}</span>
+                <ChevronDown size={14} className="text-app-muted" />
+            </button>
+
+            {isOpen && (
+                <div className="absolute top-full mt-2 right-0 w-56 bg-app-card border border-app-border rounded-xl shadow-xl p-2 z-50 flex flex-col gap-1">
+                    <button
+                        onClick={() => toggleOption('all')}
+                        className={clsx(
+                            "flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors",
+                            selected.includes('all') ? "bg-blue-500 text-white" : "hover:bg-app-fg/10 text-app-fg"
+                        )}
+                    >
+                        <span>All Repositories</span>
+                        {selected.includes('all') && <Check size={14} />}
+                    </button>
+                    <div className="h-px bg-app-border/50 my-1" />
+                    {options.map(opt => (
+                        <button
+                            key={opt.value}
+                            onClick={() => toggleOption(opt.value)}
+                            className={clsx(
+                                "flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors",
+                                selected.includes(opt.value) && !selected.includes('all') ? "bg-blue-500/10 text-blue-500 font-bold" : "hover:bg-app-fg/10 text-app-fg"
+                            )}
+                        >
+                            <span>{opt.label}</span>
+                            {(selected.includes(opt.value) && !selected.includes('all')) && <Check size={14} />}
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+// ... imports
 
 interface CategoryViewProps {
     category: string;
@@ -22,8 +111,10 @@ interface RepoState {
 // ... imports
 
 interface PaginatedResponse {
-    items: Package[];
+    packages: Package[];
     total: number;
+    page: number;
+    has_more: boolean;
 }
 
 const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectPackage }) => {
@@ -31,8 +122,8 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
     const [totalPackages, setTotalPackages] = useState(0); // Track total available from backend
     const [loading, setLoading] = useState(true);
     const [initialLoad, setInitialLoad] = useState(true); // Track first load vs "load more"
-    const [sortBy, setSortBy] = useState<'name' | 'updated'>('name');
-    const [repoFilter, setRepoFilter] = useState<string>('all');
+    const [sortBy, setSortBy] = useState<'featured' | 'name' | 'updated'>('featured');
+    const [repoFilter, setRepoFilter] = useState<string[]>(['all']);
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
     const [enabledRepos, setEnabledRepos] = useState<RepoState[]>([]);
@@ -55,10 +146,11 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
         return labels[source] || source.charAt(0).toUpperCase() + source.slice(1);
     };
 
-    // ... (Icon logic same)
+    // Helper for display labels
     const categoryResult = CATEGORIES.find(c => c.id === category || c.label === category);
     const Icon = categoryResult?.icon || LayoutGrid;
     const colorClass = categoryResult?.color || "text-blue-500";
+    const displayLabel = categoryResult?.label || category;
 
     // ... (Repo fetch same)
     useEffect(() => {
@@ -105,11 +197,15 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
             // Updating state...
             setTotalPackages(res.total);
             if (reset) {
-                setPackages(res.items);
+                setPackages(res.packages);
             } else {
-                setPackages(prev => [...prev, ...res.items]);
+                setPackages(prev => {
+                    const existingNames = new Set(prev.map(p => p.name));
+                    const uniqueNew = res.packages.filter(p => !existingNames.has(p.name));
+                    return [...prev, ...uniqueNew];
+                });
             }
-            setHasMore(res.items.length === LIMIT);
+            setHasMore(res.packages.length === LIMIT);
 
         } catch (e) {
             console.error("Failed to load category apps", e);
@@ -182,8 +278,8 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
 
     // Handlers
     const handleSelectPackage = (pkg: Package) => {
-        if (repoFilter !== 'all') {
-            onSelectPackage(pkg, repoFilter);
+        if (!repoFilter.includes('all') && repoFilter.length === 1) {
+            onSelectPackage(pkg, repoFilter[0]);
         } else {
             onSelectPackage(pkg);
         }
@@ -207,14 +303,20 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                     <div>
                         <h1 className="text-2xl font-bold flex items-center gap-2 text-app-fg">
                             <Icon className={colorClass} size={24} />
-                            {category} Apps
+                            {displayLabel} Apps
                         </h1>
                         <p className="text-app-muted text-sm">
                             {totalPackages > 0
                                 ? `${totalPackages} Packages Total - ${packages.length} Showing`
                                 : `${packages.length} packages loaded`
                             }
-                            {repoFilter !== 'all' ? ` in ${getRepoLabel(repoFilter)}` : ''}
+                            {repoFilter.includes('all')
+                                ? ''
+                                : ` in ${repoFilter.length > 3
+                                    ? `${repoFilter.length} Repos`
+                                    : repoFilter.map(r => getRepoLabel(r)).join(', ')
+                                }`
+                            }
                         </p>
                     </div>
                 </div>
@@ -222,21 +324,11 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                 {/* Filter Controls */}
                 <div className="flex items-center gap-4">
                     {/* Repo Filter */}
-                    <div className="flex items-center gap-2">
-                        <Filter size={14} className="text-app-muted" />
-                        <select
-                            className="bg-app-subtle border border-app-border rounded-lg px-3 py-1.5 text-sm text-app-fg focus:outline-none focus:border-blue-500 transition-colors"
-                            value={repoFilter}
-                            onChange={(e) => setRepoFilter(e.target.value)}
-                        >
-                            <option value="all">All Repos</option>
-                            {enabledRepos.map(repo => (
-                                <option key={repo.source} value={repo.source}>
-                                    {getRepoLabel(repo.source)}
-                                </option>
-                            ))}
-                        </select>
-                    </div>
+                    <MultiSelectDropdown
+                        options={enabledRepos.map(r => ({ value: r.source, label: getRepoLabel(r.source) }))}
+                        selected={repoFilter}
+                        onChange={setRepoFilter}
+                    />
 
                     {/* Sort */}
                     <div className="flex items-center gap-2">
@@ -244,8 +336,9 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                         <select
                             className="bg-app-subtle border border-app-border rounded-lg px-3 py-1.5 text-sm text-app-fg focus:outline-none focus:border-blue-500 transition-colors"
                             value={sortBy}
-                            onChange={(e) => setSortBy(e.target.value as 'name' | 'updated')}
+                            onChange={(e) => setSortBy(e.target.value as 'featured' | 'name' | 'updated')}
                         >
+                            <option value="featured">Featured</option>
                             <option value="name">Name (A-Z)</option>
                             <option value="updated">Last Updated</option>
                         </select>
@@ -263,27 +356,59 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                 ) : packages.length === 0 ? (
                     <EmptyState
                         title="No apps found"
-                        description={`No applications found${repoFilter !== 'all' ? ` in ${getRepoLabel(repoFilter)}` : ' in this category'}. Try selecting a different repo.`}
-                        actionLabel={repoFilter !== 'all' ? "Show All Repos" : undefined}
-                        onAction={repoFilter !== 'all' ? () => setRepoFilter('all') : undefined}
+                        description={`No applications found${!repoFilter.includes('all') ? ` in selected repos` : ' in this category'}. Try selecting a different repo.`}
+                        actionLabel={!repoFilter.includes('all') ? "Show All Repos" : undefined}
+                        onAction={!repoFilter.includes('all') ? () => setRepoFilter(['all']) : undefined}
                     />
                 ) : (
                     <>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-                            {packages.map((pkg, index) => {
-                                // Add ref to the last element
-                                const isLast = index === packages.length - 1;
-                                return (
-                                    <div key={pkg.name} ref={isLast ? lastElementRef : null}>
-                                        <PackageCard
-                                            pkg={pkg}
-                                            onClick={() => handleSelectPackage(pkg)}
-                                            chaoticInfo={chaoticInfoMap.get(pkg.name)}
-                                        />
+                        {/* Conditional Featured Section */}
+                        {(() => {
+                            // Only split view if sorting by "featured" and on first page (or full list)
+                            // If we have paginated data, the "featured" items should be at the top of the first page.
+                            const showFeaturedSplit = sortBy === 'featured';
+                            const featured = showFeaturedSplit ? packages.filter(p => p.is_featured) : [];
+                            const others = showFeaturedSplit ? packages.filter(p => !p.is_featured) : packages;
+
+                            return (
+                                <>
+                                    {showFeaturedSplit && featured.length > 0 && (
+                                        <div className="mb-8">
+                                            <h2 className="text-lg font-bold text-app-fg mb-4 flex items-center gap-2">
+                                                <span className="text-yellow-500">★</span> Featured Applications
+                                            </h2>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                                                {featured.map((pkg) => (
+                                                    <PackageCard
+                                                        key={`feat-${pkg.name}`}
+                                                        pkg={pkg}
+                                                        onClick={() => handleSelectPackage(pkg)}
+                                                        chaoticInfo={chaoticInfoMap.get(pkg.name)}
+                                                    />
+                                                ))}
+                                            </div>
+                                            <div className="h-px bg-app-border/50 my-6" />
+                                            <h2 className="text-lg font-bold text-app-fg mb-4">All Applications</h2>
+                                        </div>
+                                    )}
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                                        {others.map((pkg, index) => {
+                                            const isLast = index === others.length - 1;
+                                            return (
+                                                <div key={pkg.name} ref={isLast ? lastElementRef : null}>
+                                                    <PackageCard
+                                                        pkg={pkg}
+                                                        onClick={() => handleSelectPackage(pkg)}
+                                                        chaoticInfo={chaoticInfoMap.get(pkg.name)}
+                                                    />
+                                                </div>
+                                            );
+                                        })}
                                     </div>
-                                );
-                            })}
-                        </div>
+                                </>
+                            );
+                        })()}
 
                         {/* Loading More Indicator */}
                         {loading && !initialLoad && (

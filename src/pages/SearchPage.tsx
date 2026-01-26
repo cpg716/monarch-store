@@ -33,7 +33,8 @@ export default function SearchPage({
 
     // Filtered & Sorted results
     const getFilteredResults = () => {
-        let results = [...packages];
+        const safePackages = packages || [];
+        let results = [...safePackages];
         let currentFilter = activeFilter;
 
         // Magic Keyword Detection (@aur, @chaotic, @official)
@@ -89,7 +90,7 @@ export default function SearchPage({
                             {query ? `Search Results` : 'Explore'}
                         </h2>
                         <p className="text-app-muted text-sm capitalize">
-                            {query ? `${packages.length} apps matching "${query}"` : 'Discover your next favorite app'}
+                            {query ? `${(packages || []).length} apps matching "${query}"` : 'Discover your next favorite app'}
                         </p>
                     </div>
 
@@ -124,7 +125,7 @@ export default function SearchPage({
                                     : "bg-app-card border-app-border text-app-muted hover:border-app-fg/30"
                             )}
                         >
-                            All ({packages.length})
+                            All ({(packages || []).length})
                         </button>
                         {(() => {
                             // Unify Repos into Families
@@ -139,7 +140,7 @@ export default function SearchPage({
                                 if (repo.source === 'manjaro') label = 'Manjaro';
                                 if (repo.source === 'cachyos') label = 'CachyOS';
 
-                                const count = packages.filter(p => p.source === repo.source).length;
+                                const count = (packages || []).filter(p => p.source === repo.source).length;
                                 if (count === 0) return;
 
                                 if (families.has(family)) {

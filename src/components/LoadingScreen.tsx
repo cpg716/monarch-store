@@ -14,50 +14,86 @@ const LOADING_TIPS = [
 ];
 
 export default function LoadingScreen() {
-    console.log("LoadingScreen mounted");
     const [tipIndex, setTipIndex] = useState(0);
+    const [status, setStatus] = useState("Initializing system...");
+    const [progress, setProgress] = useState(0);
 
-    // Rotate tips every 2 seconds
+    // Rotate tips every 3 seconds for variety
     useEffect(() => {
         const interval = setInterval(() => {
             setTipIndex(prev => (prev + 1) % LOADING_TIPS.length);
-        }, 2000);
+        }, 3000);
         return () => clearInterval(interval);
     }, []);
 
-    return (
-        <div className="fixed inset-0 z-50 bg-app-bg flex flex-col items-center justify-center text-app-fg p-8">
-            {/* Background elements */}
-            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-transparent to-purple-500/5 pointer-events-none" />
+    // Listen for real-time progress from backend
+    useEffect(() => {
+        let unlisten: any;
+        const setupListener = async () => {
+            const { listen } = await import('@tauri-apps/api/event');
+            unlisten = await listen<string>('sync-progress', (event) => {
+                setStatus(event.payload);
+                // Simple heuristic for progress bar
+                if (event.payload.includes("Syncing")) setProgress(20);
+                if (event.payload.includes("Updating")) setProgress(prev => Math.min(prev + 10, 80));
+                if (event.payload.includes("Chaotic-AUR")) setProgress(90);
+                if (event.payload.includes("complete")) setProgress(100);
+            });
+        };
+        setupListener();
+        return () => { if (unlisten) unlisten(); };
+    }, []);
 
-            <div className="relative flex flex-col items-center max-w-md text-center">
-                {/* Main Icon - Animated Logo */}
-                <div className="mb-8 relative">
-                    {/* Glow effect */}
-                    <div className="absolute inset-[-30%] bg-gradient-to-br from-blue-500/40 via-violet-500/30 to-cyan-500/40 blur-3xl rounded-full animate-pulse" />
-                    <div className="relative z-10 w-28 h-28 flex items-center justify-center">
-                        <img
-                            src={logo}
-                            alt="MonARCH"
-                            className="w-full h-full object-contain animate-flap drop-shadow-2xl"
-                        />
-                    </div>
+    return (
+        <div className="fixed inset-0 z-50 bg-app-bg flex flex-col items-center justify-center text-app-fg p-8 overflow-hidden">
+            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 via-transparent to-purple-500/10 pointer-events-none" />
+
+            {/* Animated particles background */}
+            <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-20">
+                <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-500/20 blur-[120px] rounded-full animate-pulse" />
+                <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-500/20 blur-[120px] rounded-full animate-pulse" style={{ animationDelay: '1s' }} />
+            </div>
+
+            <div className="relative flex flex-col items-center w-full max-w-md text-center">
+                <div className="mb-12 relative group">
+                    <div className="absolute inset-[-40%] bg-gradient-to-br from-blue-500/40 via-violet-500/30 to-cyan-500/40 blur-3xl rounded-full animate-pulse group-hover:scale-110 transition-transform duration-1000" />
+                    <motion.div
+                        initial={{ scale: 0.8, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ type: "spring", stiffness: 100 }}
+                        className="relative z-10 w-32 h-32 flex items-center justify-center"
+                    >
+                        <img src={logo} alt="MonARCH" className="w-full h-full object-contain drop-shadow-2xl animate-flap" />
+                    </motion.div>
                 </div>
 
-                <h1 className="text-2xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
-                    Updating Repositories
-                </h1>
+                <div className="space-y-2 mb-8 w-full">
+                    <h1 className="text-3xl font-black bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-500 bg-clip-text text-transparent">
+                        Preparing MonARCH
+                    </h1>
+                    <p className="text-app-muted text-sm font-medium h-4">{status}</p>
+                </div>
 
-                <div className="h-6 overflow-hidden relative w-full mb-8">
+                {/* Real Progress Bar */}
+                <div className="w-full h-1.5 bg-app-subtle rounded-full overflow-hidden mb-10 border border-app-border/30">
+                    <motion.div
+                        className="h-full bg-gradient-to-r from-blue-500 to-purple-600"
+                        initial={{ width: "0%" }}
+                        animate={{ width: `${progress}%` }}
+                        transition={{ duration: 0.5 }}
+                    />
+                </div>
+
+                <div className="h-12 overflow-hidden relative w-full mb-8 italic">
                     <AnimatePresence mode="wait">
                         <motion.p
                             key={tipIndex}
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -10 }}
-                            className="text-app-muted text-sm absolute inset-0 flex items-center justify-center"
+                            className="text-app-muted text-xs absolute inset-0 flex items-center justify-center px-4"
                         >
-                            {LOADING_TIPS[tipIndex]}
+                            " {LOADING_TIPS[tipIndex]} "
                         </motion.p>
                     </AnimatePresence>
                 </div>

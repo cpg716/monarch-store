@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { AlertCircle, Terminal, RefreshCw, X } from 'lucide-react';
-import logoFull from '../assets/logo_full.png';
+
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface HealthIssue {
@@ -25,13 +25,24 @@ export default function HeroSection({ onNavigateToFix }: { onNavigateToFix?: () 
         setFixing(issue.message);
         if (issue.action_command) {
             try {
-                // In a real app we might use a terminal plugin or handle it in rust
-                // For now we'll trigger the command and refresh
-                await invoke('launch_app', { name: "alacritty", args: ["-e", "bash", "-c", `${issue.action_command}; read -p 'Done! Press enter to close...'`] });
+                // Map frontend action labels to backend repair commands
+                let cmd = issue.action_command;
+                if (cmd === 'keyring' || cmd === 'trigger_repair_flow') {
+                    cmd = 'repair_reset_keyring';
+                }
+
+                if (['repair_reset_keyring', 'repair_unlock_pacman', 'repair_emergency_sync', 'install_monarch_policy'].includes(cmd)) {
+                    await invoke(cmd, { password: null });
+                } else {
+                    // Fallback for unknown commands
+                    await invoke('launch_app', { name: "alacritty", args: ["-e", "bash", "-c", `${issue.action_command}; read -p 'Done! Press enter to close...'`] });
+                }
+
+                // Refresh health status
                 setTimeout(async () => {
                     const newIssues = await invoke<HealthIssue[]>('check_system_health');
                     setIssues(newIssues);
-                }, 2000);
+                }, 1000);
             } catch (e) {
                 console.error("Fix failed", e);
             }
@@ -99,50 +110,42 @@ export default function HeroSection({ onNavigateToFix }: { onNavigateToFix?: () 
                 )}
             </AnimatePresence>
 
-            <div className="relative w-full rounded-3xl overflow-hidden group select-none shadow-lg">
-                {/* Light Background */}
-                <div className="absolute inset-0 bg-gradient-to-br from-purple-300 via-blue-300 to-cyan-200 transition-all duration-500 group-hover:scale-105" />
+            <div className="relative w-full min-h-[140px] rounded-3xl overflow-hidden group select-none shadow-2xl border border-white/10 flex items-center justify-center">
+                {/* Background */}
+                <div className="absolute inset-0 bg-gradient-to-br from-[#0f172a] via-[#1e1b4b] to-[#0f172a] transition-all duration-700" />
 
-                {/* Animated Shapes */}
-                <div className="absolute top-[-50%] left-[-20%] w-[800px] h-[800px] rounded-full bg-white/30 blur-3xl animate-pulse" />
-                <div className="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] rounded-full bg-purple-400/20 blur-3xl" />
+                <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-20" />
 
-                {/* Glass Overlay */}
-                <div className="absolute inset-0 bg-white/20 backdrop-blur-[2px]" />
+                {/* Glow Effects */}
+                <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-blue-500/10 blur-[100px] animate-pulse duration-[8000ms]" />
+                <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-purple-500/10 blur-[100px]" />
 
                 {/* Content Container */}
-                <div className="relative z-10 flex flex-row items-center justify-center gap-8 px-10 py-6 text-slate-800">
-                    <div className="flex-shrink-0 animate-fade-in-up" style={{ animationDelay: '0.1s' }}>
-                        <img
-                            src={logoFull}
-                            alt="MonARCH Store"
-                            className="h-24 object-contain"
-                            style={{
-                                filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.2))'
-                            }}
-                        />
-                    </div>
+                <div className="relative z-10 flex flex-col items-center justify-center text-center px-6 py-8 text-white max-w-4xl mx-auto">
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ duration: 0.4 }}
+                        className="flex flex-col items-center gap-2"
+                    >
+                        <motion.h2
+                            initial={{ y: 10, opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            transition={{ delay: 0.1 }}
+                            className="text-3xl md:text-5xl font-black text-white tracking-tight leading-none drop-shadow-xl"
+                        >
+                            Order from <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">Chaos</span>.
+                        </motion.h2>
 
-                    <div className="flex flex-col text-left max-w-2xl">
-                        <h2 className="text-3xl font-black text-slate-800 mb-2 tracking-tight animate-fade-in-up leading-tight" style={{ animationDelay: '0.2s' }}>
-                            Order from <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">Chaos</span>.
-                        </h2>
-
-                        <div className="text-sm text-slate-700 leading-relaxed animate-fade-in-up font-medium" style={{ animationDelay: '0.25s' }}>
-                            <p>
-                                The ultimate <strong>Chaotic-AUR</strong> interface. Pre-built binaries, fast downloads, and easy installation.
-                            </p>
-                            <p className="mt-1 text-slate-600 font-normal text-xs">
-                                Supports <strong>Arch Official</strong>, <strong>AUR</strong>, <strong>CachyOS</strong>, <strong>Garuda</strong>, <strong>Manjaro</strong>, & <strong>EndeavourOS</strong>.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-96 h-96 opacity-15 pointer-events-none">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="0.5" className="w-full h-full text-purple-600 rotate-12">
-                        <path d="M12 2L2 22h20L12 2zm0 3.5L18.5 20h-13L12 5.5z" />
-                    </svg>
+                        <motion.p
+                            initial={{ y: 10, opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            transition={{ delay: 0.2 }}
+                            className="text-sm md:text-base text-indigo-200/80 font-medium max-w-2xl leading-relaxed mt-2"
+                        >
+                            Get apps from <strong>Chaotic-AUR</strong>, <strong>CachyOS</strong>, <strong>Manjaro</strong>, <strong>Garuda</strong>, and <strong>EndeavourOS</strong> with a single click. Also features a powerful <strong>AUR Native Builder</strong>.
+                        </motion.p>
+                    </motion.div>
                 </div>
             </div>
         </div>

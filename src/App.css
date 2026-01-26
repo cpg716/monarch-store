@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@variant dark (&:where(.theme-dark, .theme-dark *));
+
 @theme {
   --color-app-bg: var(--app-bg);
   --color-app-fg: var(--app-fg);

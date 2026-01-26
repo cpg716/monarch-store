@@ -89,10 +89,10 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
         );
     }
 
-    if (packages.length === 0) return null;
+    if ((packages || []).length === 0) return null;
 
-    const displayedPackages = limit ? packages.slice(0, limit) : packages;
-    const showSeeAll = limit && onSeeAll && packages.length > limit;
+    const displayedPackages = limit ? (packages || []).slice(0, limit) : (packages || []);
+    const showSeeAll = limit && onSeeAll && (packages || []).length > limit;
 
     // Use the explicit variant, or infer 'scroll' if a limit is set (heuristic for homepage rows)
     const isScroll = variant === 'scroll';

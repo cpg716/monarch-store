@@ -3,7 +3,7 @@
 
 fn main() {
     std::panic::set_hook(Box::new(|info| {
-        println!("Panic: {:?}", info);
+        eprintln!("Panic: {:?}", info);
     }));
     monarch_store_lib::run()
 }

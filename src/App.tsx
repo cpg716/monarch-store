@@ -1,65 +1,41 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from "@tauri-apps/api/core";
 import { trackEvent } from '@aptabase/tauri';
-import { ArrowLeft, Zap, Heart } from 'lucide-react';
+import { ArrowLeft, Heart } from 'lucide-react';
 import { useFavorites } from './hooks/useFavorites';
 import Sidebar from './components/Sidebar';
 import SearchBar from './components/SearchBar';
+import InstallMonitor from './components/InstallMonitor';
 import { Package } from './components/PackageCard';
 import TrendingSection from './components/TrendingSection';
 import HeroSection from './components/HeroSection';
 import PackageDetails from './pages/PackageDetails';
 import { useAppStore } from './store/internal_store';
-import CategoryGrid from './components/CategoryGrid';
 import CategoryView from './pages/CategoryView';
 import InstalledPage from './pages/InstalledPage';
 import UpdatesPage from './pages/UpdatesPage';
 import SettingsPage from './pages/SettingsPage';
-import SystemHealth from './pages/SystemHealth'; // [NEW]
 import { useTheme } from './hooks/useTheme';
 import './App.css';
-
 import LoadingScreen from './components/LoadingScreen';
 import OnboardingModal from './components/OnboardingModal';
 import SearchPage from './pages/SearchPage';
 import { useSearchHistory } from './hooks/useSearchHistory';
-
-// Full pool of "Essentials" - Popular proprietary/chaotic apps
-const ESSENTIALS_POOL = [
-  "google-chrome", "visual-studio-code-bin", "spotify", "discord", "slack-desktop", "zoom", "sublime-text-4",
-  "obsidian", "telegram-desktop-bin", "brave-bin", "edge-bin", "vlc", "gimp", "steam", "minecraft-launcher",
-  "teams-for-linux", "notion-app", "postman-bin", "figma-linux-bin", "anydesk-bin"
-];
-
-const getRotatedEssentials = () => {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), 0, 0);
-  const diff = (now.getTime() - start.getTime()) + ((start.getTimezoneOffset() - now.getTimezoneOffset()) * 60 * 1000);
-  const oneDay = 1000 * 60 * 60 * 24;
-  const day = Math.floor(diff / oneDay);
-  const week = Math.floor(day / 7);
-
-  const poolSize = ESSENTIALS_POOL.length;
-  const subsetSize = 7;
-  const startIndex = (week * 3) % poolSize;
-
-  let result: string[] = [];
-  for (let i = 0; i < subsetSize; i++) {
-    result.push(ESSENTIALS_POOL[(startIndex + i) % poolSize]);
-  }
-  return result;
-};
-
-const ESSENTIAL_IDS = getRotatedEssentials();
+import HomePage from './pages/HomePage';
+import { ESSENTIALS_POOL } from './constants';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('explore');
+  const [activeTab, setActiveTab] = useState(() => {
+    return localStorage.getItem('monarch_active_tab') || 'explore';
+  });
+  const [activeInstall, setActiveInstall] = useState<{ name: string; source: string; repoName?: string; mode: 'install' | 'uninstall' } | null>(null);
   const [viewAll, setViewAll] = useState<'essentials' | 'trending' | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [packages, setPackages] = useState<Package[]>([]);
   const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
   const [preferredSource, setPreferredSource] = useState<string | undefined>(undefined);
+  const [onboardingReason, setOnboardingReason] = useState<string | undefined>(undefined);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(true);
@@ -73,75 +49,67 @@ function App() {
   const [enabledRepos, setEnabledRepos] = useState<{ name: string; enabled: boolean; source: string }[]>([]);
 
   useEffect(() => {
+    // 1. Get Repo States
     invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states').then(repos => {
       setEnabledRepos(repos.filter(r => r.enabled));
     }).catch(console.error);
   }, []);
 
-  useEffect(() => {
-    const completed = localStorage.getItem('monarch_onboarding_completed');
-    if (!completed) setShowOnboarding(true);
-  }, []);
-
   const handleOnboardingComplete = () => {
-    localStorage.setItem('monarch_onboarding_completed', 'true');
+    localStorage.setItem('monarch_onboarding_v3', 'true');
     setShowOnboarding(false);
   };
 
   useEffect(() => {
-    const initInfo = async () => {
+    const initializeStartup = async () => {
+      const startTime = Date.now();
       try {
-        // Start stats immediately
-        // Start stats immediately
+        // 1. Parallel background tasks
         fetchInfraStats();
+        invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states')
+          .then(repos => setEnabledRepos(repos.filter(r => r.enabled)))
+          .catch(console.error);
 
-        // [UX FIX] Re-enabled safe background sync (No Root Required)
-        // This ensures the app has content on launch without blocking UI.
-        const savedInterval = localStorage.getItem('sync-interval-hours');
-        const interval = savedInterval ? parseInt(savedInterval, 10) : 3;
+        // 2. Health & Onboarding status
+        const status = await invoke<{
+          needs_policy: boolean,
+          needs_keyring: boolean,
+          needs_migration: boolean,
+          is_healthy: boolean
+        }>('check_initialization_status');
 
-        // Await the sync so the Loading Screen persists until data is ready
-        await invoke('trigger_repo_sync', { syncIntervalHours: interval });
+        const isCompleted = localStorage.getItem('monarch_onboarding_v3');
+        const legacyCompleted = localStorage.getItem('monarch_onboarding_v2_final') || localStorage.getItem('monarch_onboarding_completed');
+
+        // 3. Simple Decision: Onboarding/Repair vs Normal Home
+        let redoOnboarding = !isCompleted && !legacyCompleted;
+
+        if (!status.is_healthy) {
+          console.warn("System is unhealthy. Triggering repair flow.");
+          setOnboardingReason("MonARCH detected system defects that require a quick maintenance. Your password will be needed once to fix the keyring and security policy.");
+          redoOnboarding = true;
+        }
+
+        if (redoOnboarding) {
+          setShowOnboarding(true);
+        } else {
+          // Healthy enough (or legacy user): background sync
+          if (!isCompleted && legacyCompleted) {
+            localStorage.setItem('monarch_onboarding_v3', 'true');
+          }
+          invoke('trigger_repo_sync', { syncIntervalHours: 3 }).catch(console.error);
+        }
 
       } catch (e) {
-        console.error("Startup Logic Error", e);
+        console.error("Critical Startup Logic Error", e);
       } finally {
-        // Always show the UI, even if sync is still running or failed
-        setIsRefreshing(false);
+        const elapsed = Date.now() - startTime;
+        const remaining = Math.max(0, 1200 - elapsed);
+        setTimeout(() => setIsRefreshing(false), remaining);
       }
     };
-    initInfo();
+    initializeStartup();
   }, [fetchInfraStats]);
-
-  // Migration: Infrastructure 2.0 (v0.2.25)
-  // [UX FIX] Disabled auto-bootstrap to prevent immediate root prompt on launch.
-  // This should be moved to a "Fix System" button in Settings or a non-blocking toast.
-  /*
-  useEffect(() => {
-    const migrateInfra = async () => {
-      const migrated = localStorage.getItem('monarch_infra_2_0');
-      if (!migrated) {
-        console.log("Migrating to Infrastructure 2.0...");
-        try {
-          // 1. Run Bootstrap (Keyring, Modular Configs)
-          await invoke('bootstrap_infrastructure');
-
-          // 2. Enable All Supported Repos (System Level)
-          const allSupportedRepos = ['cachyos', 'garuda', 'endeavouros', 'manjaro', 'chaotic-aur'];
-          await invoke('enable_repos_batch', { names: allSupportedRepos });
-
-          // 3. Mark Complete
-          localStorage.setItem('monarch_infra_2_0', 'true');
-          console.log("Migration Complete");
-        } catch (e) {
-          console.error("Migration Failed (will retry next launch)", e);
-        }
-      }
-    };
-    // Helper to run after app load
-    setTimeout(migrateInfra, 2000);
-  }, []);
-  */
 
   useEffect(() => {
     if (searchQuery) setSelectedPackage(null);
@@ -178,14 +146,15 @@ function App() {
 
   const handleTabChange = (tab: string) => {
     if (tab === 'search') {
+      setSelectedCategory(null);
+      setSelectedPackage(null);
+      setViewAll(null);
       setActiveTab('explore');
       setTimeout(() => {
         const input = document.querySelector('input') as HTMLInputElement;
         if (input) input.focus();
       }, 50);
     } else {
-      // Logic: If user clicks the SAME tab they are already on, we want to reset the view
-      // back to the "root" of that tab (clear selection, search, etc.)
       if (activeTab === tab) {
         setSelectedPackage(null);
         setSelectedCategory(null);
@@ -193,7 +162,15 @@ function App() {
         setSearchQuery('');
       }
       setActiveTab(tab);
-      setSearchQuery(''); // Always clear search when switching tabs to ensure view changes
+      localStorage.setItem('monarch_active_tab', tab);
+      setSearchQuery('');
+
+      if (tab === 'settings') {
+        setTimeout(() => {
+          const el = document.getElementById('system-health');
+          if (el) el.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+      }
     }
   };
 
@@ -212,11 +189,19 @@ function App() {
 
   return (
     <div className="flex h-screen w-screen bg-app-bg text-app-fg overflow-hidden font-sans transition-colors" style={{ '--tw-selection-bg': `${accentColor}4D` } as any}>
-      <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />
+      {!showOnboarding && <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />}
 
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
-        {selectedPackage ? (
-          <PackageDetails pkg={selectedPackage} onBack={handleBack} preferredSource={preferredSource} />
+        {showOnboarding ? (
+          <div className="flex-1 bg-app-bg" /> /* Empty dark background while onboarding is active/animating */
+        ) : selectedPackage ? (
+          <PackageDetails
+            pkg={selectedPackage}
+            onBack={handleBack}
+            preferredSource={preferredSource}
+            onInstall={(p: { name: string; source: string; repoName?: string }) => setActiveInstall({ ...p, mode: 'install' })}
+            onUninstall={(p: { name: string; source: string; repoName?: string }) => setActiveInstall({ ...p, mode: 'uninstall' })}
+          />
         ) : selectedCategory ? (
           <CategoryView category={selectedCategory} onBack={handleBack} onSelectPackage={setSelectedPackage} />
         ) : viewAll ? (
@@ -236,7 +221,7 @@ function App() {
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0 pb-32 scroll-smooth">
               {activeTab === 'explore' && !searchQuery && (
                 <div className="px-6 pt-6 animate-in fade-in slide-in-from-top-5 duration-700">
-                  <HeroSection onNavigateToFix={() => handleTabChange('system')} />
+                  <HeroSection onNavigateToFix={() => handleTabChange('settings')} />
                 </div>
               )}
 
@@ -255,20 +240,11 @@ function App() {
                     enabledRepos={enabledRepos}
                   />
                 ) : activeTab === 'explore' ? (
-                  <div className="space-y-12 mt-4 animate-in fade-in duration-500">
-                    <section>
-                      <div className="flex items-center justify-between mb-4 px-2">
-                        <div className="flex items-center gap-3">
-                          <div className="p-2 rounded-xl bg-violet-600/10 text-violet-600"><Zap size={20} /></div>
-                          <div><h2 className="text-xl font-bold">Recommended Essentials</h2><p className="text-xs text-app-muted">Optimized for your system.</p></div>
-                        </div>
-                        <button onClick={() => setViewAll('essentials')} className="text-sm font-bold text-blue-500">See All</button>
-                      </div>
-                      <TrendingSection title="" filterIds={ESSENTIAL_IDS} onSelectPackage={setSelectedPackage} onSeeAll={() => setViewAll('essentials')} variant="scroll" />
-                    </section>
-                    <TrendingSection title="Trending Applications" onSelectPackage={setSelectedPackage} limit={7} onSeeAll={() => setViewAll('trending')} variant="scroll" />
-                    <CategoryGrid onSelectCategory={setSelectedCategory} />
-                  </div>
+                  <HomePage
+                    onSelectPackage={setSelectedPackage}
+                    onSeeAll={setViewAll}
+                    onSelectCategory={setSelectedCategory}
+                  />
                 ) : activeTab === 'installed' ? (
                   <InstalledPage />
                 ) : activeTab === 'favorites' ? (
@@ -287,15 +263,23 @@ function App() {
                   <UpdatesPage />
                 ) : activeTab === 'settings' ? (
                   <SettingsPage onRestartOnboarding={() => setShowOnboarding(true)} />
-                ) : activeTab === 'system' ? (
-                  <SystemHealth />
                 ) : null}
               </div>
             </div>
           </div>
         )}
       </main>
-      {showOnboarding && <OnboardingModal onComplete={handleOnboardingComplete} />}
+      {showOnboarding && <OnboardingModal onComplete={handleOnboardingComplete} reason={onboardingReason} />}
+      {activeInstall && (
+        <InstallMonitor
+          pkg={activeInstall}
+          mode={activeInstall.mode}
+          onClose={() => setActiveInstall(null)}
+          onSuccess={() => {
+            // Global refresh logic if needed
+          }}
+        />
+      )}
     </div>
   );
 }

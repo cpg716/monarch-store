@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LayoutGrid, Download, Settings, RefreshCw, Search, Heart, ChevronLeft, ChevronRight, Activity } from 'lucide-react';
+import { LayoutGrid, Download, Settings, RefreshCw, Search, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
 import logoSmall from '../assets/logo_small.png';
 import { motion } from 'framer-motion';
@@ -18,13 +18,23 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
         localStorage.setItem('monarch_sidebar_expanded', String(isExpanded));
     }, [isExpanded]);
 
+    const [updateCount, setUpdateCount] = useState(0);
+
+    useEffect(() => {
+        // Check for updates to show notification badge
+        import('@tauri-apps/api/core').then(({ invoke }) => {
+            invoke('check_for_updates')
+                .then((updates) => setUpdateCount((updates as any[]).length))
+                .catch(() => { });
+        });
+    }, []);
+
     const tabs = [
         { id: 'search', icon: Search, label: 'Search', desc: 'Find apps quickly' },
         { id: 'explore', icon: LayoutGrid, label: 'Explore', desc: 'Browse categories' },
         { id: 'installed', icon: Download, label: 'Installed', desc: 'Manage your apps' },
         { id: 'favorites', icon: Heart, label: 'Favorites', desc: 'Your saved apps' },
-        { id: 'updates', icon: RefreshCw, label: 'Updates', desc: 'Check for updates' },
-        { id: 'system', icon: Activity, label: 'System Health', desc: 'Repair Tools' }, // [NEW]
+        { id: 'updates', icon: RefreshCw, label: 'Updates', desc: 'Check for updates', badge: updateCount },
         { id: 'settings', icon: Settings, label: 'Settings', desc: 'Preferences' },
     ];
 
@@ -70,6 +80,14 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                                 "transition-transform group-hover/btn:scale-110",
                                 activeTab === tab.id && "drop-shadow-[0_0_8px_rgba(59,130,246,0.5)]"
                             )} />
+
+                            {/* Notification Badge */}
+                            {(tab as any).badge > 0 && (
+                                <div className={clsx(
+                                    "absolute top-3 right-3 w-2.5 h-2.5 bg-red-500 rounded-full border border-app-sidebar shadow-sm",
+                                    isExpanded && "top-4 right-4"
+                                )} />
+                            )}
 
                             {isExpanded && (
                                 <motion.div

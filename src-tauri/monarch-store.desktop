@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=MonARCH Store
+Comment=Modern Arch Software Store
+Exec=monarch-store
+Icon=monarch-store
+Terminal=false
+Type=Application
+Categories=System;Settings;

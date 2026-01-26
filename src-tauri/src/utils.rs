@@ -1,3 +1,12 @@
+use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
+
+pub const MONARCH_PK_HELPER: &str = "/usr/bin/monarch-pk-helper";
+
+lazy_static::lazy_static! {
+    pub static ref PRIVILEGED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
+}
+
 pub fn to_pretty_name(pkg_name: &str) -> String {
     // 1. Basic cleaning and splitting
     let parts: Vec<&str> = pkg_name.split(['-', '_']).collect();
@@ -19,7 +28,7 @@ pub fn to_pretty_name(pkg_name: &str) -> String {
                 _ => {
                     let mut chars = part.chars();
                     match chars.next() {
-                        None => String::new(),
+                        core::option::Option::None => String::new(),
                         Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
                     }
                 }
@@ -76,13 +85,9 @@ pub fn sort_packages_by_relevance(packages: &mut [models::Package], query: &str)
                 return 2;
             }
 
-            // Rank 3: Official Source
-            if pkg.source == models::PackageSource::Official {
-                return 3;
-            }
-
-            // Rank 4: Others
-            4
+            // Rank 3: Source Priority
+            // This ensures Chaotic > Official > CachyOS etc for items with same name strength
+            3 + (pkg.source.priority() as u8)
         };
 
         let rank_a = rank_pkg(a);
@@ -105,9 +110,15 @@ pub fn sort_packages_by_relevance(packages: &mut [models::Package], query: &str)
 // Checks if the CPU supports x86-64-v3 (AVX2, FMA, BMI2, etc.)
 pub fn is_cpu_v3_compatible() -> bool {
     let required_flags = [
-        "avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "lzcnt", "movbe", "xsave",
+        "avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "movbe", "xsave",
     ];
-    check_cpu_flags(&required_flags)
+
+    // v3 requires all above + (lzcnt OR abm)
+    if !check_cpu_flags(&required_flags[..]) {
+        return false;
+    }
+
+    check_cpu_flags(&["lzcnt"][..]) || check_cpu_flags(&["abm"][..])
 }
 
 // Checks if the CPU supports x86-64-v4 (AVX512F, AVX512BW, AVX512CD, AVX512DQ, AVX512VL)
@@ -117,7 +128,7 @@ pub fn is_cpu_v4_compatible() -> bool {
         return false;
     }
     let required_flags = ["avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"];
-    check_cpu_flags(&required_flags)
+    check_cpu_flags(&required_flags[..])
 }
 
 // Checks if the CPU is Zen 4 or Zen 5 (optimized)
@@ -156,10 +167,9 @@ pub fn is_cpu_znver4_compatible() -> bool {
 
 fn check_cpu_flags(required: &[&str]) -> bool {
     if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
-        if let Some(flags_line) = content
-            .lines()
-            .find(|l| l.starts_with("flags") || l.starts_with("Features"))
-        {
+        if let Some(flags_line) = content.lines().find(|l| {
+            l.to_lowercase().starts_with("flags") || l.to_lowercase().starts_with("features")
+        }) {
             let cpu_flags = flags_line.to_lowercase();
             return required.iter().all(|flag| cpu_flags.contains(flag));
         }
@@ -185,6 +195,13 @@ pub fn strip_package_suffix(name: &str) -> &str {
         "-hg",
         "-svn",
         "-cn",
+        "-fresh",
+        "-still",
+        "-native",
+        "-runtime",
+        "-lts",
+        "-edge",
+        "-stable",
     ];
 
     for suffix in suffixes {
@@ -193,6 +210,82 @@ pub fn strip_package_suffix(name: &str) -> &str {
         }
     }
     name
+}
+
+/// Merges official/appstream packages with repository packages, handling deduplication.
+/// This logic was extracted from lib.rs to allow for unit testing.
+#[allow(dead_code)]
+pub fn merge_and_deduplicate(
+    mut base_packages: Vec<models::Package>,
+    repo_results: Vec<models::Package>,
+) -> Vec<models::Package> {
+    // Track seen App IDs to prevent duplicates (e.g. brave-bin vs brave)
+    let mut app_id_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for (i, p) in base_packages.iter().enumerate() {
+        if let Some(id) = &p.app_id {
+            app_id_map.insert(id.clone(), i);
+        }
+    }
+
+    for mut pkg in repo_results {
+        // 1. Check Exact Name Match
+        if let Some(idx) = base_packages.iter().position(|p| p.name == pkg.name) {
+            // Priority Swap Logic:
+            // If the incoming repo package has HIGHER priority (lower number) than the existing base package,
+            // we swap them so the primary listing reflects the best source.
+            if pkg.source.priority() < base_packages[idx].source.priority() {
+                let mut old_primary = std::mem::replace(&mut base_packages[idx], pkg);
+                let alternatives = old_primary.alternatives.take().unwrap_or_default();
+                base_packages[idx]
+                    .alternatives
+                    .get_or_insert_with(Vec::new)
+                    .extend(alternatives);
+                base_packages[idx]
+                    .alternatives
+                    .get_or_insert_with(Vec::new)
+                    .push(old_primary);
+            } else {
+                base_packages[idx]
+                    .alternatives
+                    .get_or_insert_with(Vec::new)
+                    .push(pkg);
+            }
+            continue;
+        }
+
+        // 2. Check App ID Match
+        if let Some(id) = &pkg.app_id {
+            if let Some(&idx) = app_id_map.get(id) {
+                // Priority Swap Logic (Same as above)
+                if pkg.source.priority() < base_packages[idx].source.priority() {
+                    let mut old_primary = std::mem::replace(&mut base_packages[idx], pkg);
+                    let alternatives = old_primary.alternatives.take().unwrap_or_default();
+                    base_packages[idx]
+                        .alternatives
+                        .get_or_insert_with(Vec::new)
+                        .extend(alternatives);
+                    base_packages[idx]
+                        .alternatives
+                        .get_or_insert_with(Vec::new)
+                        .push(old_primary);
+                } else {
+                    base_packages[idx]
+                        .alternatives
+                        .get_or_insert_with(Vec::new)
+                        .push(pkg);
+                }
+                continue;
+            }
+            app_id_map.insert(id.clone(), base_packages.len());
+        }
+
+        pkg.display_name = Some(to_pretty_name(&pkg.name));
+        pkg.alternatives = None;
+        base_packages.push(pkg);
+    }
+
+    base_packages
 }
 
 #[cfg(test)]
@@ -220,6 +313,10 @@ mod tests {
             provides: None,
             app_id: None,
             is_optimized: None,
+            depends: None,
+            make_depends: None,
+            is_featured: None,
+            alternatives: None,
         }
     }
 
@@ -237,42 +334,143 @@ mod tests {
         assert_eq!(pkgs[1].name, "chrome-gnome-shell"); // Official (Rank 3)
         assert_eq!(pkgs[2].name, "open-chrome"); // Aur (Rank 4)
     }
+
+    #[test]
+    fn test_deduplication_priority_swap() {
+        // Manjaro (Low Priority: 4)
+        let manjaro = make_pkg("spotify", PackageSource::Manjaro, None);
+        // Chaotic (High Priority: 1)
+        let chaotic = make_pkg("spotify", PackageSource::Chaotic, None);
+
+        let results = merge_and_deduplicate(vec![manjaro], vec![chaotic]);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source, PackageSource::Chaotic); // Should have swapped to Chaotic
+        assert_eq!(results[0].alternatives.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            results[0].alternatives.as_ref().unwrap()[0].source,
+            PackageSource::Manjaro
+        );
+    }
 }
 
-/// Merges official/appstream packages with repository packages, handling deduplication.
-/// This logic was extracted from lib.rs to allow for unit testing.
-#[allow(dead_code)]
-pub fn merge_and_deduplicate(
-    mut base_packages: Vec<models::Package>,
-    repo_results: Vec<models::Package>,
-) -> Vec<models::Package> {
-    // Track seen App IDs to prevent duplicates (e.g. brave-bin vs brave)
-    let mut seen_app_ids: std::collections::HashSet<String> = base_packages
-        .iter()
-        .filter_map(|p| p.app_id.clone())
-        .collect();
+pub async fn run_privileged_script_with_progress(
+    app: tauri::AppHandle,
+    event_name: &str,
+    script: &str,
+    password: Option<String>,
+    bypass_helper: bool,
+) -> Result<String, String> {
+    use tauri::Emitter;
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
-    for mut pkg in repo_results {
-        // Skip if name exists exactly
-        if base_packages.iter().any(|p| p.name == pkg.name) {
-            continue;
+    let helper_exists = std::path::Path::new(MONARCH_PK_HELPER).exists();
+
+    // Acquire global lock to serialize privileged prompts (prevents multiple dialogs)
+    let _guard = PRIVILEGED_LOCK.lock().await;
+
+    let (program, args) = if let Some(_) = &password {
+        ("sudo", vec!["-S", "bash", "-s"])
+    } else if helper_exists && !bypass_helper {
+        ("pkexec", vec![MONARCH_PK_HELPER, "bash", "-s"])
+    } else {
+        ("pkexec", vec!["/bin/bash", "-s"])
+    };
+
+    let mut child = tokio::process::Command::new(program)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn {}: {}", program, e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Some(pwd) = &password {
+            let _ = stdin.write_all(format!("{}\n", pwd).as_bytes()).await;
         }
-
-        // Note: Icon/AppID heuristics would normally go here, but they require AppStreamLoader state.
-        // For this pure function, we assume AppIDs are already populated or will be handled by the caller
-        // if they depend on state.
-        // However, for correct deduplication testing, we must respect the app_id if present.
-
-        if let Some(id) = &pkg.app_id {
-            if seen_app_ids.contains(id) {
-                continue;
-            }
-            seen_app_ids.insert(id.clone());
-        }
-
-        pkg.display_name = Some(to_pretty_name(&pkg.name));
-        base_packages.push(pkg);
+        let _ = stdin.write_all(script.as_bytes()).await;
     }
 
-    base_packages
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let app_clone = app.clone();
+    let event_name_clone = event_name.to_string();
+    let stdout_handle = tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            let _ = app_clone.emit(&event_name_clone, &line);
+        }
+    });
+
+    let app_clone = app.clone();
+    let event_name_clone = event_name.to_string();
+    let stderr_handle = tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            let _ = app_clone.emit(&event_name_clone, format!("ERROR: {}", line));
+        }
+    });
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Failed to wait on {}: {}", program, e))?;
+
+    let _ = tokio::join!(stdout_handle, stderr_handle);
+
+    if status.success() {
+        Ok("Success".to_string())
+    } else {
+        Err("Privileged Action Failed. Check logs for details.".to_string())
+    }
+}
+
+pub async fn run_privileged_script(
+    script: &str,
+    password: Option<String>,
+    bypass_helper: bool,
+) -> Result<String, String> {
+    let helper_exists = std::path::Path::new(MONARCH_PK_HELPER).exists();
+
+    // Acquire global lock to serialize privileged prompts
+    let _guard = PRIVILEGED_LOCK.lock().await;
+
+    let (program, args) = if let Some(_) = &password {
+        ("sudo", vec!["-S", "bash", "-s"])
+    } else if helper_exists && !bypass_helper {
+        ("pkexec", vec![MONARCH_PK_HELPER, "bash", "-s"])
+    } else {
+        ("pkexec", vec!["/bin/bash", "-s"])
+    };
+
+    let mut child = tokio::process::Command::new(program)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn {}: {}", program, e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Some(pwd) = &password {
+            let _ = stdin.write_all(format!("{}\n", pwd).as_bytes()).await;
+        }
+        let _ = stdin.write_all(script.as_bytes()).await;
+    }
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("Failed to wait on {}: {}", program, e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(format!(
+            "Privileged Action Failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
 }

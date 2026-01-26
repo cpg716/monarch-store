@@ -15,8 +15,9 @@ export interface AppMetadata {
     description?: string;
 }
 
-// Global Singleton Cache
-const metadataCache = new Map<string, AppMetadata>();
+// Global Singleton Cache with TTL
+export const metadataCache = new Map<string, { data: AppMetadata, timestamp: number }>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Global Batch Executor
@@ -29,7 +30,13 @@ const metadataCache = new Map<string, AppMetadata>();
  * (Batching removed to fix regression where URL was lost)
  */
 export function usePackageMetadata(pkgName: string, upstreamUrl?: string, skip = false) {
-    const [metadata, setMetadata] = useState<AppMetadata | null>(metadataCache.get(pkgName) || null);
+    const [metadata, setMetadata] = useState<AppMetadata | null>(() => {
+        const cached = metadataCache.get(pkgName);
+        if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+            return cached.data;
+        }
+        return null;
+    });
     const [isLoading, setIsLoading] = useState(false);
 
     useEffect(() => {
@@ -37,8 +44,8 @@ export function usePackageMetadata(pkgName: string, upstreamUrl?: string, skip =
 
         // 1. Check Cache
         const cached = metadataCache.get(pkgName);
-        if (cached) {
-            setMetadata(cached);
+        if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+            setMetadata(cached.data);
             return;
         }
 
@@ -52,7 +59,7 @@ export function usePackageMetadata(pkgName: string, upstreamUrl?: string, skip =
         })
             .then(data => {
                 if (isMounted && data) {
-                    metadataCache.set(pkgName, data);
+                    metadataCache.set(pkgName, { data, timestamp: Date.now() });
                     setMetadata(data);
                 }
             })
@@ -75,5 +82,5 @@ export function usePackageMetadata(pkgName: string, upstreamUrl?: string, skip =
  * Force update the cache for a specific package (e.g. from search results)
  */
 export function prewarmMetadataCache(pkgName: string, meta: AppMetadata) {
-    metadataCache.set(pkgName, meta);
+    metadataCache.set(pkgName, { data: meta, timestamp: Date.now() });
 }

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::is_valid_pkg_name;
+    use crate::commands::utils::is_valid_pkg_name;
     use crate::models::{Package, PackageSource};
     use crate::utils;
 
@@ -25,6 +25,10 @@ mod tests {
             provides: None,
             app_id: app_id.map(|s| s.to_string()),
             is_optimized: None,
+            depends: None,
+            make_depends: None,
+            is_featured: None,
+            alternatives: None,
         }
     }
 
