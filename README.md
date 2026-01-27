@@ -61,10 +61,10 @@ You can personalize your store experience by toggling specific repositories (Cac
 ## 🚀 Installation
 
 ### Option 1: Pre-built Binary (Recommended)
-Download the latest `monarch-store-x.x.x-x86_64.pkg.tar.zst` from the [Releases Page](https://github.com/cpg716/monarch-store/releases).
+Download the latest `monarch-store-0.2.40-x86_64.pkg.tar.zst` from the [Releases Page](https://github.com/cpg716/monarch-store/releases).
 
 ```bash
-sudo pacman -U monarch-store-*.pkg.tar.zst
+sudo pacman -U monarch-store-0.2.40-x86_64.pkg.tar.zst
 ```
 
 ### Option 2: Build from Source

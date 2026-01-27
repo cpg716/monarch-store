@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: https://* data:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; font-src 'self' asset:;"
+      "csp": "default-src 'self'; img-src 'self' asset: https://* data:; connect-src 'self' https://api.archlinux.org https://*.supabase.co https://*.aptabase.com https://cdn-mirror.chaotic.cx https://mirror.cachyos.org https://raw.githubusercontent.com; style-src 'self' 'unsafe-inline'; font-src 'self' asset:;"
     }
   },
   "bundle": {

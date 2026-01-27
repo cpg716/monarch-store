@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 const MAX_HISTORY = 10;
 const STORAGE_KEY = 'monarch_search_history';
@@ -18,7 +18,7 @@ export function useSearchHistory() {
         }
     }, []);
 
-    const addSearch = (query: string) => {
+    const addSearch = useCallback((query: string) => {
         if (!query || query.trim().length === 0) return;
 
         setHistory(prev => {
@@ -27,20 +27,20 @@ export function useSearchHistory() {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
             return next;
         });
-    };
+    }, []);
 
-    const removeSearch = (query: string) => {
+    const removeSearch = useCallback((query: string) => {
         setHistory(prev => {
             const next = prev.filter(q => q !== query);
             localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
             return next;
         });
-    };
+    }, []);
 
-    const clearHistory = () => {
+    const clearHistory = useCallback(() => {
         setHistory([]);
         localStorage.removeItem(STORAGE_KEY);
-    };
+    }, []);
 
     return {
         history,

@@ -10,6 +10,7 @@
     "opener:default",
     "app-commands",
     "notification:default",
+    "aptabase:default",
     {
       "identifier": "fs:allow-read",
       "allow": [

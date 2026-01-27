@@ -12,6 +12,33 @@ pub struct RepairStep {
     pub logs: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct KeyringStatus {
+    pub healthy: bool,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn check_keyring_health() -> Result<KeyringStatus, String> {
+    let output = Command::new("pacman-key")
+        .arg("--list-keys")
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(KeyringStatus {
+            healthy: true,
+            message: "Keyring appears healthy".to_string(),
+        })
+    } else {
+        Ok(KeyringStatus {
+            healthy: false,
+            message: "pacman-key check failed".to_string(),
+        })
+    }
+}
+
 // Helper to run privileged commands and stream output
 async fn run_privileged(
     app: &AppHandle,
@@ -105,6 +132,23 @@ async fn run_privileged(
 #[tauri::command]
 pub async fn repair_unlock_pacman(app: AppHandle, password: Option<String>) -> Result<(), String> {
     let _ = app.emit("repair-log", "🔓 Unlocking Pacman DB...");
+
+    // SECURITY: Safe Lock Removal
+    // Check if pacman is actually running. If so, DO NOT delete the lock.
+    let is_running = std::process::Command::new("pgrep")
+        .arg("-x")
+        .arg("pacman")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if is_running {
+        let _ = app.emit(
+            "repair-log",
+            "❌ Safety Check Failed: Pacman is currently running.",
+        );
+        return Err("Cannot remove lock: Pacman process detected.".to_string());
+    }
 
     // remove /var/lib/pacman/db.lck
     run_privileged(

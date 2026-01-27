@@ -2,12 +2,8 @@ use tauri::command;
 
 #[command]
 pub fn check_repo_status(name: &str) -> bool {
-    let conf = std::fs::read_to_string("/etc/pacman.conf").unwrap_or_default();
-    let target = format!("[{}]", name.to_lowercase());
-    conf.lines().any(|l| {
-        let trimmed = l.trim();
-        trimmed.starts_with(&target) && !trimmed.starts_with('#')
-    })
+    let path = std::path::Path::new("/etc/pacman.d/monarch").join(format!("50-{}.conf", name));
+    path.exists()
 }
 
 #[command]
@@ -32,7 +28,8 @@ pub async fn reset_pacman_conf(password: Option<String>) -> Result<String, Strin
         
         # 4. Ensure Modular Include is present (Infrastructure 2.0)
         if ! grep -q "/etc/pacman.d/monarch/\*.conf" /etc/pacman.conf; then
-            echo -e "\n# MonARCH Managed Repositories\nInclude = /etc/pacman.d/monarch/*.conf" >> /etc/pacman.conf
+            # Insert before [core] for high priority
+            sed -i '/\[core\]/i # MonARCH Managed Repositories\nInclude = /etc/pacman.d/monarch/*.conf\n' /etc/pacman.conf
         fi
 
         echo "Reset complete. System is now clean and ready for fresh setup."
@@ -59,6 +56,11 @@ pub async fn set_repo_priority(
         .push_str("for f in *.conf; do mv \"$f\" \"${f#[0-9][0-9]-}\" 2>/dev/null || true; done\n");
 
     for (i, name) in order.iter().enumerate() {
+        // SECURITY: Validate input to prevent command injection
+        if let Err(e) = crate::utils::validate_package_name(name) {
+            return Err(e);
+        }
+
         let prefix = format!("{:02}", i + 1);
         // Find the file (case insensitive-ish lookup by filename)
         script.push_str(&format!(
@@ -84,6 +86,10 @@ pub async fn enable_repos_batch(
     let mut full_script = String::from("echo '--- Starting Batch Repo Setup ---'\n");
 
     for name in names {
+        if let Err(e) = crate::utils::validate_package_name(&name) {
+            return Err(e);
+        }
+
         let name_lower = name.to_lowercase();
         // Append specific script logic for each repo
         let script_part = get_repo_script(&name_lower);
@@ -214,7 +220,8 @@ pub async fn bootstrap_system(
 
         # 5. Add the Modular Include line
         if ! grep -q "/etc/pacman.d/monarch/\*.conf" /etc/pacman.conf; then
-            echo -e "\n# MonARCH Managed Repositories\nInclude = /etc/pacman.d/monarch/*.conf" >> /etc/pacman.conf
+            # Insert before [core] for high priority
+            sed -i '/\[core\]/i # MonARCH Managed Repositories\nInclude = /etc/pacman.d/monarch/*.conf\n' /etc/pacman.conf
         fi
 
         # 6. Install MonARCH Polkit Policy

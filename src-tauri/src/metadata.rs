@@ -1017,28 +1017,18 @@ pub async fn check_initialization_status() -> Result<InitializationStatus, Strin
     let conf = std::fs::read_to_string("/etc/pacman.conf").unwrap_or_default();
     let needs_migration = !conf.contains("/etc/pacman.d/monarch/*.conf");
 
-    // 4. Check Essential Repos (Chaotic-AUR is our core binary source)
-    let has_chaotic = conf.contains("[chaotic-aur]") || {
-        let monarch_dir = std::path::Path::new("/etc/pacman.d/monarch");
-        monarch_dir.exists()
-            && std::fs::read_dir(monarch_dir)
-                .map(|entries| {
-                    entries.flatten().any(|e| {
-                        let p = e.path();
-                        p.extension().map_or(false, |ex| ex == "conf")
-                            && std::fs::read_to_string(p)
-                                .map_or(false, |c| c.contains("[chaotic-aur]"))
-                    })
-                })
-                .unwrap_or(false)
-    };
-    let needs_repos = !has_chaotic;
+    println!(
+        "Health Check: policy={}, keyring={}, migration={}",
+        needs_policy, needs_keyring, needs_migration
+    );
 
     Ok(InitializationStatus {
         needs_policy,
         needs_keyring,
         needs_migration,
-        is_healthy: !needs_policy && !needs_keyring && !needs_migration && !needs_repos,
+        // is_healthy should only be false if basic infrastructure is missing.
+        // Missing repos (like chaotic-aur) is a warning-level issue, not a blocker.
+        is_healthy: !needs_policy && !needs_keyring && !needs_migration,
     })
 }
 
@@ -1135,6 +1125,54 @@ pub async fn check_system_health() -> Result<Vec<HealthIssue>, String> {
             action_label: "Enable One-Click Installs".to_string(),
             action_command: Some("install_monarch_policy".to_string()),
         });
+    }
+
+    // 7. Optimization Check (Silicon Intelligence)
+    let is_v4 = crate::utils::is_cpu_v4_compatible();
+    let is_v3 = crate::utils::is_cpu_v3_compatible();
+    let is_znver4 = crate::utils::is_cpu_znver4_compatible();
+
+    let has_v4_repo = std::path::Path::new("/etc/pacman.d/monarch/50-cachyos-v4.conf").exists();
+    let has_v3_repo = std::path::Path::new("/etc/pacman.d/monarch/50-cachyos-v3.conf").exists()
+        || std::path::Path::new("/etc/pacman.d/monarch/50-cachyos-core-v3.conf").exists();
+    let has_znver4_repo =
+        std::path::Path::new("/etc/pacman.d/monarch/50-cachyos-znver4.conf").exists();
+
+    if is_znver4 && !has_znver4_repo {
+        issues.push(HealthIssue {
+            category: "Optimization".to_string(),
+            severity: "Info".to_string(),
+            message: "Zen 4/5 Optimizations are available for your hardware.".to_string(),
+            action_label: "Automatic (Self-Healing)".to_string(),
+            action_command: None,
+        });
+    } else if is_v4 && !has_v4_repo {
+        issues.push(HealthIssue {
+            category: "Optimization".to_string(),
+            severity: "Info".to_string(),
+            message: "x86-64-v4 (AVX-512) Optimizations are available for your hardware."
+                .to_string(),
+            action_label: "Automatic (Self-Healing)".to_string(),
+            action_command: None,
+        });
+    } else if is_v3 && !has_v3_repo {
+        // Only warn if they haven't enabled CachyOS at all but it's compatible
+        let has_any_cachy = std::fs::read_dir("/etc/pacman.d/monarch")
+            .map(|r| {
+                r.flatten()
+                    .any(|e| e.file_name().to_string_lossy().contains("cachyos"))
+            })
+            .unwrap_or(false);
+
+        if !has_any_cachy {
+            issues.push(HealthIssue {
+                category: "Optimization".to_string(),
+                severity: "Info".to_string(),
+                message: "Your CPU supports high-performance v3 optimizations.".to_string(),
+                action_label: "Enable Fast Repos".to_string(),
+                action_command: Some("trigger_repair_flow".to_string()),
+            });
+        }
     }
 
     Ok(issues)

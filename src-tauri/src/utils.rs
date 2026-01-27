@@ -44,6 +44,21 @@ pub fn to_pretty_name(pkg_name: &str) -> String {
     pretty.join(" ")
 }
 
+pub fn validate_package_name(name: &str) -> Result<(), String> {
+    // Arch package naming standard: alphanumeric, @, ., _, +, -
+    // We strictly enforce this to prevent shell injection via characters like ; | & $
+    lazy_static::lazy_static! {
+        static ref RE: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9@._+\-]+$").unwrap();
+    }
+    if !RE.is_match(name) {
+        return Err(format!(
+            "Invalid package name: '{}'. Contains unsafe characters.",
+            name
+        ));
+    }
+    Ok(())
+}
+
 use crate::models;
 
 pub fn sort_packages_by_relevance(packages: &mut [models::Package], query: &str) {
@@ -97,6 +112,13 @@ pub fn sort_packages_by_relevance(packages: &mut [models::Package], query: &str)
             return rank_a.cmp(&rank_b);
         }
 
+        // TIE BREAKER: Source Priority (e.g. Official > Chaotic > AUR)
+        let prio_a = a.source.priority() as u8;
+        let prio_b = b.source.priority() as u8;
+        if prio_a != prio_b {
+            return prio_a.cmp(&prio_b);
+        }
+
         // Secondary Sort: Shortest Name
         if a.name.len() != b.name.len() {
             return a.name.len().cmp(&b.name.len());
@@ -109,72 +131,73 @@ pub fn sort_packages_by_relevance(packages: &mut [models::Package], query: &str)
 
 // Checks if the CPU supports x86-64-v3 (AVX2, FMA, BMI2, etc.)
 pub fn is_cpu_v3_compatible() -> bool {
-    let required_flags = [
-        "avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "movbe", "xsave",
-    ];
+    let cpuid = raw_cpuid::CpuId::new();
 
-    // v3 requires all above + (lzcnt OR abm)
-    if !check_cpu_flags(&required_flags[..]) {
-        return false;
-    }
+    // v3 requires: AVX, AVX2, BMI1, BMI2, F16C, FMA, MOVBE, XSAVE, LZCNT (ABM)
+    let has_v3_base = if let Some(feat) = cpuid.get_feature_info() {
+        feat.has_avx() && feat.has_fma() && feat.has_f16c() && feat.has_movbe() && feat.has_xsave()
+    } else {
+        false
+    };
 
-    check_cpu_flags(&["lzcnt"][..]) || check_cpu_flags(&["abm"][..])
+    let has_v3_ext = if let Some(ext) = cpuid.get_extended_feature_info() {
+        ext.has_avx2() && ext.has_bmi1() && ext.has_bmi2()
+    } else {
+        false
+    };
+
+    let has_lzcnt = if let Some(ext) = cpuid.get_extended_processor_and_feature_identifiers() {
+        ext.has_lzcnt()
+    } else {
+        false
+    };
+
+    has_v3_base && has_v3_ext && has_lzcnt
 }
 
-// Checks if the CPU supports x86-64-v4 (AVX512F, AVX512BW, AVX512CD, AVX512DQ, AVX512VL)
+// Checks if the CPU supports x86-64-v4 (AVX-512 foundation and major extensions)
 pub fn is_cpu_v4_compatible() -> bool {
-    // v4 requires v3 + AVX512
-    if !is_cpu_v3_compatible() {
-        return false;
+    let cpuid = raw_cpuid::CpuId::new();
+
+    if let Some(ext) = cpuid.get_extended_feature_info() {
+        // v4 requires v3 + AVX-512F, BW, CD, DQ, VL
+        ext.has_avx512f()
+            && ext.has_avx512bw()
+            && ext.has_avx512cd()
+            && ext.has_avx512dq()
+            && ext.has_avx512vl()
+    } else {
+        false
     }
-    let required_flags = ["avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"];
-    check_cpu_flags(&required_flags[..])
 }
 
 // Checks if the CPU is Zen 4 or Zen 5 (optimized)
 pub fn is_cpu_znver4_compatible() -> bool {
-    // 1. Must support v4 features (AVX512, etc)
+    let cpuid = raw_cpuid::CpuId::new();
+
+    // 1. Must support v4 features
     if !is_cpu_v4_compatible() {
         return false;
     }
 
-    // 2. Check for Zen 4/5 specific identifiers
-    if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
-        let content_lower = content.to_lowercase();
-        let is_amd = content_lower.contains("authenticamd");
-
-        // Zen 4 (7000/8000/9000 series) uses AVX-512 and several specific instruction patterns
-        // We look for 'avx512_bf16' or 'avx512_fp16' which are specific to newer Zen architectures
-        let has_zen4_flags =
-            content_lower.contains("avx512_bf16") || content_lower.contains("avx512_fp16");
-
-        if is_amd && has_zen4_flags {
-            return true;
-        }
-
-        // Fallback to model name check if flags are masked
-        if is_amd && content_lower.contains("model name") {
-            if content_lower.contains("7000")
-                || content_lower.contains("8000")
-                || content_lower.contains("9000")
-            {
-                return true;
-            }
-        }
+    // 2. Check for AuthenticAMD vendor
+    let is_amd = cpuid
+        .get_vendor_info()
+        .map(|v| v.as_str() == "AuthenticAMD")
+        .unwrap_or(false);
+    if !is_amd {
+        return false;
     }
-    false
-}
 
-fn check_cpu_flags(required: &[&str]) -> bool {
-    if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
-        if let Some(flags_line) = content.lines().find(|l| {
-            l.to_lowercase().starts_with("flags") || l.to_lowercase().starts_with("features")
-        }) {
-            let cpu_flags = flags_line.to_lowercase();
-            return required.iter().all(|flag| cpu_flags.contains(flag));
-        }
+    // 3. Detect Zen 4/5 via Leaf 7 Sub-leaf 1 (AVX512-VNNI, BF16, etc.)
+    // Zen 4 specific: AVX512_VNNI, AVX512_BF16, AVX512_VBMI2 etc.
+    if let Some(ext) = cpuid.get_extended_feature_info() {
+        // We look for flags introduced in Zen 4 (AVX512-VNNI is one, but Intel has it too)
+        // AuthenticAMD + AVX512F + BIT ALGORITHM/VPOPCNTDQ is a good indicator of Zen 4
+        ext.has_avx512vnni() && ext.has_avx512bitalg()
+    } else {
+        false
     }
-    false
 }
 
 /// Strips common package suffixes like -bin, -git, -nightly
@@ -472,5 +495,18 @@ pub async fn run_privileged_script(
             "Privileged Action Failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ))
+    }
+}
+
+#[cfg(test)]
+mod cpu_tests {
+    use super::*;
+
+    #[test]
+    fn test_cpu_detection_no_panic() {
+        let v3 = is_cpu_v3_compatible();
+        let v4 = is_cpu_v4_compatible();
+        let zn4 = is_cpu_znver4_compatible();
+        println!("Test Hardware: v3={}, v4={}, zn4={}", v3, v4, zn4);
     }
 }

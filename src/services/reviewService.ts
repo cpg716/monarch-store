@@ -34,6 +34,22 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
         if (!pkgName.endsWith('.desktop')) probeIds.add(`${pkgName}.desktop`);
     }
 
+    // 0. Manual Patch for Popular Apps (Rapid Fix)
+    const manualMap: Record<string, string> = {
+        'vlc': 'org.videolan.VLC',
+        'gimp': 'org.gimp.GIMP',
+        'lutris': 'net.lutris.Lutris',
+        'upscayl-bin': 'org.upscayl.Upscayl',
+        'heroic-games-launcher-bin': 'com.heroicgameslauncher.hgl',
+        'firefox': 'org.mozilla.firefox',
+        'discord': 'com.discordapp.Discord',
+        'steam': 'com.valvesoftware.Steam',
+        'visual-studio-code-bin': 'com.visualstudio.code',
+        'obsidian': 'md.obsidian.Obsidian',
+        'spotify': 'com.spotify.Client'
+    };
+    if (pkgName in manualMap) probeIds.add(manualMap[pkgName]);
+
     // 1. Try ODRS with probing
     for (const id of Array.from(probeIds)) {
         try {
@@ -132,6 +148,63 @@ export async function submitReview(pkgName: string, rating: number, comment: str
 }
 
 /**
+ * Batch fetch ratings for multiple packages (ODRS only).
+ * Probes for both [name] and [name.desktop].
+ */
+export async function getRatingsBatch(pkgNames: string[]): Promise<Map<string, { average: number; count: number }>> {
+    const probes: string[] = [];
+
+    // Shared Manual Map (Duplicate of getCompositeRating for now to be safe)
+    const manualMap: Record<string, string> = {
+        'vlc': 'org.videolan.VLC',
+        'gimp': 'org.gimp.GIMP',
+        'lutris': 'net.lutris.Lutris',
+        'upscayl-bin': 'org.upscayl.Upscayl',
+        'heroic-games-launcher-bin': 'com.heroicgameslauncher.hgl',
+        'firefox': 'org.mozilla.firefox',
+        'discord': 'com.discordapp.Discord',
+        'steam': 'com.valvesoftware.Steam',
+        'visual-studio-code-bin': 'com.visualstudio.code',
+        'obsidian': 'md.obsidian.Obsidian',
+        'spotify': 'com.spotify.Client'
+    };
+
+    pkgNames.forEach(n => {
+        probes.push(n);
+        if (!n.endsWith('.desktop')) probes.push(`${n}.desktop`);
+        if (n in manualMap) probes.push(manualMap[n]);
+    });
+
+    try {
+        // Rust returns HashMap<String, OdrsRating>
+        const results = await invoke<Record<string, any>>('get_app_ratings_batch', { appIds: probes });
+
+        const output = new Map();
+        pkgNames.forEach(n => {
+            // 1. Try manual map match first (highest quality)
+            let r = (n in manualMap) ? results[manualMap[n]] : null;
+
+            // 2. Try Exact Name
+            if (!r) r = results[n];
+
+            // 3. Try .desktop
+            if (!r && !n.endsWith('.desktop')) r = results[`${n}.desktop`];
+
+            if (r && r.total > 0) {
+                output.set(n, {
+                    average: r.score ? r.score / 20 : 0,
+                    count: r.total
+                });
+            }
+        });
+        return output;
+    } catch (e) {
+        console.error("Batch rating fetch failed", e);
+        return new Map();
+    }
+}
+
+/**
  * Fetches just the rating summary (efficiently) for a package.
  * Tries ODRS first (probing), then Supabase.
  */
@@ -145,6 +218,22 @@ export async function getCompositeRating(pkgName: string, appStreamId?: string):
         probeIds.add(pkgName);
         if (!pkgName.endsWith('.desktop')) probeIds.add(`${pkgName}.desktop`);
     }
+
+    // 0. Manual Patch for Popular Apps (Rapid Fix)
+    const manualMap: Record<string, string> = {
+        'vlc': 'org.videolan.VLC',
+        'gimp': 'org.gimp.GIMP',
+        'lutris': 'net.lutris.Lutris',
+        'upscayl-bin': 'org.upscayl.Upscayl',
+        'heroic-games-launcher-bin': 'com.heroicgameslauncher.hgl',
+        'firefox': 'org.mozilla.firefox',
+        'discord': 'com.discordapp.Discord',
+        'steam': 'com.valvesoftware.Steam',
+        'visual-studio-code-bin': 'com.visualstudio.code',
+        'obsidian': 'md.obsidian.Obsidian',
+        'spotify': 'com.spotify.Client'
+    };
+    if (pkgName in manualMap) probeIds.add(manualMap[pkgName]);
 
     // 1. Try ODRS with probing
     for (const id of Array.from(probeIds)) {

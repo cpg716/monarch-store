@@ -1,9 +1,9 @@
-
 import { Gamepad2, Briefcase, Globe, Music, Cpu, Terminal, PenTool, LayoutGrid, LucideIcon } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 interface CategoryGridProps {
     onSelectCategory: (category: string) => void;
+    selectedCategoryId?: string | null;
 }
 
 export interface CategoryData {
@@ -100,7 +100,7 @@ export const CATEGORIES: CategoryData[] = [
     },
 ];
 
-export default function CategoryGrid({ onSelectCategory }: CategoryGridProps) {
+export default function CategoryGrid({ onSelectCategory, selectedCategoryId }: CategoryGridProps) {
     const container = {
         hidden: { opacity: 0 },
         show: {
@@ -127,7 +127,7 @@ export default function CategoryGrid({ onSelectCategory }: CategoryGridProps) {
                 variants={container}
                 initial="hidden"
                 animate="show"
-                className="grid grid-cols-1 md:grid-cols-2 gap-4"
+                className="grid grid-cols-2 gap-4"
             >
                 {CATEGORIES.map((cat) => (
                     <motion.div
@@ -136,7 +136,7 @@ export default function CategoryGrid({ onSelectCategory }: CategoryGridProps) {
                         whileHover={{ scale: 1.02 }}
                         whileTap={{ scale: 0.98 }}
                         onClick={() => onSelectCategory(cat.id)}
-                        className={`group relative p-6 rounded-3xl cursor-pointer border border-black/5 dark:border-white/5 bg-white/60 dark:bg-black/20 hover:bg-white/80 dark:hover:bg-black/40 hover:shadow-xl transition-all overflow-hidden backdrop-blur-sm`}
+                        className={`group relative p-6 rounded-3xl cursor-pointer border border-black/5 dark:border-white/5 bg-white/60 dark:bg-black/20 hover:bg-white/80 dark:hover:bg-black/40 hover:shadow-xl transition-all overflow-hidden backdrop-blur-sm ${selectedCategoryId === cat.id ? 'ring-2 ring-blue-500' : ''}`}
                     >
                         <div className="flex items-start justify-between relative z-10">
                             <div className="flex flex-col gap-3">

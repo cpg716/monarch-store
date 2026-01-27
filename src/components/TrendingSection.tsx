@@ -142,7 +142,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                     </div>
                 </div>
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6">
                     {displayedPackages.map((pkg) => (
                         <PackageCard
                             key={`${pkg.name}-${pkg.source}`}

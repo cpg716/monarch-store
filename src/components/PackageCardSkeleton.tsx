@@ -2,7 +2,7 @@
 
 const PackageCardSkeleton = () => {
     return (
-        <div className="bg-app-card/40 border border-app-border rounded-2xl p-5 h-full flex flex-col gap-4 animate-pulse">
+        <div className="bg-app-card/40 border border-app-border rounded-3xl p-6 h-full flex flex-col gap-4 animate-pulse">
             {/* Header: Icon + Title */}
             <div className="flex items-start gap-3">
                 {/* Icon Skeleton */}

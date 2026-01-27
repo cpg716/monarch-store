@@ -230,7 +230,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
-            className="h-full flex flex-col bg-app-bg text-app-fg overflow-hidden"
+            className="h-full flex flex-col bg-app-bg text-app-fg overflow-y-auto"
         >
             {/* --- HERO SECTION --- */}
             <div className="relative min-h-[250px] lg:min-h-[300px] flex items-end">
@@ -254,7 +254,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                 </button>
 
                 {/* Content Container */}
-                <div className="relative z-20 w-full max-w-7xl mx-auto px-6 pt-24 pb-8 lg:pb-12 flex flex-col lg:flex-row items-end gap-8">
+                <div className="relative z-20 w-full max-w-7xl mx-auto px-6 pt-24 pb-8 lg:pb-12 flex flex-row items-end gap-8">
 
                     {/* Icon Card */}
                     <motion.div
@@ -387,11 +387,11 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
             </div>
 
             {/* --- MAIN CONTENT GRID --- */}
-            <div className="flex-1 overflow-y-auto bg-app-bg">
-                <div className="max-w-7xl mx-auto p-6 lg:p-10 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-16">
+            <div className="flex-1 bg-app-bg">
+                <div className="max-w-7xl mx-auto p-6 lg:p-10 grid grid-cols-12 gap-8 lg:gap-16">
 
                     {/* LEFT COLUMN (Details) */}
-                    <div className="lg:col-span-8 space-y-12">
+                    <div className="col-span-8 space-y-12">
                         {/* SCREENSHOTS GALLERY */}
                         {screenshots.length > 0 && (
                             <section>
@@ -503,7 +503,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                     </div>
 
                     {/* RIGHT COLUMN (Sidebar) */}
-                    <div className="lg:col-span-4 space-y-6">
+                    <div className="col-span-4 space-y-6">
 
                         {/* Ratings Card */}
                         <div className="bg-gradient-to-br from-yellow-500/10 to-transparent rounded-3xl p-8 border border-yellow-500/20 text-center">
@@ -541,7 +541,8 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                                         <span className="text-sm text-blue-400 flex items-center gap-3 shrink-0"><Globe size={18} /> Website</span>
                                         <ChevronRight size={18} className="text-white/30 group-hover:text-white transition-colors ml-auto" />
                                     </a>
-                                )}                            </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>

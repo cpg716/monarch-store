@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Download, ShieldCheck, Zap, Heart } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { useFavorites } from '../hooks/useFavorites';
 import { clsx } from 'clsx';
 // import { invoke } from '@tauri-apps/api/core';
@@ -97,9 +98,9 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
     const hasVariants = variants.length > 1;
 
     return (
-        <div
+        <motion.div
             onClick={() => onClick(displayPkg)}
-            className="group relative bg-white/60 dark:bg-black/20 border border-black/5 dark:border-white/5 rounded-3xl p-6 hover:bg-white/80 dark:hover:bg-black/40 transition-all duration-300 hover:border-black/10 dark:hover:border-white/10 hover:-translate-y-1 hover:shadow-2xl cursor-pointer overflow-hidden flex flex-col h-full backdrop-blur-md"
+            className="group relative bg-white/70 dark:bg-black/20 border border-slate-200 dark:border-white/5 rounded-3xl p-6 hover:bg-white dark:hover:bg-black/40 transition-all duration-300 hover:border-blue-300/50 dark:hover:border-white/10 hover:-translate-y-1 hover:shadow-xl dark:hover:shadow-2xl shadow-sm dark:shadow-none cursor-pointer overflow-hidden flex flex-col h-full backdrop-blur-md"
         >
             <div className="flex justify-between items-start mb-4 gap-4">
                 <div className="flex items-center gap-4 min-w-0 flex-1">
@@ -122,7 +123,7 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="flex flex-col">
-                            <h3 className="font-bold text-lg leading-tight group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors line-clamp-2 text-slate-900 dark:text-white break-words">
+                            <h3 className="font-bold text-lg leading-tight group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors line-clamp-2 text-app-fg break-words max-w-[200px] md:max-w-none">
                                 {displayPkg.display_name || displayPkg.name}
                             </h3>
                         </div>
@@ -222,7 +223,7 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
 
             {/* Glow effect */}
             <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-500" />
-        </div>
+        </motion.div>
     );
 };
 

@@ -1,6 +1,6 @@
 pkgbase = monarch-store
 	pkgdesc = A modern, high-performance software store for Arch Linux based distributions.
-	pkgver = 0.2.30
+	pkgver = 0.2.40
 	pkgrel = 1
 	url = https://github.com/cpg716/monarch-store
 	arch = x86_64
@@ -17,10 +17,11 @@ pkgbase = monarch-store
 	depends = polkit
 	depends = git
 	depends = pacman-contrib
+	depends = openssl
 	provides = monarch-store
 	conflicts = monarch-store-git
 	conflicts = monarch-store-bin
-	source = monarch-store-0.2.30.tar.gz::https://github.com/cpg716/monarch-store/archive/v0.2.30.tar.gz
-	sha256sums = e341fb9d6565d287abe22964a438072006dbb67f054a5c080c7e08660d59272a
+	source = monarch-store-0.2.40.tar.gz::https://github.com/cpg716/monarch-store/archive/v0.2.40.tar.gz
+	sha256sums = SKIP
 
 pkgname = monarch-store

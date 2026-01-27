@@ -1,49 +1,63 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { LazyStore } from '@tauri-apps/plugin-store';
 
-// Shared event emitter for syncing favorites across components
-const FAVORITES_UPDATED_EVENT = 'favorites-updated';
+const STORE_PATH = 'favorites.json';
+const STORAGE_KEY = 'favorites';
+
+// Create a singleton store instance
+const store = new LazyStore(STORE_PATH);
 
 export function useFavorites() {
-    const [favorites, setFavorites] = useState<string[]>(() => {
-        try {
-            const saved = localStorage.getItem('monarch_favorites');
-            return saved ? JSON.parse(saved) : [];
-        } catch (e) {
-            console.error("Failed to parse favorites", e);
-            return [];
-        }
-    });
+    const [favorites, setFavorites] = useState<string[]>([]);
 
-    // Listen for updates from other instances of the hook
+    // Load initial data and subscribe to changes
     useEffect(() => {
-        const handleStorageChange = () => {
+        let isMounted = true;
+
+        const syncStore = async () => {
             try {
-                const saved = localStorage.getItem('monarch_favorites');
-                if (saved) {
-                    setFavorites(JSON.parse(saved));
+                const saved = await store.get<string[]>(STORAGE_KEY);
+                if (isMounted) {
+                    setFavorites(saved || []);
                 }
             } catch (e) {
-                console.error("Failed to sync favorites", e);
+                console.error("Failed to load favorites from store", e);
             }
         };
 
-        window.addEventListener(FAVORITES_UPDATED_EVENT, handleStorageChange);
-        return () => window.removeEventListener(FAVORITES_UPDATED_EVENT, handleStorageChange);
+        syncStore();
+
+        // Listen for changes from other windows/parts of the app
+        let unlisten: (() => void) | undefined;
+
+        store.onKeyChange<string[]>(STORAGE_KEY, (value) => {
+            if (isMounted) {
+                setFavorites(value || []);
+            }
+        }).then(u => unlisten = u);
+
+        return () => {
+            isMounted = false;
+            if (unlisten) unlisten();
+        };
     }, []);
 
-    const toggleFavorite = (pkgName: string) => {
-        setFavorites(prev => {
-            const newFavorites = prev.includes(pkgName)
-                ? prev.filter(p => p !== pkgName)
-                : [...prev, pkgName];
+    const toggleFavorite = useCallback(async (pkgName: string) => {
+        try {
+            const current = await store.get<string[]>(STORAGE_KEY) || [];
+            const newFavorites = current.includes(pkgName)
+                ? current.filter(p => p !== pkgName)
+                : [...current, pkgName];
 
-            localStorage.setItem('monarch_favorites', JSON.stringify(newFavorites));
-            window.dispatchEvent(new Event(FAVORITES_UPDATED_EVENT));
-            return newFavorites;
-        });
-    };
+            await store.set(STORAGE_KEY, newFavorites);
+            await store.save(); // Ensure persistence to disk
+            setFavorites(newFavorites);
+        } catch (e) {
+            console.error("Failed to toggle favorite", e);
+        }
+    }, []);
 
-    const isFavorite = (pkgName: string) => favorites.includes(pkgName);
+    const isFavorite = useCallback((pkgName: string) => favorites.includes(pkgName), [favorites]);
 
     return { favorites, toggleFavorite, isFavorite };
 }

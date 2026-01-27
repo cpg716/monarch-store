@@ -18,6 +18,21 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
         localStorage.setItem('monarch_sidebar_expanded', String(isExpanded));
     }, [isExpanded]);
 
+    // Responsive Auto-Collapse
+    useEffect(() => {
+        const handleResize = () => {
+            if (window.innerWidth < 1024) {
+                setIsExpanded(false);
+            }
+        };
+
+        // Initial check
+        handleResize();
+
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
     const [updateCount, setUpdateCount] = useState(0);
 
     useEffect(() => {

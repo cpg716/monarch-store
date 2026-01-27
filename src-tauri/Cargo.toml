@@ -45,6 +45,10 @@ async-trait = "0.1.89"
 futures = "0.3.31"
 tauri-plugin-fs = "2.4.5"
 tempfile = "3.24.0"
+tauri-plugin-store = "2"
+raw-cpuid = "11.0.1"
+cpufeatures = "0.2.12"
+which = "8.0.0"
 
 [dev-dependencies]
 tempfile = "3.24.0"

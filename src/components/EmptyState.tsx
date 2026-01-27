@@ -8,14 +8,18 @@ interface EmptyStateProps {
     description: string;
     actionLabel?: string;
     onAction?: () => void;
+    variant?: 'default' | 'error';
 }
+
+import { clsx } from "clsx";
 
 const EmptyState: React.FC<EmptyStateProps> = ({
     icon: Icon = Search,
     title,
     description,
     actionLabel,
-    onAction
+    onAction,
+    variant = 'default'
 }) => {
     return (
         <motion.div
@@ -23,7 +27,10 @@ const EmptyState: React.FC<EmptyStateProps> = ({
             animate={{ opacity: 1, scale: 1 }}
             className="flex flex-col items-center justify-center py-20 text-center space-y-4 h-full"
         >
-            <div className="p-6 rounded-full bg-app-card border border-app-border text-app-muted shadow-sm">
+            <div className={clsx(
+                "p-6 rounded-full border shadow-sm",
+                variant === 'error' ? "bg-red-500/10 border-red-500/20 text-red-500" : "bg-app-card border-app-border text-app-muted"
+            )}>
                 <Icon size={48} strokeWidth={1.5} />
             </div>
             <div className="space-y-1">

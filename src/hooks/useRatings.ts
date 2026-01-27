@@ -5,6 +5,18 @@ import * as reviewService from '../services/reviewService';
 const ratingCache = new Map<string, { average: number; count: number }>();
 const reviewCache = new Map<string, { reviews: reviewService.Review[], summary: reviewService.RatingSummary }>();
 
+export function prewarmRatings(pkgNames: string[]) {
+    const toFetch = pkgNames.filter(n => !ratingCache.has(`${n}-`));
+    if (toFetch.length === 0) return;
+
+    reviewService.getRatingsBatch(toFetch).then(map => {
+        map.forEach((val, key) => {
+            // Match the cache key format in hooks: "pkgName-"
+            ratingCache.set(`${key}-`, val);
+        });
+    });
+}
+
 /**
  * Hook for fetching simple rating summary (used in Cards).
  */

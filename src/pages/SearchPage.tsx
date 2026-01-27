@@ -15,6 +15,8 @@ interface SearchPageProps {
     loading: boolean;
     onSelectPackage: (pkg: Package) => void;
     enabledRepos: { name: string; enabled: boolean; source: string }[];
+    error?: string | null;
+    onRetry?: () => void;
 }
 
 export default function SearchPage({
@@ -23,7 +25,9 @@ export default function SearchPage({
     packages,
     loading,
     onSelectPackage,
-    enabledRepos
+    enabledRepos,
+    error,
+    onRetry
 }: SearchPageProps) {
     const { history, removeSearch, clearHistory } = useSearchHistory();
     const { favorites } = useFavorites();
@@ -263,8 +267,20 @@ export default function SearchPage({
                             animate={{ opacity: 1 }}
                             className="space-y-8"
                         >
-                            {loading && packages.length === 0 ? (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6">
+                            {error ? (
+                                <EmptyState
+                                    icon={X}
+                                    title="Search Failed"
+                                    description={`We encountered an error while searching for "${query}".\n${error}`}
+                                    actionLabel="Try Again"
+                                    onAction={() => {
+                                        if (onRetry) onRetry();
+                                        else onQueryChange('');
+                                    }}
+                                    variant="error"
+                                />
+                            ) : loading && packages.length === 0 ? (
+                                <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6">
                                     {[...Array(15)].map((_, i) => (
                                         <PackageCardSkeleton key={i} />
                                     ))}
@@ -281,7 +297,7 @@ export default function SearchPage({
                                 />
                             ) : (
                                 <>
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6">
+                                    <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6">
                                         {displayed.map((pkg) => (
                                             <PackageCard
                                                 key={`${pkg.name}-${pkg.source}`}

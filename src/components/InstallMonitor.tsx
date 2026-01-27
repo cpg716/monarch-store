@@ -19,13 +19,19 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const [visualProgress, setVisualProgress] = useState(0);
     const [targetProgress, setTargetProgress] = useState(0);
     const [minimized, setMinimized] = useState(false);
-    const [showLogs, setShowLogs] = useState(false);
+    const [showLogs, setShowLogs] = useState(() => localStorage.getItem('monarch_debug_logs') === 'true');
     const logsEndRef = useRef<HTMLDivElement>(null);
+    const [commandPreview, setCommandPreview] = useState<string>('');
 
     // Auto-scroll logs
     useEffect(() => {
+        if (showLogs) {
+            localStorage.setItem('monarch_debug_logs', 'true');
+        } else {
+            localStorage.removeItem('monarch_debug_logs');
+        }
         logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [logs, minimized]);
+    }, [logs, minimized, showLogs]);
 
     const [detailedStatus, setDetailedStatus] = useState<string>('');
 
@@ -36,7 +42,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         const unlistenOutput = listen('install-output', (event: { payload: unknown }) => {
             if (typeof event.payload !== 'string') return;
             const line = event.payload;
-            setLogs(prev => [...prev, line]);
+            setLogs((prev: string[]) => [...prev, line]);
 
             // Enhanced Progress Heuristics
             if (line.includes('%')) {
@@ -58,13 +64,13 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             } else if (line.includes('Retrying build')) {
                 setDetailedStatus('Retrying Build with New Keys...');
             } else if (line.toLowerCase().includes('compiling')) {
-                setTargetProgress(prev => Math.min(prev + 1, 90));
+                setTargetProgress((prev: number) => Math.min(prev + 1, 90));
             }
         });
 
         const unlistenRepair = listen('repair-log', (event: { payload: unknown }) => {
             if (typeof event.payload !== 'string') return;
-            setLogs(prev => [...prev, event.payload as string]);
+            setLogs((prev: string[]) => [...prev, event.payload as string]);
         });
 
         const unlistenComplete = listen('install-complete', (event: { payload: string }) => {
@@ -80,9 +86,9 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         });
 
         return () => {
-            unlistenOutput.then(f => f());
-            unlistenRepair.then(f => f());
-            unlistenComplete.then(f => f());
+            unlistenOutput.then((f: () => void) => f());
+            unlistenRepair.then((f: () => void) => f());
+            unlistenComplete.then((f: () => void) => f());
         };
     }, [pkg]);
 
@@ -91,7 +97,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         if (status !== 'running') return;
 
         const interval = setInterval(() => {
-            setVisualProgress(prev => {
+            setVisualProgress((prev: number) => {
                 // If visual is behind target, move towards it smoothly
                 if (prev < targetProgress) {
                     const diff = targetProgress - prev;
@@ -132,6 +138,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     name: pkg.name,
                     password: null
                 });
+                setCommandPreview(`$ pacman -Rns --noconfirm ${pkg.name}`);
             } else {
                 await invoke('install_package', {
                     name: pkg.name,
@@ -139,18 +146,29 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     password: null,
                     repoName: pkg.repoName || null
                 });
+
+                // Set Command Preview
+                if (pkg.source === 'aur') {
+                    setCommandPreview(`$ git clone https://aur.archlinux.org/${pkg.name}.git && makepkg -si`);
+                } else {
+                    setCommandPreview(`$ pacman -S --noconfirm ${pkg.name}`);
+                }
             }
             // The command is async spawned, completion comes via event
         } catch (e) {
-            setLogs(prev => [...prev, `Error launching: ${e}`]);
+            setLogs((prev: string[]) => [...prev, `Error launching: ${e}`]);
             setStatus('error');
         }
     };
 
     if (!pkg) return null;
 
-    const displayStatus = status === 'error' && logs.length > 0
-        ? friendlyError(logs[logs.length - 1])
+    if (!pkg) return null;
+
+    const errorDetails = status === 'error' && logs.length > 0 ? friendlyError(logs[logs.length - 1]) : null;
+
+    const displayStatus = status === 'error' && errorDetails
+        ? errorDetails.title
         : status === 'idle' ? `Ready to ${mode === 'uninstall' ? 'Uninstall' : 'Install'}`
             : status === 'success' ? `${mode === 'uninstall' ? 'Uninstallation' : 'Installation'} Complete`
                 : detailedStatus || (pkg.source === 'aur' ? 'Building App (This may take a while)...' : `${mode === 'uninstall' ? 'Uninstalling' : 'Installing'}...`);
@@ -295,7 +313,12 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                             <h2 className="text-xl font-bold text-app-fg">
                                 {updateRequired ? "System Update Required" : displayStatus}
                             </h2>
-                            <p className="text-app-muted text-sm">{pkg.source.toUpperCase()} Repository</p>
+                            {status === 'error' && errorDetails && (
+                                <p className="text-red-500 text-sm font-medium mt-1 animate-in fade-in">{errorDetails.description}</p>
+                            )}
+                            {status !== 'error' && (
+                                <p className="text-app-muted text-sm">{pkg.source.toUpperCase()} Source</p>
+                            )}
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -438,12 +461,30 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                     )}
 
                                     <div className="w-full max-w-sm pt-4">
-                                        <button
-                                            onClick={onClose}
-                                            className="w-full bg-app-fg/10 hover:bg-app-fg/20 text-app-fg font-bold py-3 rounded-xl transition-colors active:scale-95"
-                                        >
-                                            Done
-                                        </button>
+                                        <div className="flex gap-3 w-full max-w-sm">
+                                            {mode !== 'uninstall' && (
+                                                <button
+                                                    onClick={() => {
+                                                        invoke('launch_app', { pkgName: pkg.name }).catch(console.error);
+                                                        onClose();
+                                                    }}
+                                                    className="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-green-500/20 active:scale-95 transition-all flex items-center justify-center gap-2 text-lg"
+                                                >
+                                                    <Play size={24} fill="currentColor" /> Launch Now
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={onClose}
+                                                className={clsx(
+                                                    "font-bold py-4 rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2",
+                                                    mode === 'uninstall'
+                                                        ? "flex-1 bg-app-fg text-app-bg hover:brightness-110 shadow-xl"
+                                                        : "px-6 text-app-muted hover:text-app-fg hover:bg-app-subtle"
+                                                )}
+                                            >
+                                                {mode === 'uninstall' ? 'Done' : 'Close'}
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             ) : (
@@ -544,6 +585,11 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                     {/* Logs Terminal */}
                                     {showLogs && (
                                         <div className="flex-1 overflow-auto p-4 font-mono text-xs text-app-muted space-y-1 scrollbar-thin transition-colors bg-black/20 mt-2 rounded-lg border border-white/10 mx-6 mb-4">
+                                            {commandPreview && (
+                                                <div className="mb-2 pb-2 border-b border-white/10 text-blue-400 font-bold">
+                                                    {commandPreview}
+                                                </div>
+                                            )}
                                             {logs.map((log, i) => (
                                                 <div key={i} className="break-all whitespace-pre-wrap">
                                                     <span className="text-app-muted opacity-50 mr-2">[{new Date().toLocaleTimeString()}]</span>

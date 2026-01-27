@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from "@tauri-apps/api/core";
 import { trackEvent } from '@aptabase/tauri';
-import { ArrowLeft, Heart } from 'lucide-react';
+import { ArrowLeft, Heart, AlertCircle } from 'lucide-react';
 import { useFavorites } from './hooks/useFavorites';
 import Sidebar from './components/Sidebar';
 import SearchBar from './components/SearchBar';
@@ -9,7 +9,7 @@ import InstallMonitor from './components/InstallMonitor';
 import { Package } from './components/PackageCard';
 import TrendingSection from './components/TrendingSection';
 import HeroSection from './components/HeroSection';
-import PackageDetails from './pages/PackageDetails';
+import PackageDetails from './pages/PackageDetailsFresh';
 import { useAppStore } from './store/internal_store';
 import CategoryView from './pages/CategoryView';
 import InstalledPage from './pages/InstalledPage';
@@ -39,6 +39,7 @@ function App() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(true);
+  const [systemHealth, setSystemHealth] = useState<{ is_healthy: boolean } | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const { addSearch } = useSearchHistory();
@@ -78,6 +79,8 @@ function App() {
           is_healthy: boolean
         }>('check_initialization_status');
 
+        setSystemHealth(status);
+
         const isCompleted = localStorage.getItem('monarch_onboarding_v3');
         const legacyCompleted = localStorage.getItem('monarch_onboarding_v2_final') || localStorage.getItem('monarch_onboarding_completed');
 
@@ -98,13 +101,38 @@ function App() {
             localStorage.setItem('monarch_onboarding_v3', 'true');
           }
           invoke('trigger_repo_sync', { syncIntervalHours: 3 }).catch(console.error);
+
+          // --- PRE-WARM CACHE (Performance Optimization) ---
+          try {
+            const { ESSENTIAL_IDS } = await import('./constants');
+            const { prewarmRatings } = await import('./hooks/useRatings'); // Dynamic import to avoid cycles if any
+
+            await invoke('emit_sync_progress', { status: "Loading Essentials..." });
+            const warmEssentials = invoke('get_packages_by_names', { names: ESSENTIAL_IDS }); // fire & forget or wait
+
+            await invoke('emit_sync_progress', { status: "Analyzing Trending Apps..." });
+            // Fetch trending AND warm their ratings
+            const warmTrending = invoke<Package[]>('get_trending').then(pkgs => {
+              prewarmRatings(pkgs.map(p => p.name));
+              return pkgs;
+            });
+
+            // Also warm ratings for essentials (we know the IDs)
+            prewarmRatings(ESSENTIAL_IDS);
+
+            // Wait for critical data (parallel) while splash screen is up
+            await Promise.all([warmEssentials, warmTrending]);
+          } catch (e) {
+            console.warn("Pre-warm failed", e);
+          }
+          // -------------------------------------------------
         }
 
       } catch (e) {
         console.error("Critical Startup Logic Error", e);
       } finally {
         const elapsed = Date.now() - startTime;
-        const remaining = Math.max(0, 1200 - elapsed);
+        const remaining = Math.max(0, 1500 - elapsed);
         setTimeout(() => setIsRefreshing(false), remaining);
       }
     };
@@ -192,6 +220,18 @@ function App() {
       {!showOnboarding && <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />}
 
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
+        {!showOnboarding && systemHealth && !systemHealth.is_healthy && (
+          <div className="bg-red-600 text-white px-6 py-2 flex items-center justify-between text-sm font-bold animate-in slide-in-from-top duration-300 z-[100] shrink-0">
+            <div className="flex items-center gap-3">
+              <AlertCircle size={18} />
+              <span>System defects detected. Repository access or security policy may be broken.</span>
+            </div>
+            <button onClick={() => handleTabChange('settings')} className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded-lg transition-colors">
+              Repair Now
+            </button>
+          </div>
+        )}
+
         {showOnboarding ? (
           <div className="flex-1 bg-app-bg" /> /* Empty dark background while onboarding is active/animating */
         ) : selectedPackage ? (
@@ -221,7 +261,7 @@ function App() {
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0 pb-32 scroll-smooth">
               {activeTab === 'explore' && !searchQuery && (
                 <div className="px-6 pt-6 animate-in fade-in slide-in-from-top-5 duration-700">
-                  <HeroSection onNavigateToFix={() => handleTabChange('settings')} />
+                  <HeroSection />
                 </div>
               )}
 

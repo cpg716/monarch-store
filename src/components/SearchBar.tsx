@@ -22,11 +22,12 @@ const SearchBar: React.FC<SearchBarProps> = ({ value, onChange }) => {
                     onChange={(e) => onChange(e.target.value)}
                     onKeyDown={(e) => {
                         if (e.key === 'Enter') {
+                            e.preventDefault();
                             (e.target as HTMLInputElement).blur();
                         }
                     }}
                     placeholder="Search for apps (e.g. firefox, spotify, discord)"
-                    className="w-full bg-app-card border-2 border-app-border/50 rounded-[2rem] py-5 pl-16 pr-6 text-xl text-app-fg placeholder-app-muted/60 focus:outline-none focus:border-blue-500/50 focus:bg-app-card transition-all shadow-xl hover:shadow-2xl hover:border-app-border"
+                    className="w-full bg-app-card border-2 border-slate-200/80 dark:border-app-border/50 rounded-[2rem] py-5 pl-16 pr-6 text-xl text-app-fg placeholder-app-muted/60 focus:outline-none focus:border-blue-500/50 focus:bg-app-card transition-all shadow-lg dark:shadow-xl hover:shadow-xl hover:border-blue-300/30 dark:hover:border-app-border"
                 />
             </div>
         </div>

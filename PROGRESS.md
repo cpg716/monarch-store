@@ -1,22 +1,20 @@
 # 📈 MonARCH Progress Report
 
-## 🏆 Recent Achievements (v0.2.30)
-The latest release focused on **Foundation & Stability**, resolving long-standing issues with the startup sequence and system diagnostics.
+## 🏆 Recent Achievements (v0.2.40)
+The **"Zero-Config" Release**. This milestone focused on absolute stability and runtime safety, ensuring the app works "out of the box" without manual intervention.
 
-### ⚡ Performance & Startup overhaul
-- **Sequential Init Strategy**: Fixed "Black Screen" and race conditions by making initialization blocking and repository sync backgrounded.
-- **AMD Hardware Rating**: Corrected CPU feature detection (ABM/LZCNT) for Zen 4/5 architectures.
-- **Optimized UI**: Significant reduction in layout shifts during startup.
+### 🛑 Zero-Config Reliability
+- **Strict Dependency Matrix**: Rewrote `PKGBUILD` to enforce every runtime need (polkit, git, openssl, webkit).
+- **Runtime Self-Check**: The app now detects missing tools (`git`, `pkexec`) at startup and alerts the user instead of silent crashing.
+- **Seamless Auth**: The Polkit policy is now installed directly from the source tree, guaranteeing that password-less package management works immediately.
 
-### 🩺 Hardened System Health
-- **Permission-Safe Monitoring**: Rewrote health sensors to avoid root-owned permission errors (e.g., GPG directory checks).
-- **Smart Repair Wizard**: Unified maintenance flow that can authorized-ly fix Polkit, Keyring, and Repositories in one click.
-- **Dependency Guard**: Automated checks for `base-devel` and `git` to ensure build success.
+### 🌐 ODRS Data Integrity
+- **Manual ID Map**: Fixed "Missing Ratings" for popular apps (Discord, VLC, GIMP) by injecting a manual translation layer for the ODRS API (e.g., `discord` -> `com.discordapp.Discord`).
+- **Resilient Batching**: The startup sequence now aggressively probes for ratings even if metadata is mismatched.
 
-### 🎨 Premium Experience
-- **Framer Motion Integration**: Smooth transitions across the entire store.
-- **Modernized Settings**: Full glassmorphism and improved categorization for repo management.
-- **One-Click Reliability**: Resolved synchronization issues between UI toggles and system state.
+### 🎨 Visual Polish
+- **Global Scrolling Fix**: Resolved the "Cut Off" content on small screens by moving the scroll container to the top level.
+- **Adaptive Grids**: Prevented "smushed" cards on resize by implementing `minmax(280px)` responsive grids across all views.
 
 ---
 

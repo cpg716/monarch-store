@@ -39,7 +39,7 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
 
         switch (source) {
             case 'chaotic':
-                return { label: 'Chaotic-AUR', badge: 'CHAOTIC', icon: ShieldCheck, color: 'text-green-500', bg: 'bg-green-500/10 border-green-500/20' };
+                return { label: 'Chaotic-AUR', badge: 'CHAOTIC', icon: ShieldCheck, color: 'text-green-500', bg: 'bg-green-500/10 border-green-500/20', recommended: true };
             case 'cachyos':
                 if (isOptimized) {
                     return { label: 'CachyOS (Optimized)', badge: 'OPTIMIZED', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
@@ -52,11 +52,11 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
             case 'endeavour':
                 return { label: 'EndeavourOS', badge: 'ENDEAVOUR', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
             case 'official':
-                return { label: 'Official Arch', badge: 'OFFICIAL', icon: Server, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/20' };
+                return { label: 'Official Arch', badge: 'OFFICIAL', icon: Server, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/20', recommended: true };
             case 'aur':
                 return { label: 'AUR (Source Build)', badge: 'AUR', icon: Hammer, color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/20' };
             default:
-                return { label: source, badge: source.toUpperCase(), icon: Server, color: 'text-app-muted', bg: 'bg-app-subtle border-app-border' };
+                return { label: source, badge: source.toUpperCase(), icon: Server, color: 'text-slate-600 dark:text-app-muted', bg: 'bg-slate-100 dark:bg-app-subtle border-slate-200 dark:border-app-border' };
         }
     };
 
@@ -68,9 +68,9 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
             <button
                 onClick={() => setIsOpen(!isOpen)}
                 className={clsx(
-                    "w-full flex items-center justify-between px-4 py-3 rounded-xl border transition-all text-left",
+                    "w-full flex items-center justify-between px-4 py-3 rounded-xl border transition-all text-left shadow-sm dark:shadow-none",
                     info.bg,
-                    isOpen ? "ring-2 ring-blue-500/10" : "hover:brightness-105"
+                    isOpen ? "ring-2 ring-blue-500/10 border-blue-400/50" : "hover:brightness-105 border-slate-200 dark:border-white/5"
                 )}
             >
                 <div className="flex items-center gap-3">
@@ -80,6 +80,11 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                             <span className={clsx("text-sm font-bold", info.color)}>
                                 {info.label}
                             </span>
+                            {(info as any).recommended && (
+                                <span className="bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm">
+                                    RECOMMENDED
+                                </span>
+                            )}
                         </div>
                         {selectedVariant && (
                             <span className="text-[10px] text-app-muted font-mono mt-1 opacity-70">
@@ -119,7 +124,7 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                                         }}
                                         className={clsx(
                                             "flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors group",
-                                            isSelected ? "bg-app-accent/10" : "hover:bg-app-fg/5"
+                                            isSelected ? "bg-app-accent/10" : "hover:bg-app-hover"
                                         )}
                                     >
                                         <div className="flex items-center gap-3">
@@ -132,6 +137,11 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                                                     <span className="text-[10px] text-app-muted font-mono opacity-60">
                                                         {vInfo.badge} • v{v.version}
                                                     </span>
+                                                    {(vInfo as any).recommended && (
+                                                        <span className="text-[9px] bg-blue-500/10 text-blue-500 px-1.5 py-0.5 rounded font-bold border border-blue-500/20">
+                                                            RECOMMENDED
+                                                        </span>
+                                                    )}
                                                     {v.source !== 'aur' ? (
                                                         <span className="text-[8px] bg-green-500/10 text-green-500 px-1 rounded font-bold">INSTANT</span>
                                                     ) : (

@@ -12,7 +12,7 @@ import { clsx } from 'clsx';
 import { useTheme } from '../hooks/useTheme';
 import { useToast } from '../context/ToastContext';
 import { useSettings } from '../hooks/useSettings';
-import SystemHealthSection from '../components/SystemHealthSection';
+
 
 interface SettingsPageProps {
     onRestartOnboarding?: () => void;
@@ -30,13 +30,14 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
         repos, toggleRepo, reorderRepos,
         isSyncing, triggerManualSync, repoCounts,
         infraStats,
+        oneClickEnabled, updateOneClick,
         refresh
     } = useSettings();
 
     const [isOptimizing, setIsOptimizing] = useState(false);
+    const [isRepairing, setIsRepairing] = useState<string | null>(null);
     const [pkgVersion, setPkgVersion] = useState("0.0.0");
     const [systemInfo, setSystemInfo] = useState<{ kernel: string, distro: string, cpu_optimization: string, pacman_version: string } | null>(null);
-    const [oneClickStatus, setOneClickStatus] = useState(false);
     const [repoSyncStatus, setRepoSyncStatus] = useState<Record<string, boolean> | null>(null);
 
     const [modalConfig, setModalConfig] = useState<{
@@ -51,7 +52,6 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
     useEffect(() => {
         getVersion().then(setPkgVersion).catch(console.error);
         invoke<any>('get_system_info').then(setSystemInfo).catch(console.error);
-        invoke<boolean>('is_one_click_enabled').then(setOneClickStatus).catch(console.error);
         invoke<Record<string, boolean>>('check_repo_sync_status').then(setRepoSyncStatus).catch(console.error);
     }, []);
 
@@ -105,33 +105,51 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
             message: "Scan for and remove unused orphan packages?",
             variant: 'info',
             onConfirm: async () => {
-                setIsOptimizing(true);
+                setIsRepairing("orphans");
                 try {
                     const orphans = await invoke<string[]>('get_orphans');
                     if (orphans.length === 0) {
                         success("No orphan packages found.");
                     } else {
-                        // Nested confirmation via re-setting modal
                         setModalConfig({
                             isOpen: true,
                             title: "Remove Orphans",
                             message: `Found ${orphans.length} orphans. Remove them?`,
                             variant: 'danger',
                             onConfirm: async () => {
+                                setIsRepairing("orphans");
                                 await invoke('remove_orphans', { orphans });
                                 success(`Successfully removed ${orphans.length} packages.`);
-                                setIsOptimizing(false);
+                                setIsRepairing(null);
                             }
                         });
-                        return; // Exit here to prevent finally block from running immediately
+                        return;
                     }
                 } catch (e) {
                     error(`Failed: ${e}`);
                 } finally {
-                    setIsOptimizing(false);
+                    setIsRepairing(null);
                 }
             }
         });
+    };
+
+    const handleRepairTask = async (task: string) => {
+        setIsRepairing(task);
+        try {
+            let cmd = '';
+            let label = '';
+            if (task === 'keyring') { cmd = 'repair_reset_keyring'; label = 'Keyring Repair'; }
+            if (task === 'unlock') { cmd = 'repair_unlock_pacman'; label = 'Database Unlock'; }
+
+            await invoke(cmd, { password: null });
+            success(`${label} completed successfully.`);
+            refresh();
+        } catch (e) {
+            error(`${task} failed: ${e}`);
+        } finally {
+            setIsRepairing(null);
+        }
     };
 
 
@@ -258,10 +276,6 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                     </div>
                 </div>
 
-                {/* System Health Section (New) */}
-                <div id="system-health">
-                    <SystemHealthSection />
-                </div>
 
                 {/* Main Content Sections */}
                 <div className="space-y-12">
@@ -503,53 +517,6 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                             </div>
                         </section>
 
-                        {/* Security */}
-                        <section className="flex flex-col h-full">
-                            <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-3">
-                                <ShieldCheck size={22} className="text-white/50" /> Security & Privacy
-                            </h2>
-                            <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 space-y-6 flex-1">
-                                <div className="flex items-center justify-between">
-                                    <div className="max-w-[70%]">
-                                        <h3 className="font-bold text-white text-lg">One-Click System Control</h3>
-                                        <p className="text-sm text-white/50 mt-1 leading-relaxed">
-                                            Allow MonARCH to perform system operations without asking for a password every time.
-                                            <br /><strong className="text-amber-500">Disable to require password for every action.</strong>
-                                        </p>
-                                    </div>
-                                    <button
-                                        onClick={async () => {
-                                            const newVal = !oneClickStatus;
-                                            setIsOptimizing(true);
-                                            try {
-                                                // We try to call the control setter. 
-                                                // If password is null, backend uses pkexec which should show a system dialog.
-                                                await invoke('set_one_click_control', { enabled: newVal, password: null });
-                                                setOneClickStatus(newVal);
-                                                success(newVal ? "One-Click Control Enabled" : "One-Click Control Disabled");
-                                            } catch (e) {
-                                                console.error("One-Click Toggle Error:", e);
-                                                error(`Authentication Failed: Could not update security policy. ${e}`);
-                                                // Re-fetch status to ensure UI matches reality
-                                                invoke<boolean>('is_one_click_enabled').then(setOneClickStatus).catch(console.error);
-                                            } finally {
-                                                setIsOptimizing(false);
-                                            }
-                                        }}
-                                        className={clsx(
-                                            "w-14 h-8 rounded-full p-1 transition-all shadow-lg",
-                                            oneClickStatus ? "bg-emerald-500" : "bg-white/10"
-                                        )}
-                                    >
-                                        <div className={clsx(
-                                            "w-6 h-6 bg-white rounded-full transition-transform duration-300 shadow-md",
-                                            oneClickStatus ? "translate-x-6" : "translate-x-0"
-                                        )} />
-                                    </button>
-                                </div>
-                            </div>
-                        </section>
-
                         {/* Appearance (Moved into Grid) */}
                         <section className="flex flex-col h-full">
                             <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-3">
@@ -606,51 +573,85 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                 </div>
                             </div>
                         </section>
+                    </div>
 
-                        {/* Maintenance */}
-                        <section className="flex flex-col h-full">
-                            <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-3">
-                                <Trash2 size={22} className="text-white/50" /> System Maintenance
-                            </h2>
-                            <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 space-y-6 flex-1">
-                                <div className="flex items-center justify-between">
-                                    <div className="max-w-[60%]">
-                                        <h3 className="text-lg font-bold text-white">Disk Cleanup</h3>
-                                        <p className="text-sm text-white/50 mt-1 leading-relaxed">Clear old package caches to free disk space.</p>
-                                    </div>
-                                    <button
-                                        onClick={handleClearCache}
-                                        disabled={isOptimizing}
-                                        className={clsx(
-                                            "px-5 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-2xl text-xs font-black transition-all border border-red-500/20 active:scale-95 flex items-center gap-2",
-                                            isOptimizing && "opacity-50 cursor-not-allowed"
-                                        )}
-                                    >
-                                        <Trash2 size={16} /> WIPE CACHE
-                                    </button>
+                    {/* System Management (Consolidated) */}
+                    <section id="system-health">
+                        <h2 className="text-2xl font-black text-white mb-6 flex items-center gap-3">
+                            <ShieldCheck size={24} className="text-blue-400" />
+                            System Management
+                        </h2>
+
+                        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 space-y-12 transition-colors hover:bg-white/10">
+                            {/* Security Control */}
+                            <div className="flex flex-col md:flex-row items-center justify-between gap-8">
+                                <div className="max-w-xl">
+                                    <h3 className="font-bold text-white text-xl mb-2 flex items-center gap-2">
+                                        <Lock size={20} className="text-emerald-400" />
+                                        One-Click Authentication
+                                    </h3>
+                                    <p className="text-white/60 text-base leading-relaxed">
+                                        Allow MonARCH to perform system maintenance and app installs without asking for a password every time. This modifies Polkit security policies.
+                                    </p>
                                 </div>
+                                <button
+                                    onClick={() => {
+                                        const newVal = !oneClickEnabled;
+                                        updateOneClick(newVal).then(() => {
+                                            if (newVal) success("One-Click Control Enabled");
+                                            else success("One-Click Control Disabled");
+                                        });
+                                    }}
+                                    className={clsx(
+                                        "w-16 h-9 rounded-full p-1 transition-all shadow-xl shrink-0",
+                                        oneClickEnabled ? "bg-emerald-500 shadow-emerald-500/20" : "bg-white/10"
+                                    )}
+                                >
+                                    <div className={clsx(
+                                        "w-7 h-7 bg-white rounded-full transition-transform duration-300 shadow-lg",
+                                        oneClickEnabled ? "translate-x-7" : "translate-x-0"
+                                    )} />
+                                </button>
+                            </div>
 
-                                <div className="h-px bg-white/5 w-full" />
+                            <div className="h-px bg-white/5 w-full" />
 
-                                <div className="flex items-center justify-between">
-                                    <div className="max-w-[60%]">
-                                        <h3 className="text-lg font-bold text-white">Orphan Packages</h3>
-                                        <p className="text-sm text-white/50 mt-1 leading-relaxed">Remove unused dependencies that are no longer required.</p>
-                                    </div>
-                                    <button
+                            {/* Repair Actions Grid */}
+                            <div>
+                                <h3 className="text-sm font-black uppercase tracking-widest text-white/40 mb-6 px-2">Maintenance & Repair Tools</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                    <RepairButton
+                                        icon={<Lock className="text-blue-400" />}
+                                        title="Unlock Database"
+                                        desc="Clear stuck locks from the package manager."
+                                        onClick={() => handleRepairTask('unlock')}
+                                        loading={isRepairing === 'unlock'}
+                                    />
+                                    <RepairButton
+                                        icon={<ShieldCheck className="text-purple-400" />}
+                                        title="Fix System Keys"
+                                        desc="Repair signatures and security keyring."
+                                        onClick={() => handleRepairTask('keyring')}
+                                        loading={isRepairing === 'keyring'}
+                                    />
+                                    <RepairButton
+                                        icon={<Trash2 className="text-red-400" />}
+                                        title="Clear Cache"
+                                        desc="Wipe temporary package downloads."
+                                        onClick={handleClearCache}
+                                        loading={isOptimizing}
+                                    />
+                                    <RepairButton
+                                        icon={<Package size={18} className="text-amber-400" />}
+                                        title="Clean Orphans"
+                                        desc="Remove unused system dependencies."
                                         onClick={handleOrphans}
-                                        disabled={isOptimizing}
-                                        className={clsx(
-                                            "px-5 py-3 bg-white/5 hover:bg-white/10 text-white rounded-2xl text-xs font-black transition-all border border-white/10 active:scale-95 flex items-center gap-2",
-                                            isOptimizing && "opacity-50 cursor-not-allowed"
-                                        )}
-                                    >
-                                        <Package size={16} /> CLEAN ORPHANS
-                                    </button>
+                                        loading={isRepairing === 'orphans'}
+                                    />
                                 </div>
                             </div>
-                        </section>
-                    </div>
+                        </div>
+                    </section>
 
                     <div className="text-center text-white/20 text-xs pt-12 pb-8 border-t border-white/5 font-medium">
                         <Info size={14} className="opacity-50 inline mr-2 mb-0.5" />
@@ -668,5 +669,23 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                 variant={modalConfig.variant}
             />
         </div >
+    );
+}
+
+function RepairButton({ icon, title, desc, onClick, loading }: { icon: React.ReactNode, title: string, desc: string, onClick: () => void, loading: boolean }) {
+    return (
+        <button
+            onClick={onClick}
+            disabled={loading}
+            className="group p-6 bg-white/5 rounded-3xl border border-white/10 hover:border-white/20 hover:bg-white/10 transition-all text-left flex flex-col gap-3 shadow-sm hover:shadow-lg disabled:opacity-50"
+        >
+            <div className="p-3 bg-black/20 rounded-2xl w-fit group-hover:scale-110 transition-transform">
+                {loading ? <RefreshCw className="animate-spin text-white" size={20} /> : icon}
+            </div>
+            <div>
+                <h4 className="font-bold text-white group-hover:text-blue-400 transition-colors text-sm">{title}</h4>
+                <p className="text-[10px] text-white/40 leading-relaxed mt-1">{desc}</p>
+            </div>
+        </button>
     );
 }

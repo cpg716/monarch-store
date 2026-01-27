@@ -49,7 +49,7 @@ const MultiSelectDropdown = ({
     };
 
     const displayText = selected.includes('all') || selected.length === 0
-        ? "All Repos"
+        ? "All Sources"
         : `${selected.length} Selected`;
 
     return (
@@ -72,7 +72,7 @@ const MultiSelectDropdown = ({
                             selected.includes('all') ? "bg-blue-500 text-white" : "hover:bg-app-fg/10 text-app-fg"
                         )}
                     >
-                        <span>All Repositories</span>
+                        <span>All Sources</span>
                         {selected.includes('all') && <Check size={14} />}
                     </button>
                     <div className="h-px bg-app-border/50 my-1" />
@@ -128,6 +128,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
     const [hasMore, setHasMore] = useState(true);
     const [enabledRepos, setEnabledRepos] = useState<RepoState[]>([]);
     const [chaoticInfoMap, setChaoticInfoMap] = useState<Map<string, ChaoticPackage>>(new Map());
+    const [error, setError] = useState<string | null>(null);
 
     // Constant limit for backend pagination
     const LIMIT = 50;
@@ -171,6 +172,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
             setInitialLoad(true);
             setPackages([]);
             setPage(1);
+            setError(null);
         }
 
         const currentPage = reset ? 1 : page;
@@ -199,16 +201,17 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
             if (reset) {
                 setPackages(res.packages);
             } else {
-                setPackages(prev => {
+                setPackages((prev: Package[]) => {
                     const existingNames = new Set(prev.map(p => p.name));
                     const uniqueNew = res.packages.filter(p => !existingNames.has(p.name));
                     return [...prev, ...uniqueNew];
                 });
             }
             setHasMore(res.packages.length === LIMIT);
-
-        } catch (e) {
+            setError(null);
+        } catch (e: any) {
             console.error("Failed to load category apps", e);
+            setError(e.toString() || "Unknown error occurred");
         } finally {
             setLoading(false);
             setInitialLoad(false);
@@ -239,7 +242,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
 
     const loadMore = useCallback(() => {
         if (!loading && hasMore) {
-            setPage(prev => prev + 1);
+            setPage((prev: number) => prev + 1);
         }
     }, [loading, hasMore]);
 
@@ -265,9 +268,9 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                 const infoMap = await invoke<Record<string, ChaoticPackage>>('get_chaotic_packages_batch', {
                     names: chunk
                 });
-                setChaoticInfoMap(prev => {
+                setChaoticInfoMap((prev: Map<string, ChaoticPackage>) => {
                     const next = new Map(prev);
-                    Object.entries(infoMap).forEach(([name, info]) => next.set(name, info));
+                    Object.entries(infoMap).forEach(([name, info]) => next.set(name, info as ChaoticPackage));
                     return next;
                 });
             } catch (e) { console.error(e); }
@@ -348,11 +351,19 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
 
             <div className="flex-1 overflow-y-auto p-8">
                 {initialLoad && packages.length === 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
                         {[...Array(10)].map((_, i) => (
                             <PackageCardSkeleton key={i} />
                         ))}
                     </div>
+                ) : error ? (
+                    <EmptyState
+                        variant="error"
+                        title="Failed to load Apps"
+                        description={`We couldn't load apps for ${displayLabel}.\n${error}`}
+                        actionLabel="Retry"
+                        onAction={() => fetchApps(true)}
+                    />
                 ) : packages.length === 0 ? (
                     <EmptyState
                         title="No apps found"
@@ -377,7 +388,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                                             <h2 className="text-lg font-bold text-app-fg mb-4 flex items-center gap-2">
                                                 <span className="text-yellow-500">★</span> Featured Applications
                                             </h2>
-                                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                                            <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
                                                 {featured.map((pkg) => (
                                                     <PackageCard
                                                         key={`feat-${pkg.name}`}
@@ -392,7 +403,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                                         </div>
                                     )}
 
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                                    <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
                                         {others.map((pkg, index) => {
                                             const isLast = index === others.length - 1;
                                             return (

@@ -37,6 +37,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
     // System Bootstrap State
     // System Bootstrap State
     const [bootstrapStatus, setBootstrapStatus] = useState<"idle" | "running" | "success" | "error">("idle");
+    const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
     useEffect(() => {
         let unlisten: any;
@@ -57,6 +58,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         } catch (e: any) {
             console.error(e);
             setChaoticLogs(prev => [...prev, `Bootstrap Error: ${e}`]);
+            setBootstrapError(e.toString());
             setBootstrapStatus("error");
             return false;
         }
@@ -108,7 +110,9 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
 
                 const mapped = families.map(fam => {
                     const isEnabledInBackend = backendRepos.some(r => fam.members.includes(r.name.toLowerCase()) && r.enabled);
-                    const shouldAutoEnable = !isEnabledInBackend && (fam.recommendation || fam.id === 'official-arch' || fam.id === 'chaotic-aur');
+                    // Smart Pre-selection: Enable if it's the foundation OR if it's CachyOS and CPU is optimized
+                    const isOptimizedCachy = fam.id === 'cachyos' && (info.cpu_optimization.includes('v3') || info.cpu_optimization.includes('v4'));
+                    const shouldAutoEnable = !isEnabledInBackend && (fam.id === 'official-arch' || fam.id === 'chaotic-aur' || isOptimizedCachy);
                     return { ...fam, enabled: isEnabledInBackend || !!shouldAutoEnable };
                 });
                 setRepoFamilies(mapped);
@@ -157,23 +161,20 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         try {
             await invoke('set_aur_enabled', { enabled: aurEnabled });
 
-            // Sync UI state
+            // 1. First, set families (no OS sync yet)
             for (const fam of repoFamilies) {
                 await invoke('toggle_repo_family', { family: fam.name, enabled: fam.enabled, skipOsSync: true });
             }
 
-            // Batch system setup
-            const allSupportedRepos = [
-                'chaotic-aur', 'cachyos', 'garuda', 'endeavouros', 'manjaro'
-            ];
-
+            // 2. Commit everything to the OS in one go
             try {
-                await invoke('enable_repos_batch', { names: allSupportedRepos, password: null });
+                await invoke('apply_os_config', { password: null });
                 await invoke('optimize_system', { password: null });
             } catch (e) {
-                console.error("System batch setup failed (non-fatal):", e);
+                console.error("Final system config failed:", e);
             }
 
+            localStorage.setItem('monarch_onboarding_v3', 'true');
             await new Promise(r => setTimeout(r, 800));
             onComplete();
         } catch (e) {
@@ -241,14 +242,14 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
             <motion.div
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="w-full max-w-4xl bg-app-card border border-app-border rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row min-h-[500px] max-h-[90vh]"
+                className="w-full max-w-4xl bg-app-card border border-app-border rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-full max-h-[85vh] md:h-[600px]"
             >
                 {/* Left Panel */}
                 <div className={clsx(
-                    "w-full md:w-4/12 p-8 flex flex-col justify-between transition-colors duration-700 relative overflow-hidden",
+                    "w-full md:w-4/12 p-6 md:p-8 flex flex-col transition-colors duration-700 relative overflow-y-auto custom-scrollbar shrink-0",
                     steps[step].color
                 )}>
-                    <div className="absolute inset-0 opacity-10 pointer-events-none">
+                    <div className="absolute inset-0 opacity-5 pointer-events-none">
                         <svg width="100%" height="100%">
                             <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
                                 <path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" strokeWidth="1" />
@@ -257,68 +258,76 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                         </svg>
                     </div>
 
-                    {reason && (
-                        <div className="bg-amber-500/20 text-white p-4 rounded-xl border border-amber-500/30 mb-4 backdrop-blur-md animate-in slide-in-from-top-4 z-20 shadow-lg">
-                            <div className="flex items-center gap-2 font-bold text-sm mb-1">
-                                <AlertTriangle size={16} className="text-amber-400" />
-                                <span>Maintenance Required</span>
+                    <div className="relative z-10 flex flex-col h-full">
+                        {reason && (
+                            <div className="bg-amber-500/20 text-white p-3 rounded-xl border border-amber-500/30 mb-6 backdrop-blur-md animate-in slide-in-from-top-4 shadow-lg shrink-0">
+                                <div className="flex items-center gap-2 font-bold text-[10px] mb-1">
+                                    <AlertTriangle size={14} className="text-amber-400" />
+                                    <span>SYSTEM INTEGRITY CHECK</span>
+                                </div>
+                                <p className="text-[10px] opacity-90 leading-tight">{reason}</p>
                             </div>
-                            <p className="text-xs opacity-90 leading-tight">{reason}</p>
-                        </div>
-                    )}
+                        )}
 
-                    <div className="text-white font-black tracking-widest text-sm uppercase z-10 drop-shadow-md hidden md:block">Step {step + 1} of {steps.length}</div>
+                        <div className="text-white/60 font-black tracking-widest text-[10px] uppercase mb-4 md:mb-8 text-center md:text-left">Step {step + 1} / {steps.length}</div>
 
-                    <div className="flex flex-col items-center text-center space-y-8 z-10">
-                        <motion.div
-                            key={step}
-                            initial={{ scale: 0.5, opacity: 0, rotate: -10 }}
-                            animate={{ scale: 1, opacity: 1, rotate: 0 }}
-                            transition={{ type: "spring", stiffness: 200, damping: 15 }}
-                            className={clsx(
-                                "backdrop-blur-sm shadow-inner transition-all duration-500",
-                                step === 0 ? "bg-transparent p-0 shadow-none scale-125" : "bg-white/20 p-8 rounded-full"
-                            )}
-                        >
-                            {steps[step].icon}
-                        </motion.div>
-                        <div>
-                            <motion.h2
-                                key={`t-${step}`}
-                                initial={{ opacity: 0, y: 20 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                className="text-3xl font-black text-white mb-3 leading-tight"
-                            >
-                                {steps[step].title}
-                            </motion.h2>
-                            <motion.p
-                                key={`s-${step}`}
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                transition={{ delay: 0.2 }}
-                                className="text-white/90 text-sm font-medium leading-relaxed max-w-[200px] mx-auto"
-                            >
-                                {steps[step].subtitle}
-                            </motion.p>
-                        </div>
-                    </div>
-
-                    <div className="flex justify-center gap-2 z-10 mt-auto pt-4">
-                        {steps.map((_, i) => (
-                            <div
-                                key={i}
+                        <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 md:space-y-8 min-h-0 py-4">
+                            <motion.div
+                                key={step}
+                                initial={{ scale: 0.5, opacity: 0, rotate: -10 }}
+                                animate={{ scale: 1, opacity: 1, rotate: 0 }}
+                                transition={{ type: "spring", stiffness: 200, damping: 15 }}
                                 className={clsx(
-                                    "h-1.5 rounded-full transition-all duration-300",
-                                    i === step ? "w-8 bg-white" : "w-1.5 bg-white/30"
+                                    "backdrop-blur-sm shadow-inner transition-all duration-500 shrink-0",
+                                    step === 0 ? "bg-transparent p-0 shadow-none scale-110 md:scale-125" : "bg-white/20 p-6 md:p-8 rounded-full"
                                 )}
-                            />
-                        ))}
+                            >
+                                {reason ? (
+                                    <div className="bg-white/10 p-4 rounded-3xl shrink-0 backdrop-blur-sm">
+                                        {steps[step].icon}
+                                    </div>
+                                ) : (
+                                    steps[step].icon
+                                )}
+                            </motion.div>
+                            <div className="px-2">
+                                <motion.h2
+                                    key={`t-${step}`}
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    className="text-2xl md:text-3xl font-black text-white mb-2 md:mb-3 leading-tight"
+                                >
+                                    {steps[step].title}
+                                </motion.h2>
+                                <motion.p
+                                    key={`s-${step}`}
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                    transition={{ delay: 0.2 }}
+                                    className="text-white/80 text-xs md:text-sm font-medium leading-relaxed max-w-[180px] md:max-w-[200px] mx-auto"
+                                >
+                                    {steps[step].subtitle}
+                                </motion.p>
+                            </div>
+                        </div>
+
+                        <div className="flex justify-center gap-1.5 mt-6 md:mt-auto">
+                            {steps.map((_, i) => (
+                                <div
+                                    key={i}
+                                    className={clsx(
+                                        "h-1 rounded-full transition-all duration-300",
+                                        i === step ? "w-6 bg-white" : "w-1 bg-white/30"
+                                    )}
+                                />
+                            ))}
+                        </div>
                     </div>
                 </div>
 
                 {/* Right Panel */}
-                <div className="w-full md:w-8/12 p-10 bg-app-bg flex flex-col relative">
-                    <div className="flex-1 flex flex-col items-center justify-center overflow-y-auto">
+                <div className="w-full md:w-8/12 p-6 md:p-10 bg-app-bg flex flex-col relative h-full min-h-0">
+                    <div className="flex-1 flex flex-col items-center justify-center overflow-y-auto no-scrollbar scroll-smooth">
                         <AnimatePresence mode='wait'>
                             {step === 0 && (
                                 <motion.div key="step0" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
@@ -382,9 +391,21 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                                     </div>
                                                 )}
 
-                                                <button onClick={enableChaotic} disabled={chaoticStatus === 'enabling'} className={clsx("w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all", chaoticStatus === 'enabling' ? "bg-app-fg/10 text-app-muted" : "bg-purple-600 text-white hover:bg-purple-500 shadow-lg")}>
-                                                    {chaoticStatus === 'enabling' ? <><Terminal size={16} className="animate-pulse" /> Running Fix...</> : <><Cpu size={16} /> Auto-Configure System</>}
-                                                </button>
+                                                <div className="flex gap-2">
+                                                    <button onClick={enableChaotic} disabled={chaoticStatus === 'enabling'} className={clsx("flex-1 py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all", chaoticStatus === 'enabling' ? "bg-app-fg/10 text-app-muted" : "bg-purple-600 text-white hover:bg-purple-500 shadow-lg")}>
+                                                        {chaoticStatus === 'enabling' ? <><Terminal size={16} className="animate-pulse" /> Running Fix...</> : <><Cpu size={16} /> Auto-Configure System</>}
+                                                    </button>
+                                                    <button
+                                                        onClick={() => {
+                                                            setMissingChaotic(false);
+                                                            setChaoticStatus('success');
+                                                        }}
+                                                        disabled={chaoticStatus === 'enabling'}
+                                                        className="px-4 py-2 rounded-lg text-sm font-bold border border-app-border bg-app-card hover:bg-app-fg/10 text-app-muted hover:text-app-fg transition-all"
+                                                    >
+                                                        Skip
+                                                    </button>
+                                                </div>
                                             </div>
                                         )}
                                     </div>
@@ -433,9 +454,27 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                                         </div>
                                                     </div>
 
-                                                    <button onClick={enableSystem} className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition-all flex items-center justify-center gap-2">
-                                                        <Terminal size={18} /> {bootstrapStatus === 'error' ? "Retry Preparation" : "Initialize Keyring"}
-                                                    </button>
+                                                    <div className="flex flex-col gap-3 w-full">
+                                                        {bootstrapError && (
+                                                            <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-xl text-xs text-red-500 font-mono overflow-x-auto max-h-24">
+                                                                <span className="font-bold block mb-1">Error Log:</span>
+                                                                {bootstrapError}
+                                                            </div>
+                                                        )}
+
+                                                        <button onClick={enableSystem} className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition-all flex items-center justify-center gap-2">
+                                                            <Terminal size={18} /> {bootstrapStatus === 'error' ? "Retry Preparation" : "Initialize Keyring"}
+                                                        </button>
+
+                                                        {bootstrapStatus === 'error' && (
+                                                            <button
+                                                                onClick={() => setBootstrapStatus('success')}
+                                                                className="w-full py-2 text-xs font-bold text-app-muted hover:text-app-fg transition-colors"
+                                                            >
+                                                                Skip Repair (Risky - Potentially Broken Repos)
+                                                            </button>
+                                                        )}
+                                                    </div>
                                                 </>
                                             ) : (
                                                 <div className="text-center py-4">
@@ -498,20 +537,20 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                         <h3 className="text-2xl font-bold text-app-fg">Software Sources</h3>
                                         <p className="text-app-muted text-sm">Recommended sources are pre-selected based on your hardware.</p>
                                     </div>
-                                    <div className="space-y-2 flex-1 overflow-y-auto pr-2 min-h-0">
+                                    <div className="space-y-2 flex-1 overflow-y-auto pr-2 min-h-0 w-full custom-scrollbar">
                                         {repoFamilies.map((fam) => (
-                                            <div key={fam.id} onClick={() => toggleRepoFamily(fam.id)} className={clsx("flex items-center justify-between p-4 rounded-xl border cursor-pointer transition-all", fam.enabled ? "bg-indigo-500/10 border-indigo-500/50 shadow-sm" : "bg-app-card border-app-border hover:border-app-fg/30")}>
-                                                <div className="flex items-center gap-4 text-left">
-                                                    <div className={clsx("p-2 rounded-lg", fam.enabled ? "bg-indigo-500 text-white" : "bg-app-fg/5 text-app-muted")}><fam.icon size={20} /></div>
-                                                    <div>
-                                                        <div className="flex items-center gap-2">
-                                                            <h4 className="font-bold text-app-fg text-sm">{fam.name}</h4>
-                                                            {fam.recommendation && <span className="text-[9px] bg-green-500/20 text-green-500 px-2 py-0.5 rounded-full border border-green-500/30 flex items-center gap-1"><Star size={8} fill="currentColor" /> {fam.recommendation}</span>}
+                                            <div key={fam.id} onClick={() => toggleRepoFamily(fam.id)} className={clsx("flex items-center justify-between p-3 md:p-4 rounded-xl border cursor-pointer transition-all", fam.enabled ? "bg-indigo-500/10 border-indigo-500/50 shadow-sm" : "bg-app-card border-app-border hover:border-app-fg/30")}>
+                                                <div className="flex items-center gap-3 md:gap-4 text-left">
+                                                    <div className={clsx("p-2 rounded-lg shrink-0", fam.enabled ? "bg-indigo-500 text-white" : "bg-app-fg/5 text-app-muted")}><fam.icon size={18} /></div>
+                                                    <div className="min-w-0">
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                            <h4 className="font-bold text-app-fg text-[13px] md:text-sm truncate">{fam.name}</h4>
+                                                            {fam.recommendation && <span className="text-[8px] md:text-[9px] bg-green-500/20 text-green-500 px-2 py-0.5 rounded-full border border-green-500/30 flex items-center gap-1 shrink-0"><Star size={8} fill="currentColor" /> {fam.recommendation}</span>}
                                                         </div>
-                                                        <p className="text-[11px] text-app-muted leading-tight">{fam.description}</p>
+                                                        <p className="text-[10px] md:text-[11px] text-app-muted leading-tight line-clamp-1">{fam.description}</p>
                                                     </div>
                                                 </div>
-                                                <div className={clsx("w-10 h-6 rounded-full p-1 transition-colors shrink-0", fam.enabled ? "bg-indigo-500" : "bg-app-fg/20")}><div className={clsx("w-4 h-4 bg-white rounded-full transition-transform", fam.enabled ? "translate-x-4" : "translate-x-0")} /></div>
+                                                <div className={clsx("w-9 h-5 rounded-full p-1 transition-colors shrink-0", fam.enabled ? "bg-indigo-500" : "bg-app-fg/20")}><div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", fam.enabled ? "translate-x-4" : "translate-x-0")} /></div>
                                             </div>
                                         ))}
                                     </div>
@@ -543,9 +582,9 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                             <Moon size={32} /><span className="font-bold text-sm">Dark Mode</span>
                                         </button>
                                     </div>
-                                    <div className="flex justify-center gap-4 flex-wrap mt-6">
+                                    <div className="flex justify-center gap-3 md:gap-4 flex-wrap mt-2 md:mt-6">
                                         {['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'].map((color) => (
-                                            <button key={color} onClick={() => setAccentColor(color)} className={clsx("w-10 h-10 rounded-full border-2 transition-transform hover:scale-110", accentColor === color ? "border-app-fg scale-125 ring-4 ring-app-fg/10" : "border-transparent")} style={{ backgroundColor: color }} />
+                                            <button key={color} onClick={() => setAccentColor(color)} className={clsx("w-8 h-8 md:w-10 md:h-10 rounded-full border-2 transition-transform hover:scale-110", accentColor === color ? "border-app-fg scale-110 md:scale-125 ring-4 ring-app-fg/10" : "border-transparent")} style={{ backgroundColor: color }} />
                                         ))}
                                     </div>
                                 </motion.div>
@@ -553,8 +592,8 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                         </AnimatePresence>
                     </div>
 
-                    <div className="flex justify-between items-center pt-8 border-t border-app-border/50 mt-auto">
-                        <button onClick={() => setStep(step - 1)} disabled={step === 0 || isSaving} className={clsx("text-sm font-bold transition-colors px-6 py-2 rounded-lg", step === 0 ? "opacity-0 pointer-events-none" : "text-app-muted hover:text-app-fg hover:bg-app-fg/5")}>Back</button>
+                    <div className="flex justify-between items-center pt-6 border-t border-app-border/50 mt-6 shrink-0">
+                        <button onClick={() => setStep(step - 1)} disabled={step === 0 || isSaving} className={clsx("text-sm font-bold transition-colors px-4 py-2 rounded-lg", step === 0 ? "opacity-0 pointer-events-none" : "text-app-muted hover:text-app-fg hover:bg-app-fg/5")}>Back</button>
                         <button
                             onClick={nextStep}
                             disabled={
@@ -563,7 +602,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                 (step === 1 && bootstrapStatus !== 'success')
                             }
                             className={clsx(
-                                "text-white px-10 py-3 rounded-xl font-black text-sm active:scale-95 transition-all flex items-center gap-2 shadow-2xl uppercase tracking-wider",
+                                "text-white px-8 md:px-10 py-2.5 md:py-3 rounded-xl font-black text-xs md:text-sm active:scale-95 transition-all flex items-center gap-2 shadow-xl md:shadow-2xl uppercase tracking-wider",
                                 (isSaving || (step === 0 && (chaoticStatus !== 'success' || missingChaotic)) || (step === 1 && bootstrapStatus !== 'success')) ? "opacity-30 grayscale cursor-not-allowed" : "hover:opacity-90 hover:scale-[1.02]"
                             )}
                             style={{ backgroundColor: accentColor }}

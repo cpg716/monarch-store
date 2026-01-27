@@ -1,17 +1,17 @@
 # Build from source for perfect library compatibility
 pkgname=monarch-store
-pkgver=0.2.30
+pkgver=0.2.40
 pkgrel=1
 pkgdesc="A modern, high-performance software store for Arch Linux based distributions."
 arch=('x86_64' 'aarch64')
 url="https://github.com/cpg716/monarch-store"
 license=('MIT')
-depends=('gtk3' 'webkit2gtk-4.1' 'libappindicator-gtk3' 'librsvg' 'polkit' 'git' 'pacman-contrib')
+depends=('gtk3' 'webkit2gtk-4.1' 'libappindicator-gtk3' 'librsvg' 'polkit' 'git' 'pacman-contrib' 'openssl')
 makedepends=('nodejs' 'npm' 'rust' 'cargo')
 provides=('monarch-store')
 conflicts=('monarch-store-git' 'monarch-store-bin')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
-sha256sums=('e341fb9d6565d287abe22964a438072006dbb67f054a5c080c7e08660d59272a')
+sha256sums=('183d86e2332b8550f80bafee0f7cd7a9f3b78383f842246a559afd2ba2287625')
 
 build() {
   cd "${srcdir}/${pkgname}-${pkgver}"
@@ -77,27 +77,7 @@ esac
 EOF
   chmod 755 "${pkgdir}/usr/bin/monarch-pk-helper"
 
-  # 2. Policy File
-  cat <<EOF > "${pkgdir}/usr/share/polkit-1/actions/com.monarch.store.policy"
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
-<policyconfig>
-  <vendor>MonARCH Store</vendor>
-  <vendor_url>https://github.com/monarch-store/monarch-store</vendor_url>
-  <action id="com.monarch.store.package-manage">
-    <description>Manage system packages and repositories</description>
-    <message>Authentication is required to install, update, or remove applications.</message>
-    <icon_name>package-x-generic</icon_name>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/monarch-pk-helper</annotate>
-    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
-  </action>
-</policyconfig>
-EOF
-  chmod 644 "${pkgdir}/usr/share/polkit-1/actions/com.monarch.store.policy"
+  # 2. Policy File - FROM SOURCE (Zero-Config Reliability)
+  # We assume src-tauri/com.monarch.store.policy is the Source of Truth
+  install -Dm644 "src-tauri/com.monarch.store.policy" "${pkgdir}/usr/share/polkit-1/actions/com.monarch.store.policy"
 }

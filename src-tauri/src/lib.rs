@@ -27,8 +27,25 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_aptabase::Builder::new("A-EU-3907248034").build())
+        .plugin(
+            tauri_plugin_aptabase::Builder::new("A-EU-3907248034")
+                .with_panic_hook(Box::new(|client, info, msg| {
+                    let location = info
+                        .location()
+                        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let _ = client.track_event(
+                        "panic",
+                        Some(serde_json::json!({
+                            "message": msg,
+                            "location": location
+                        })),
+                    );
+                }))
+                .build(),
+        )
         .manage(RepoManager::new())
         .manage(ChaoticApiClient::new())
         .manage(flathub_api::FlathubApiClient::new())
@@ -38,6 +55,17 @@ pub fn run() {
         .manage(ScmState(scm_api::ScmClient::new()))
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // v0.2.40: RUNTIME REQUIREMENT CHECK
+            // Prevent silent crashes if the PKGBUILD failed us.
+            let required_bins = vec!["git", "checkupdates", "pkexec"];
+            for bin in required_bins {
+                if which::which(bin).is_err() {
+                    eprintln!("CRITICAL ERROR: Runtime dependency '{}' is missing!", bin);
+                    // We can't use toast yet as frontend isn't ready. Polling later handles this.
+                }
+            }
+
             tauri::async_runtime::spawn(async move {
                 {
                     use tauri_plugin_aptabase::EventTracker;
@@ -106,9 +134,11 @@ pub fn run() {
             commands::reviews::submit_review,
             commands::reviews::get_local_reviews,
             odrs_api::get_app_rating,
+            odrs_api::get_app_ratings_batch,
             odrs_api::get_app_reviews,
             repair::repair_unlock_pacman,
             repair::repair_reset_keyring,
+            repair::check_keyring_health,
             repair::repair_emergency_sync,
             repair::check_pacman_lock,
             repair::initialize_system,

@@ -354,6 +354,28 @@ pub async fn uninstall_package(
     name: String,
     password: Option<String>,
 ) -> Result<(), String> {
+    // SUICIDE PREVENTION: Protect critical system packages
+    let protected = [
+        "base",
+        "base-devel",
+        "linux",
+        "linux-lts",
+        "linux-zen",
+        "glibc",
+        "systemd",
+        "pacman",
+        "sudo",
+        "monarch-store",
+        "monarch-pk-helper",
+    ];
+
+    if protected.contains(&name.as_str()) {
+        let _ = app.emit("install-complete", "failed");
+        return Err(format!(
+            "PITAL ERROR: '{}' is a protected system package. Uninstallation is forbidden.",
+            name
+        ));
+    }
     // Acquire global lock
     let _guard = crate::utils::PRIVILEGED_LOCK.lock().await;
 
@@ -447,7 +469,12 @@ async fn build_aur_package_single(
 
     let _ = app.emit("install-output", format!("Cloning {} from AUR...", name));
     let clone_status = tokio::process::Command::new("git")
-        .args(["clone", &format!("https://aur.archlinux.org/{}.git", name)])
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            &format!("https://aur.archlinux.org/{}.git", name),
+        ])
         .current_dir(pkg_path)
         .status()
         .await
@@ -483,6 +510,25 @@ async fn build_aur_package_single(
     }
 
     let pkg_dir = pkg_path.join(name);
+
+    // SECURITY: Root Check
+    // We must ensure we are NOT running as root before invoking makepkg
+    #[cfg(target_os = "linux")]
+    {
+        let is_root = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+            .unwrap_or(false);
+
+        if is_root {
+            return Err(
+                "Security Violation: Attempted to run makepkg as root. This is forbidden."
+                    .to_string(),
+            );
+        }
+    }
+
     let _ = app.emit("install-output", format!("Building {} (makepkg)...", name));
 
     let mut makepkg = tokio::process::Command::new("makepkg");
