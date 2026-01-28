@@ -1,8 +1,10 @@
 import { Zap } from 'lucide-react';
 import TrendingSection from '../components/TrendingSection';
 import CategoryGrid from '../components/CategoryGrid';
-import { ESSENTIAL_IDS } from '../constants';
+import { useSmartEssentials } from '../hooks/useSmartEssentials';
+import { useOnlineStatus } from '../hooks/useOnlineStatus'; // Vector 4: Offline Resilience
 import { Package } from '../components/PackageCard';
+import { WifiOff } from 'lucide-react';
 
 interface HomePageProps {
     onSelectPackage: (pkg: Package) => void;
@@ -11,6 +13,9 @@ interface HomePageProps {
 }
 
 export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }: HomePageProps) {
+    const { essentials, loading } = useSmartEssentials();
+    const isOnline = useOnlineStatus();
+
     return (
         <div className="space-y-12 mt-4 animate-in fade-in duration-500">
             <section>
@@ -21,7 +26,9 @@ export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }
                         </div>
                         <div>
                             <h2 className="text-xl font-bold text-slate-900 dark:text-white">Recommended Essentials</h2>
-                            <p className="text-xs text-slate-500 dark:text-app-muted">Optimized for your system.</p>
+                            <p className="text-xs text-slate-500 dark:text-app-muted">
+                                {loading ? "Curating for you..." : "Optimized for your system."}
+                            </p>
                         </div>
                     </div>
                     <button
@@ -31,9 +38,23 @@ export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }
                         See All
                     </button>
                 </div>
+
+                {/* VECTOR 4: OFFLINE BANNER */}
+                {!isOnline && (
+                    <div className="mx-2 mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center gap-4 animate-in slide-in-from-top-2">
+                        <div className="p-2 bg-amber-500/20 rounded-full text-amber-500">
+                            <WifiOff size={20} />
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-amber-500 text-sm">No Internet Connection</h3>
+                            <p className="text-xs text-amber-500/80">You are browsing cached application data. Install/Update may fail.</p>
+                        </div>
+                    </div>
+                )}
+
                 <TrendingSection
                     title=""
-                    filterIds={ESSENTIAL_IDS}
+                    filterIds={essentials}
                     onSelectPackage={onSelectPackage}
                     onSeeAll={() => onSeeAll('essentials')}
                     variant="scroll"

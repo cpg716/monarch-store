@@ -1,91 +1,97 @@
-import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { ShieldCheck, Zap } from 'lucide-react';
-
+import { ShieldCheck, Rocket, Ship, Gamepad2, Layers } from 'lucide-react';
 import { motion } from 'framer-motion';
-
-
-
-interface SystemInfo {
-    kernel: string;
-    distro: string;
-    pacman_version: string;
-    chaotic_enabled: boolean;
-    cpu_optimization: string;
-}
+import { useDistro } from '../hooks/useDistro';
+import { clsx } from 'clsx';
+import logo from '../assets/logo.png';
+import archLogo from '../assets/arch-logo.svg';
 
 export default function HeroSection() {
-    const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+    const { distro, loading } = useDistro();
 
-    useEffect(() => {
-        invoke<SystemInfo>('get_system_info').then(setSystemInfo).catch(console.error);
-    }, []);
+    if (loading) return <div className="h-[120px] animate-pulse rounded-3xl bg-white/5 mx-6 mt-6 mb-8" />;
+
+    // Helper logic for Distro Badge
+    const getDistroBadge = () => {
+        switch (distro.id) {
+            case 'cachyos': return { icon: Rocket, label: 'CachyOS Optimized', color: 'text-emerald-400', border: 'border-emerald-500/20 bg-emerald-500/10' };
+            case 'manjaro': return { icon: ShieldCheck, label: 'Manjaro Stability Guard', color: 'text-green-400', border: 'border-green-500/20 bg-green-500/10' };
+            case 'garuda': return { icon: Gamepad2, label: 'Garuda Dr460nized', color: 'text-fuchsia-400', border: 'border-fuchsia-500/20 bg-fuchsia-500/10' };
+            case 'endeavouros': return { icon: Ship, label: 'EndeavourOS Terminal', color: 'text-purple-400', border: 'border-purple-500/20 bg-purple-500/10' };
+            default: return {
+                icon: () => <img src={archLogo} className="w-4 h-4 object-contain brightness-0 invert" alt="Arch" />,
+                label: 'Standard Arch System',
+                color: 'text-blue-400',
+                border: 'border-blue-500/20 bg-blue-500/10'
+            };
+        }
+    };
+
+    const badge = getDistroBadge();
+    const BadgeIcon = badge.icon;
 
     return (
-        <div className="flex flex-col gap-4 mb-8">
-            <div className="relative w-full min-h-[160px] rounded-[40px] overflow-hidden group select-none shadow-2xl border border-white/10 flex items-center justify-center">
-                {/* Background */}
-                <div className="absolute inset-0 bg-gradient-to-br from-[#0f172a] via-[#1e1b4b] to-[#0f172a] transition-all duration-700" />
+        <section className="relative px-6 pt-2 pb-4 flex flex-col items-center justify-center text-center z-10">
+            {/* Background Glow */}
+            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-3/4 h-32 bg-blue-600/20 blur-[100px] rounded-full pointer-events-none" />
 
-                <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-20" />
+            {/* Logo Header - Composite Logo (Icon + Text) */}
+            <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ type: "spring", stiffness: 100, damping: 15 }}
+                className="relative mb-0 group -mt-4"
+            >
+                <div className="absolute inset-[-10%] bg-blue-500/10 blur-3xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-1000" />
+                <img
+                    src={logo}
+                    alt="MonARCH Store"
+                    className="w-72 md:w-[420px] object-contain drop-shadow-[0_0_40px_rgba(59,130,246,0.3)] relative z-10"
+                />
+            </motion.div>
 
-                {/* Glow Effects */}
-                <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full bg-blue-500/10 blur-[100px] animate-pulse duration-[8000ms]" />
-                <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-purple-500/10 blur-[100px]" />
 
-                {/* Content Container */}
-                <div className="relative z-10 flex flex-col items-center justify-center text-center px-8 py-10 text-white max-w-4xl mx-auto">
-                    <motion.div
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ duration: 0.4 }}
-                        className="flex flex-col items-center gap-2"
-                    >
-                        <motion.h2
-                            initial={{ y: 10, opacity: 0 }}
-                            animate={{ y: 0, opacity: 1 }}
-                            transition={{ delay: 0.1 }}
-                            className="text-4xl md:text-6xl font-black text-white tracking-tight leading-none drop-shadow-xl"
-                        >
-                            Order from <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">Chaos</span>.
-                        </motion.h2>
+            {/* Tagline */}
+            <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.1 }}
+                className="text-lg text-app-muted font-medium mb-4 -mt-2"
+            >
+                Universal Arch Linux App Manager
+            </motion.p>
 
-                        <motion.div
-                            initial={{ y: 10, opacity: 0 }}
-                            animate={{ y: 0, opacity: 1 }}
-                            transition={{ delay: 0.2 }}
-                            className="flex flex-wrap items-center justify-center gap-3 mt-4"
-                        >
-                            {/* System Status Badge */}
-                            <div className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-teal-500/10 border border-teal-500/20 backdrop-blur-xl">
-                                <ShieldCheck size={14} className="text-teal-400" />
-                                <span className="text-[10px] font-black uppercase tracking-widest text-teal-400/90">
-                                    System Optimized
-                                </span>
-                            </div>
-
-                            {/* CPU Optimization Badge */}
-                            {systemInfo && (
-                                <div className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-blue-500/10 border border-blue-500/20 backdrop-blur-xl">
-                                    <Zap size={14} className="text-blue-400 fill-blue-400" />
-                                    <span className="text-[10px] font-black uppercase tracking-widest text-blue-400/90">
-                                        {systemInfo.cpu_optimization} Native
-                                    </span>
-                                </div>
-                            )}
-                        </motion.div>
-
-                        <motion.p
-                            initial={{ y: 10, opacity: 0 }}
-                            animate={{ y: 0, opacity: 1 }}
-                            transition={{ delay: 0.3 }}
-                            className="text-sm md:text-base text-indigo-200/60 font-medium max-w-2zl leading-relaxed mt-4"
-                        >
-                            Get apps from <strong>Chaotic-AUR</strong>, <strong>CachyOS</strong>, and the <strong>AUR</strong> with a single click. High performance guaranteed by native CPU optimizations.
-                        </motion.p>
-                    </motion.div>
+            {/* Context Bar */}
+            <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.2 }}
+                className="flex flex-col md:flex-row items-center gap-3 md:gap-6"
+            >
+                {/* Distro Badge */}
+                <div className={clsx("flex items-center gap-2 px-4 py-1.5 rounded-full border backdrop-blur-md shadow-lg", badge.border)}>
+                    <BadgeIcon size={14} className={badge.color} />
+                    <span className={clsx("text-xs font-bold uppercase tracking-wider", badge.color)}>
+                        {badge.label}
+                    </span>
                 </div>
-            </div>
-        </div>
+
+                {/* Separator (Hidden on mobile) */}
+                <div className="hidden md:block w-1 h-1 rounded-full bg-white/20" />
+
+                {/* Repo Access */}
+                <div className="flex items-center gap-4 text-xs font-medium text-app-muted/80 px-4 py-1.5 rounded-full border border-slate-200 dark:border-white/5 bg-white/50 dark:bg-black/20 backdrop-blur-md shadow-sm dark:shadow-none">
+                    <span className="flex items-center gap-1.5">
+                        <Layers size={12} className="text-blue-400" /> Access:
+                    </span>
+                    <span className="flex items-center gap-2">
+                        <span className="text-slate-600 dark:text-white/70">Official</span>
+                        <span className="w-0.5 h-3 bg-slate-300 dark:bg-white/10" />
+                        <span className="text-amber-400/90">AUR</span>
+                        <span className="w-0.5 h-3 bg-white/10" />
+                        <span className="text-purple-400/90">Chaotic</span>
+                    </span>
+                </div>
+            </motion.div>
+        </section>
     );
 }

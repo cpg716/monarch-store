@@ -62,6 +62,17 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
 }
 
 #[tauri::command]
+pub async fn get_all_installed_names() -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("pacman")
+        .arg("-Qq")
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().map(|s| s.to_string()).collect())
+}
+
+#[tauri::command]
 pub async fn get_infra_stats(
     state: State<'_, chaotic_api::ChaoticApiClient>,
 ) -> Result<crate::chaotic_api::InfraStats, String> {
@@ -99,7 +110,7 @@ pub async fn toggle_repo(
     name: String,
     enabled: bool,
 ) -> Result<(), String> {
-    state.inner().set_repo_state(&name, enabled).await;
+    state.inner().set_repo_state(&name, enabled).await?;
     Ok(())
 }
 
@@ -114,7 +125,7 @@ pub async fn toggle_repo_family(
     state
         .inner()
         .set_repo_family_state(&family, enabled, skip)
-        .await;
+        .await?;
     Ok(())
 }
 
@@ -294,6 +305,7 @@ pub async fn trigger_repo_sync(
 pub async fn update_and_install_package(
     app: tauri::AppHandle,
     name: String,
+    repo_name: Option<String>,
     password: Option<String>,
 ) -> Result<String, String> {
     use tauri::Emitter;
@@ -301,16 +313,33 @@ pub async fn update_and_install_package(
         "install-output",
         format!("--- System Update & Install: {} ---", name),
     );
+
+    // Process Guard Shield (Pillar 6)
+    if let Some(conflict) = crate::repair::check_conflicting_processes().await {
+        let msg = format!(
+            "Error: Conflicting process '{}' is running. Please close it first.",
+            conflict
+        );
+        let _ = app.emit("install-output", &msg);
+        let _ = app.emit("install-complete", "failed");
+        return Err(msg);
+    }
     let _ = app.emit(
         "install-output",
         "Synchronizing databases and updating system...",
     );
 
-    // Command: pacman -Syu --noconfirm -- package_name
-    let (binary, args) = crate::commands::utils::build_pacman_cmd(
-        &["-Syu", "--noconfirm", "--", &name][..],
-        &password,
-    );
+    // Command: pacman -Syu --overwrite '*' --noconfirm -- [repo/]package_name
+    let mut action_args = vec!["-Syu", "--overwrite", "*", "--noconfirm", "--"];
+    let target_string;
+    if let Some(r_name) = &repo_name {
+        target_string = format!("{}/{}", r_name, name);
+        action_args.push(&target_string);
+    } else {
+        action_args.push(&name);
+    }
+
+    let (binary, args) = crate::commands::utils::build_pacman_cmd(&action_args, &password);
 
     let mut child = tokio::process::Command::new(binary);
     for arg in &args {
@@ -370,6 +399,20 @@ pub async fn update_and_install_package(
     }
 }
 #[tauri::command]
+pub async fn is_advanced_mode(state: State<'_, repo_manager::RepoManager>) -> Result<bool, String> {
+    Ok(state.inner().is_advanced_mode().await)
+}
+
+#[tauri::command]
+pub async fn set_advanced_mode(
+    state: State<'_, repo_manager::RepoManager>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.inner().set_advanced_mode(enabled).await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn check_app_update() -> Result<Option<String>, String> {
     // Uses checkupdates from pacman-contrib to check for updates safely without root
     let output = std::process::Command::new("checkupdates")
@@ -388,4 +431,29 @@ pub async fn check_app_update() -> Result<Option<String>, String> {
     }
 
     Ok(None)
+}
+
+#[tauri::command]
+pub async fn is_telemetry_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<bool, String> {
+    Ok(state.inner().is_telemetry_enabled().await)
+}
+
+#[tauri::command]
+pub async fn set_telemetry_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.inner().set_telemetry_enabled(enabled).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_install_mode_command() -> String {
+    match utils::get_install_mode() {
+        utils::InstallMode::System => "system".to_string(),
+        utils::InstallMode::Portable => "portable".to_string(),
+        utils::InstallMode::Dev => "portable".to_string(),
+    }
 }

@@ -14,13 +14,17 @@ pub struct RepoConfig {
     pub enabled: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
     repos: Vec<RepoConfig>,
     #[serde(default)]
     aur_enabled: bool,
     #[serde(default)]
     one_click_enabled: bool,
+    #[serde(default)]
+    advanced_mode: bool,
+    #[serde(default)]
+    telemetry_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -30,18 +34,34 @@ pub struct RepoManager {
     repos: Arc<RwLock<Vec<RepoConfig>>>,
     pub aur_enabled: Arc<RwLock<bool>>,
     pub one_click_enabled: Arc<RwLock<bool>>,
+    pub advanced_mode: Arc<RwLock<bool>>,
+    pub telemetry_enabled: Arc<RwLock<bool>>,
 }
 
 // Helper for Intelligent Priority Sorting (Granular Optimization Ranking)
-pub fn calculate_package_rank(pkg: &Package, opt_level: u8) -> u8 {
-    // opt_level: 0=None, 1=v3, 2=v4, 3=znver4
-    match opt_level {
-        3 => 0, // Rank 0: Zen 4/5 Optimized (ELITE)
-        2 => 1, // Rank 1: x86-64-v4 Optimized
-        1 => 2, // Rank 2: x86-64-v3 Optimized
-        _ => {
-            // Rank 4+: General Priorities (Chaotic=4, Official=5, etc)
-            pkg.source.priority().saturating_add(3)
+pub fn calculate_package_rank(pkg: &Package, opt_level: u8, distro: &crate::distro_context::DistroContext) -> u8 {
+    // Manjaro Strategy: Stability First (Official Repos Priority 0)
+    // We treat "source_first" as "Official/Stable First" here
+    if distro.capabilities.default_search_sort == "source_first" {
+         match pkg.source {
+            PackageSource::Official | PackageSource::Manjaro => 0, // Highest Priority
+            PackageSource::Aur => 2,
+            PackageSource::Chaotic | PackageSource::CachyOS | PackageSource::Garuda | PackageSource::Endeavour => {
+                 // Deprioritize unofficial binaries massively to warn user
+                10 
+            }
+        }
+    } else {
+        // CachyOS/Garuda/Arch Strategy: Performance First (Optimization Level Priority)
+        // opt_level: 0=None, 1=v3, 2=v4, 3=znver4
+        match opt_level {
+            3 => 0, // Rank 0: Zen 4/5 Optimized (ELITE)
+            2 => 1, // Rank 1: x86-64-v4 Optimized
+            1 => 2, // Rank 2: x86-64-v3 Optimized
+            _ => {
+                // Rank 4+: General Priorities (Chaotic=4, Official=5, etc)
+                pkg.source.priority().saturating_add(3)
+            }
         }
     }
 }
@@ -184,6 +204,11 @@ impl RepoManager {
         // We load repos.json ONLY for AUR/One-Click preferences, NOT for repo state
         let mut initial_aur = false;
         let mut initial_one_click = false;
+        let mut initial_advanced = false;
+        let mut initial_telemetry = false; // Default to FALSE (Strict Opt-In) usually, but user requested consistent experience. 
+        // Plan said: "Default: false (Strict Opt-In) OR true (Opt-Out) — Decision: Set to true but force the User to see the Onboarding Modal where they can uncheck it."
+        // We will default to false here for safety, onboarding modal is responsible for setting it to true if user consents.
+        
         let config_file = config_path.join("repos.json");
         
         if config_file.exists() {
@@ -192,6 +217,8 @@ impl RepoManager {
                 if let Ok(saved_config) = serde_json::from_reader::<_, StoredConfig>(reader) {
                     initial_aur = saved_config.aur_enabled;
                     initial_one_click = saved_config.one_click_enabled;
+                    initial_advanced = saved_config.advanced_mode;
+                    initial_telemetry = saved_config.telemetry_enabled;
                 }
             }
         }
@@ -201,6 +228,8 @@ impl RepoManager {
             repos: Arc::new(RwLock::new(initial_repos)),
             aur_enabled: Arc::new(RwLock::new(initial_aur)),
             one_click_enabled: Arc::new(RwLock::new(initial_one_click)),
+            advanced_mode: Arc::new(RwLock::new(initial_advanced)),
+            telemetry_enabled: Arc::new(RwLock::new(initial_telemetry)),
         }
     }
 
@@ -208,12 +237,16 @@ impl RepoManager {
         let repos = self.repos.read().await.clone();
         let aur = *self.aur_enabled.read().await;
         let one_click = *self.one_click_enabled.read().await;
+        let advanced = *self.advanced_mode.read().await;
+        let telemetry = *self.telemetry_enabled.read().await;
 
         tokio::task::spawn_blocking(move || {
             let config = StoredConfig {
                 repos,
                 aur_enabled: aur,
                 one_click_enabled: one_click,
+                advanced_mode: advanced,
+                telemetry_enabled: telemetry,
             };
 
             let config_path = dirs::config_dir()
@@ -248,6 +281,33 @@ impl RepoManager {
 
     pub async fn is_one_click_enabled(&self) -> bool {
         *self.one_click_enabled.read().await
+    }
+
+    pub async fn set_advanced_mode(&self, enabled: bool) {
+        let mut w = self.advanced_mode.write().await;
+        *w = enabled;
+        drop(w);
+        self.save_config_async().await;
+    }
+
+    pub async fn is_advanced_mode(&self) -> bool {
+        *self.advanced_mode.read().await
+    }
+
+    pub async fn set_telemetry_enabled(&self, enabled: bool) {
+        let mut w = self.telemetry_enabled.write().await;
+        *w = enabled;
+        drop(w);
+        self.save_config_async().await;
+    }
+
+    pub async fn is_telemetry_enabled(&self) -> bool {
+        *self.telemetry_enabled.read().await
+    }
+
+    pub async fn is_repo_enabled(&self, name: &str) -> bool {
+        let repos = self.repos.read().await;
+        repos.iter().any(|r| r.name == name && r.enabled)
     }
 
     pub async fn get_all_repos(&self) -> Vec<RepoConfig> {
@@ -365,6 +425,8 @@ fi
 # Best effort cleanup of legacy direct entries
 sed -i '/\[chaotic-aur\]/,/^\s*$/{d}' /etc/pacman.conf
 sed -i '/\[cachyos\]/,/^\s*$/{d}' /etc/pacman.conf
+# Aggressive cleanup of orphaned Includes (Fixes "Server not recognized in options")
+sed -i '/Include.*cachyos-.*mirrorlist/d' /etc/pacman.conf
 sed -i '/\[garuda\]/,/^\s*$/{d}' /etc/pacman.conf
 sed -i '/\[endeavouros\]/,/^\s*$/{d}' /etc/pacman.conf
 sed -i '/\[manjaro/D' /etc/pacman.conf
@@ -426,7 +488,24 @@ sed -i '/\[manjaro/D' /etc/pacman.conf
         crate::utils::run_privileged_script(&script, password, false).await.map(|_| ())
     }
 
-    pub async fn set_repo_state(&self, name: &str, enabled: bool) {
+    pub async fn set_repo_state(&self, name: &str, enabled: bool) -> Result<(), String> {
+        // --- FIREWALL: Identity Matrix Check ---
+        let distro = crate::distro_context::get_distro_context();
+        
+        // Rule 1: Manjaro cannot enable Chaotic-AUR (Glibc Mismatch)
+        if enabled && name == "chaotic-aur" {
+            // Bypass check if in Advanced Mode
+            if !*self.advanced_mode.read().await {
+                if let crate::distro_context::ChaoticSupport::Blocked = distro.capabilities.chaotic_aur_support {
+                     return Err(format!(
+                        "ACTION BLOCKED: Enabling Chaotic-AUR on {} is unsafe due to glibc incompatibility.", 
+                        distro.pretty_name
+                    ));
+                }
+            }
+        }
+        // ---------------------------------------
+
         let mut repos = self.repos.write().await;
         if let Some(r) = repos.iter_mut().find(|r| r.name == name) {
             r.enabled = enabled;
@@ -444,11 +523,13 @@ sed -i '/\[manjaro/D' /etc/pacman.conf
         // If we want to skip, we need arguments. But this is internal API.
         // We will call apply explicitly from commands if needed.
         let _ = self.apply_os_config(None).await;
+        
+        Ok(())
     }
 
     /// Toggle all repos belonging to a family (e.g., "cachyos", "manjaro")
     /// Added skip_os_sync to avoid 4x prompts during onboarding
-    pub async fn set_repo_family_state(&self, family: &str, enabled: bool, skip_os_sync: bool) {
+    pub async fn set_repo_family_state(&self, family: &str, enabled: bool, skip_os_sync: bool) -> Result<(), String> {
         let mut repos = self.repos.write().await;
         let family_lower = family.to_lowercase();
         let mut affected_repos = Vec::new();
@@ -499,6 +580,8 @@ sed -i '/\[manjaro/D' /etc/pacman.conf
         if !skip_os_sync {
             let _ = self.apply_os_config(None).await;
         }
+
+        Ok(())
     }
 
     /// Targeted Install Helper: Safely ensure a specific repo database exists
@@ -577,6 +660,7 @@ sed -i '/\[manjaro/D' /etc/pacman.conf
             .map(|_| ())
     }
 
+// ... inside RepoManager impl ...
 
     pub async fn search(&self, query: &str) -> Vec<Package> {
         let cache = self.cache.read().await;
@@ -586,6 +670,7 @@ sed -i '/\[manjaro/D' /etc/pacman.conf
 
         let cpu_v3 = crate::utils::is_cpu_v3_compatible();
         let cpu_v4 = crate::utils::is_cpu_v4_compatible();
+        let distro = crate::distro_context::get_distro_context();
 
         for (repo_name, pkgs) in cache.iter() {
             // Determine optimization level for this repo
@@ -613,14 +698,10 @@ sed -i '/\[manjaro/D' /etc/pacman.conf
             }
         }
 
-        // Sort results by Intelligent Power Standard:
-        // 1. Optimized Hardware Repo (znver4 > v4 > v3)
-        // 2. Chaotic / CachyOS (Instant)
-        // 3. Official Arch
-        // 4. AUR
+        // Sort results by Intelligent Power Standard + Distro Context
         results.sort_by(|(pkg_a, level_a), (pkg_b, level_b)| {
-            let rank_a = calculate_package_rank(pkg_a, *level_a);
-            let rank_b = calculate_package_rank(pkg_b, *level_b);
+            let rank_a = calculate_package_rank(pkg_a, *level_a, &distro);
+            let rank_b = calculate_package_rank(pkg_b, *level_b, &distro);
 
             if rank_a != rank_b {
                 return rank_a.cmp(&rank_b);
@@ -654,6 +735,7 @@ sed -i '/\[manjaro/D' /etc/pacman.conf
 
         let cpu_v3 = crate::utils::is_cpu_v3_compatible();
         let cpu_v4 = crate::utils::is_cpu_v4_compatible();
+        let distro = crate::distro_context::get_distro_context();
 
         for (repo_name, pkgs) in cache.iter() {
             let opt_level: u8 = if repo_name.contains("-znver4") && crate::utils::is_cpu_znver4_compatible() {
@@ -672,8 +754,8 @@ sed -i '/\[manjaro/D' /etc/pacman.conf
         }
 
         results.sort_by(|(pkg_a, level_a, _), (pkg_b, level_b, _)| {
-            let rank_a = calculate_package_rank(pkg_a, *level_a);
-            let rank_b = calculate_package_rank(pkg_b, *level_b);
+            let rank_a = calculate_package_rank(pkg_a, *level_a, &distro);
+            let rank_b = calculate_package_rank(pkg_b, *level_b, &distro);
             rank_a.cmp(&rank_b)
         });
 
@@ -781,29 +863,31 @@ mod tests {
         let p_chaotic = make_test_pkg(PackageSource::Chaotic);
         let p_official = make_test_pkg(PackageSource::Official);
         let p_aur = make_test_pkg(PackageSource::Aur);
+        let distro = crate::distro_context::DistroContext::new(); // Default Arch
 
         // Rank Check directly (Standard Priorities: Chaotic=4, Official=5, Aur=8)
-        assert_eq!(calculate_package_rank(&p_chaotic, 0), 4);
-        assert_eq!(calculate_package_rank(&p_official, 0), 5);
-        assert_eq!(calculate_package_rank(&p_aur, 0), 8);
+        assert_eq!(calculate_package_rank(&p_chaotic, 0, &distro), 4);
+        assert_eq!(calculate_package_rank(&p_official, 0, &distro), 5);
+        assert_eq!(calculate_package_rank(&p_aur, 0, &distro), 8);
 
         // Verify Chaotic beats Official (Lower rank is better)
         assert!(
-            calculate_package_rank(&p_chaotic, 0) < calculate_package_rank(&p_official, 0)
+            calculate_package_rank(&p_chaotic, 0, &distro) < calculate_package_rank(&p_official, 0, &distro)
         );
     }
 
     #[test]
     fn test_optimized_priority() {
         let p_cachy = make_test_pkg(PackageSource::CachyOS);
+        let distro = crate::distro_context::DistroContext::new(); // Default Arch
 
         // Optimized tiers vs Standard Cachy (Cachy standard is priority 3+3=6)
-        assert_eq!(calculate_package_rank(&p_cachy, 3), 0); // znver4
-        assert_eq!(calculate_package_rank(&p_cachy, 2), 1); // v4
-        assert_eq!(calculate_package_rank(&p_cachy, 1), 2); // v3
-        assert_eq!(calculate_package_rank(&p_cachy, 0), 6); // Standard Cachy
+        assert_eq!(calculate_package_rank(&p_cachy, 3, &distro), 0); // znver4
+        assert_eq!(calculate_package_rank(&p_cachy, 2, &distro), 1); // v4
+        assert_eq!(calculate_package_rank(&p_cachy, 1, &distro), 2); // v3
+        assert_eq!(calculate_package_rank(&p_cachy, 0, &distro), 6); // Standard Cachy
 
-        assert!(calculate_package_rank(&p_cachy, 1) < calculate_package_rank(&p_cachy, 0));
+        assert!(calculate_package_rank(&p_cachy, 1, &distro) < calculate_package_rank(&p_cachy, 0, &distro));
     }
 }
 

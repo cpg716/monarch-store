@@ -77,7 +77,7 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                     <Icon size={18} className={info.color} />
                     <div className="flex flex-col leading-none">
                         <div className="flex items-center gap-2">
-                            <span className={clsx("text-sm font-bold", info.color)}>
+                            <span className={clsx("text-sm font-bold whitespace-nowrap", info.color)}>
                                 {info.label}
                             </span>
                             {(info as any).recommended && (
@@ -108,7 +108,7 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 5, scale: 0.98 }}
                         transition={{ duration: 0.15 }}
-                        className="absolute top-full left-0 right-0 mt-2 p-1 bg-app-card border border-app-border rounded-xl shadow-xl z-50 overflow-hidden"
+                        className="absolute top-full left-0 mt-2 p-1 bg-app-card border border-app-border rounded-xl shadow-xl z-50 overflow-hidden min-w-full w-max max-w-[calc(100vw-2rem)]"
                     >
                         <div className="flex flex-col gap-1 max-h-[300px] overflow-y-auto custom-scrollbar">
                             {variants.map(v => {
@@ -124,13 +124,13 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                                         }}
                                         className={clsx(
                                             "flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors group",
-                                            isSelected ? "bg-app-accent/10" : "hover:bg-app-hover"
+                                            isSelected ? "bg-blue-500/10 dark:bg-app-accent/10" : "hover:bg-slate-100 dark:hover:bg-white/5"
                                         )}
                                     >
                                         <div className="flex items-center gap-3">
                                             <VIcon size={16} className={vInfo.color} />
                                             <div className="flex flex-col items-start leading-none">
-                                                <span className={clsx("text-sm font-medium", isSelected ? "text-app-fg" : "text-app-muted")}>
+                                                <span className={clsx("text-sm font-medium whitespace-nowrap", isSelected ? "text-app-fg" : "text-app-muted")}>
                                                     {vInfo.label}
                                                 </span>
                                                 <div className="flex items-center gap-2 mt-1">

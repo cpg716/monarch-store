@@ -17,6 +17,7 @@ pub async fn reset_pacman_conf(password: Option<String>) -> Result<String, Strin
         # Target: chaotic-aur, cachyos, garuda, endeavouros, manjaro
         sed -i '/\[chaotic-aur\]/,/^\s*$/{d}' /etc/pacman.conf
         sed -i '/\[cachyos\]/,/^\s*$/{d}' /etc/pacman.conf
+        sed -i '/Include.*cachyos-.*mirrorlist/d' /etc/pacman.conf
         sed -i '/\[garuda\]/,/^\s*$/{d}' /etc/pacman.conf
         sed -i '/\[endeavouros\]/,/^\s*$/{d}' /etc/pacman.conf
         sed -i '/\[manjaro/D' /etc/pacman.conf

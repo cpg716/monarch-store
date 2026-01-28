@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Terminal, CheckCircle2, XCircle, Loader2, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw, ChevronUp, Trash2 } from 'lucide-react';
+import { Terminal, CheckCircle2, XCircle, Loader2, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw, ChevronUp, Trash2, Download, Package as PackageIcon, Sparkles } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { clsx } from 'clsx';
@@ -167,11 +167,66 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     const errorDetails = status === 'error' && logs.length > 0 ? friendlyError(logs[logs.length - 1]) : null;
 
+    // STEPPER LOGIC
+    const steps = [
+        { id: 1, label: 'Safety', icon: ShieldCheck },
+        { id: 2, label: 'Downloading', icon: Download },
+        { id: 3, label: 'Installing', icon: PackageIcon },
+        { id: 4, label: 'Finalizing', icon: Sparkles }
+    ];
+
+    const currentStep = (() => {
+        if (status === 'success') return 4;
+        if (detailedStatus.includes('Safety') || detailedStatus.includes('Resolving') || detailedStatus.includes('Lock')) return 1;
+        if (detailedStatus.includes('Downloading') || detailedStatus.includes('Syncing') || detailedStatus.includes('Cloning')) return 2;
+        if (detailedStatus.includes('Installing') || detailedStatus.includes('Building') || detailedStatus.includes('Compiling')) return 3;
+        return 1;
+    })();
+
     const displayStatus = status === 'error' && errorDetails
         ? errorDetails.title
         : status === 'idle' ? `Ready to ${mode === 'uninstall' ? 'Uninstall' : 'Install'}`
             : status === 'success' ? `${mode === 'uninstall' ? 'Uninstallation' : 'Installation'} Complete`
                 : detailedStatus || (pkg.source === 'aur' ? 'Building App (This may take a while)...' : `${mode === 'uninstall' ? 'Uninstalling' : 'Installing'}...`);
+
+    // RENDER STEPPER
+    const renderStepper = () => (
+        <div className="flex items-center justify-between px-8 py-4 bg-app-bg/50 border-b border-app-border">
+            {steps.map((step, idx) => {
+                const isActive = currentStep === step.id;
+                const isCompleted = currentStep > step.id || status === 'success';
+
+                return (
+                    <div key={step.id} className="flex flex-col items-center gap-2 relative z-10 w-20">
+                        <div className={clsx(
+                            "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-500",
+                            isCompleted ? "bg-green-500 text-white" :
+                                isActive ? "bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.5)]" :
+                                    "bg-app-fg/10 text-app-muted"
+                        )}>
+                            {isCompleted ? <CheckCircle2 size={16} /> : <step.icon size={14} />}
+                        </div>
+                        <span className={clsx(
+                            "text-[10px] font-bold uppercase tracking-wider transition-colors duration-300",
+                            (isActive || isCompleted) ? "text-app-fg" : "text-app-muted/50"
+                        )}>
+                            {step.label}
+                        </span>
+
+                        {/* Connector Line */}
+                        {idx < steps.length - 1 && (
+                            <div className="absolute top-4 left-[50%] w-[calc(100%+2rem)] h-[2px] bg-app-fg/5 -z-10">
+                                <div
+                                    className="h-full bg-green-500 transition-all duration-700"
+                                    style={{ width: isCompleted ? '100%' : '0%' }}
+                                />
+                            </div>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
 
     if (minimized) {
         return (
@@ -205,18 +260,15 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     const hasLockError = logs.some(l => l.includes("database is locked"));
 
-    // AUTO-HEAL LOGIC
+    // AUTO-HEAL LOGIC (DISABLED - Pillar 3: "Ask First" Rule)
+    // We now rely on the UI button to trigger handleRepair, instead of doing it automatically.
+    /*
     useEffect(() => {
         if (status === 'error' && !autoRetryAttempted) {
-            if (hasKeyringError) {
-                setAutoRetryAttempted(true);
-                handleRepair();
-            } else if (hasLockError) {
-                setAutoRetryAttempted(true);
-                handleUnlock();
-            }
+             // ...
         }
-    }, [status, hasKeyringError, hasLockError, autoRetryAttempted]);
+    }, ...);
+    */
 
     // Retry after Repair
     useEffect(() => {
@@ -228,6 +280,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     const handleUnlock = async () => {
         setIsRepairing(true);
+        setAutoRetryAttempted(true); // Enable auto-retry after fix
         try {
             await invoke('repair_unlock_pacman', { password: null });
             setLogs(prev => [...prev, '✓ Database unlocked.', 'Please try installing again.']);
@@ -241,6 +294,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     const handleRepair = async () => {
         setIsRepairing(true);
+        setAutoRetryAttempted(true); // Enable auto-retry after fix
         setLogs(prev => [...prev, '\n--- AUTO-HEALING: FIXING KEYRING ISSUES ---', 'The app detected a security key error.', 'Attempting to automatically repair trust database...', 'This will take a moment...']);
         try {
             await invoke('repair_reset_keyring', { password: null });
@@ -280,11 +334,13 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         setUpdateRequired(false);
         setStatus('running');
         setDetailedStatus('Updating System & Installing...');
+        setLogs([]); // Clear previous error logs
         setLogs(prev => [...prev, '\n--- STARTING SYSTEM UPDATE ---', 'Syncing databases...', 'Performing full system upgrade (-Syu)...', 'This may take a while. Do not turn off your computer.']);
 
         try {
             await invoke('update_and_install_package', {
                 name: pkg.name,
+                repoName: pkg.repoName || null,
                 password: null // Helper handles auth
             });
             // Completion handled by event listener above
@@ -351,6 +407,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
                 {/* Body */}
                 <div className="p-0 flex-1 overflow-hidden flex flex-col">
+                    {!minimized && status !== 'idle' && !updateRequired && renderStepper()}
                     {updateRequired ? (
                         <div className="p-8 flex flex-col items-center justify-center space-y-6 animate-in slide-in-from-bottom-4">
                             <div className="w-16 h-16 bg-amber-500/20 rounded-full flex items-center justify-center mb-2">
@@ -509,7 +566,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                                     className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-lg shadow-amber-500/20"
                                                 >
                                                     {isRepairing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                                                    {isRepairing ? "Fixing..." : "Auto-Repair"}
+                                                    {isRepairing ? "Fixing..." : "Fix & Retry"}
                                                 </button>
                                             </div>
                                         )}
@@ -531,7 +588,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                                     className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-lg shadow-red-500/20"
                                                 >
                                                     {isRepairing ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
-                                                    {isRepairing ? "Unlocking..." : "Unlock Database"}
+                                                    {isRepairing ? "Unlocking..." : "Unlock & Retry"}
                                                 </button>
                                             </div>
                                         )}

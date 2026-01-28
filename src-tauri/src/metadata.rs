@@ -905,12 +905,11 @@ pub async fn get_metadata_core(
         })
     };
 
-    // 2. Try Flathub (If AppStream failed)
-    // 2. Try Flathub (If AppStream failed OR if AppStream found package but no icon)
+    // 2. Try Flathub (If AppStream failed OR if AppStream found package but missing critical rich media)
     let flathub_meta = if app_meta.is_none()
         || app_meta
             .as_ref()
-            .map(|m| m.icon_url.is_none())
+            .map(|m| m.icon_url.is_none() || m.screenshots.is_empty() || m.description.is_none())
             .unwrap_or(false)
     {
         flathub_state.get_metadata_for_package(&pkg_name).await
@@ -920,7 +919,31 @@ pub async fn get_metadata_core(
 
     // Initialize our results with best available "Base" metadata
     let mut final_meta = if let Some(meta) = app_meta {
-        meta
+        let mut base = meta;
+        // Merge Flathub enhancements into AppStream base
+        if let Some(f_meta) = flathub_meta {
+            let enriched = crate::flathub_api::flathub_to_app_metadata(&f_meta, &pkg_name);
+
+            if base.icon_url.is_none() {
+                base.icon_url = enriched.icon_url;
+            }
+            if base.screenshots.is_empty() {
+                base.screenshots = enriched.screenshots;
+            }
+            // Use Flathub description if AppStream is missing or very short (heuristic < 50 chars)
+            if base.description.is_none()
+                || base
+                    .description
+                    .as_ref()
+                    .map(|d| d.len() < 50)
+                    .unwrap_or(false)
+            {
+                if enriched.description.is_some() {
+                    base.description = enriched.description;
+                }
+            }
+        }
+        base
     } else if let Some(meta) = flathub_meta {
         crate::flathub_api::flathub_to_app_metadata(&meta, &pkg_name)
     } else {

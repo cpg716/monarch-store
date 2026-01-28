@@ -166,7 +166,7 @@ pub async fn repair_unlock_pacman(app: AppHandle, password: Option<String>) -> R
 }
 
 #[tauri::command]
-pub async fn repair_reset_keyring(app: AppHandle, password: Option<String>) -> Result<(), String> {
+pub async fn fix_keyring_issues(app: AppHandle, password: Option<String>) -> Result<(), String> {
     let _ = app.emit(
         "repair-log",
         "🔑 Starting Unified Keyring & Security Repair...",
@@ -282,4 +282,30 @@ pub async fn repair_emergency_sync(app: AppHandle, password: Option<String>) -> 
 #[tauri::command]
 pub async fn check_pacman_lock() -> bool {
     std::path::Path::new("/var/lib/pacman/db.lck").exists()
+}
+
+pub async fn check_conflicting_processes() -> Option<String> {
+    let conflicts = [
+        "pacman",
+        "yay",
+        "paru",
+        "pamac-manager",
+        "pamac-daemon",
+        "octopi",
+        "synaptic",
+    ];
+
+    for proc in conflicts {
+        let is_running = std::process::Command::new("pgrep")
+            .arg("-x")
+            .arg(proc)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if is_running {
+            return Some(proc.to_string());
+        }
+    }
+    None
 }

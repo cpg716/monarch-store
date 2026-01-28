@@ -83,12 +83,41 @@ pub async fn install_package(
 
 pub async fn install_package_core(
     app: &AppHandle,
-    repo_manager: &RepoManager,
+    _repo_manager: &RepoManager,
     name: &str,
     source: models::PackageSource,
     password: &Option<String>,
     repo_name: Option<String>,
 ) -> Result<(), String> {
+    // VECTOR 5: INPUT SANITIZATION
+    crate::utils::validate_package_name(name)?;
+
+    // Process Guard Shield (Pillar 6)
+    if let Some(conflict) = crate::repair::check_conflicting_processes().await {
+        let msg = format!(
+            "Error: Conflicting process '{}' is running. Please close it first.",
+            conflict
+        );
+        let _ = app.emit("install-output", &msg);
+        let _ = app.emit("install-complete", "failed");
+        return Err(msg);
+    }
+
+    // PILLAR 6: Manjaro Stability Guard (Refined)
+    // Block Pre-built binaries from Arch-based repos (Chaotic/CachyOS) on Manjaro due to glibc/python mismatches.
+    let distro = crate::distro_context::DistroContext::new();
+    if distro.id == crate::distro_context::DistroId::Manjaro {
+        if matches!(
+            source,
+            models::PackageSource::Chaotic | models::PackageSource::CachyOS
+        ) {
+            let msg = "Manjaro Stability Guard: Installing pre-built binaries (Chaotic/CachyOS) is blocked on Manjaro to prevent system breakage. Please use the AUR (Native Build) version instead.".to_string();
+            let _ = app.emit("install-output", &msg);
+            let _ = app.emit("install-complete", "failed");
+            return Err(msg);
+        }
+    }
+
     // Pre-flight check: Database Lock
     if crate::repair::check_pacman_lock().await {
         let _ = app.emit(
@@ -146,38 +175,61 @@ pub async fn install_package_core(
                 vec![
                     "-S".to_string(),
                     "--noconfirm".to_string(),
+                    "--overwrite".to_string(),
+                    "*".to_string(),
                     "--".to_string(),
                     name.to_string(),
                 ],
             )
         }
         _ => {
-            // Targeted Install Optimization (Safe Store Model):
-            // We do NOT auto-sync (-y) because that causes Partial Upgrades.
-            // Instead, we try -S. If it fails due to 404, we tell the user to update system.
-            if let Some(r_name) = &repo_name {
-                let target = format!("{}/{}", r_name, name);
-                let _ = app.emit("install-output", format!("Targeted Install: {}", target));
-
-                // Restore Self-Healing for Manjaro/Chaotic:
-                if let Err(e) = repo_manager
-                    .ensure_repo_sync(r_name, password.clone())
-                    .await
-                {
-                    let _ = app.emit("install-output", format!("Sync Healer Warning: {}", e));
-                }
-
-                // Run standard -S
-                cmd_utils::build_pacman_cmd(&["-S", "--noconfirm", "--", &target][..], password)
-            } else {
-                let system_knows = cmd_utils::check_if_system_knows_package(name);
-                if system_knows {
-                    cmd_utils::build_pacman_cmd(&["-S", "--noconfirm", "--", name][..], password)
+            // PILLAR 2: Smart Sync & PILLAR 6: Safety Core
+            let metadata = std::fs::metadata("/var/lib/pacman/sync/core.db");
+            let is_recent_sync = if let Ok(m) = metadata {
+                if let Ok(mod_time) = m.modified() {
+                    if let Ok(elapsed) = mod_time.elapsed() {
+                        elapsed.as_secs() < 3600 // 1 Hour
+                    } else {
+                        false
+                    }
                 } else {
-                    // Only refresh if we really don't know it
-                    cmd_utils::build_pacman_cmd(&["-Sy", "--noconfirm", "--", name][..], password)
+                    false
                 }
+            } else {
+                false
+            };
+
+            let mut args = Vec::new();
+            if is_recent_sync {
+                let _ = app.emit(
+                    "install-output",
+                    "Smart Sync: Database is fresh (<1h). Instant Start...",
+                );
+                args.push("-S");
+                args.push("--needed");
+            } else {
+                let _ = app.emit(
+                    "install-output",
+                    "Smart Sync: Database outdated. Running Full Upgrade (-Syu)...",
+                );
+                args.push("-Syu");
             }
+
+            args.push("--noconfirm");
+            args.push("--");
+
+            // Handle Repo Targeting & Switch Safety
+            let target_string; // Keep alive
+            if let Some(r_name) = &repo_name {
+                target_string = format!("{}/{}", r_name, name);
+                args.push("--overwrite");
+                args.push("*");
+                args.push(&target_string);
+            } else {
+                args.push(name);
+            }
+
+            cmd_utils::build_pacman_cmd(&args, password)
         }
     };
 
@@ -309,8 +361,6 @@ pub async fn install_package_core(
                     || full_log.contains("unsatisfiable dependency")
                     || full_log.contains("cannot resolve")
                 {
-                    // Also if DB is so old package is gone OR dependency check failed due to stale system
-
                     let _ = app.emit("install-complete", "failed_update_required");
                     return Err("SystemUpdateRequired".to_string());
                 }
@@ -332,6 +382,18 @@ pub async fn install_package_core(
             }
 
             if success {
+                // TELEMETRY: Track Successful Install
+                crate::utils::track_event_safe(
+                    app,
+                    "install_package",
+                    Some(serde_json::json!({
+                        "pkg": name,
+                        "source": format!("{:?}", source),
+                        "from_repo": repo_name.is_some()
+                    })),
+                )
+                .await;
+
                 Ok(())
             } else {
                 Err("Installation failed".to_string())
@@ -888,6 +950,9 @@ pub async fn perform_system_update(
             }
             match child.wait().await {
                 Ok(s) if s.success() => {
+                    // TELEMETRY: Track System Update
+                    crate::utils::track_event_safe(&app, "system_update", None).await;
+
                     let _ = app.emit("install-complete", "success");
                     Ok("System updated successfully".to_string())
                 }
@@ -1073,7 +1138,8 @@ pub async fn check_installed_status(
         };
 
         let output = std::process::Command::new("pacman")
-            .args(["-Qi", &resolved_name])
+            .env("LC_ALL", "C") // Force English output
+            .args(["-Qi", &resolved_name, "--color", "never"]) // Disable ANSI colors
             .output()
             .map_err(|e| e.to_string())?;
 
@@ -1082,12 +1148,26 @@ pub async fn check_installed_status(
             let mut version = None;
             let mut packager = None;
 
+            let mut repo_name = None;
+
             for line in stdout.lines() {
                 if line.starts_with("Version") {
                     if let Some(v) = line.split(':').nth(1) {
                         version = Some(v.trim().to_string());
                     }
                 }
+                if line.starts_with("Repository") {
+                    if let Some(r) = line.split(':').nth(1) {
+                        let trimmed = r.trim().to_string();
+                        println!(
+                            "DEBUG: Found Repository raw: '{}' -> trimmed: '{}'",
+                            r, trimmed
+                        );
+                        repo_name = Some(trimmed);
+                    }
+                }
+                // Handle "Repository      : core" vs "Repository : core"
+
                 if line.starts_with("Packager") {
                     if let Some(p) = line.split(':').nth(1) {
                         packager = Some(p.trim().to_string().to_lowercase());
@@ -1095,32 +1175,87 @@ pub async fn check_installed_status(
                 }
             }
 
-            // Infer Source from Packager
-            let source = if let Some(p) = &packager {
-                if p.contains("archlinux.org") || p.contains("arch linux") {
-                    Some(models::PackageSource::Official)
-                } else if p.contains("chaotic") || p.contains("pedro") {
-                    Some(models::PackageSource::Chaotic)
-                } else if p.contains("cachyos") {
-                    Some(models::PackageSource::CachyOS)
-                } else if p.contains("garuda") {
-                    Some(models::PackageSource::Garuda)
-                } else if p.contains("endeavouros") {
-                    Some(models::PackageSource::Endeavour)
-                } else if p.contains("manjaro") {
-                    Some(models::PackageSource::Manjaro)
-                } else {
-                    None // Likely AUR
+            // Robust Source Inference:
+            // 1. Try Repository Name first (if present)
+            // 2. Fallback to Packager if Repository is missing or generic (local/unknown)
+
+            let mut inferred_source = None;
+
+            // Check Repository Field
+            if let Some(r) = &repo_name {
+                let r_lower = r.to_lowercase();
+                if r_lower == "chaotic-aur" || r_lower.contains("chaotic") {
+                    inferred_source = Some(models::PackageSource::Chaotic);
+                } else if r_lower.starts_with("cachyos") {
+                    inferred_source = Some(models::PackageSource::CachyOS);
+                } else if r_lower == "core"
+                    || r_lower == "extra"
+                    || r_lower == "multilib"
+                    || r_lower == "community"
+                {
+                    inferred_source = Some(models::PackageSource::Official);
+                } else if r_lower == "garuda" {
+                    inferred_source = Some(models::PackageSource::Garuda);
+                } else if r_lower == "endeavouros" {
+                    inferred_source = Some(models::PackageSource::Endeavour);
+                } else if r_lower.contains("manjaro") {
+                    inferred_source = Some(models::PackageSource::Manjaro);
+                } else if r_lower == "aur" {
+                    inferred_source = Some(models::PackageSource::Aur);
                 }
-            } else {
-                None
-            };
+            }
+
+            // If still unknown (Repo missing or local), check Packager
+            if inferred_source.is_none() {
+                if let Some(p) = &packager {
+                    // Check for Known Maintainer Signatures
+                    if p.contains("archlinux.org") {
+                        inferred_source = Some(models::PackageSource::Official);
+                    } else if p.contains("chaotic") {
+                        inferred_source = Some(models::PackageSource::Chaotic);
+                    } else if p.contains("cachyos") {
+                        // Added CachyOS signature check
+                        inferred_source = Some(models::PackageSource::CachyOS);
+                    } else if p.contains("manjaro") {
+                        inferred_source = Some(models::PackageSource::Manjaro);
+                    } else if p.contains("garuda") {
+                        inferred_source = Some(models::PackageSource::Garuda);
+                    } else if p.contains("endeavouros") {
+                        inferred_source = Some(models::PackageSource::Endeavour);
+                    }
+                }
+            }
+
+            // Final Fallback: If repo is explicitly 'local' or 'unknown' and we still don't know, assume AUR.
+            // But if repo is None (missing line), and we couldn't infer from Packager, it's truly unknown (or local built without signature).
+            // We'll default to AUR for missing/local repos if no other signature matches, as that's the safe bet for "User installed this manually".
+            if inferred_source.is_none() {
+                if let Some(r) = &repo_name {
+                    let r_lower = r.to_lowercase();
+                    if r_lower == "local" || r_lower == "unknown" {
+                        inferred_source = Some(models::PackageSource::Aur);
+                    }
+                } else {
+                    // Case: Repository line MISSING (e.g. broken DB).
+                    // If we have a version, it's installed. Assume AUR/Local to allow "Update" checks if name matches.
+                    inferred_source = Some(models::PackageSource::Aur);
+                }
+            }
+
+            // Fix: If repo_name is missing but we inferred source (e.g. CachyOS), backfill repo_name for UI
+            if repo_name.is_none() {
+                if let Some(src) = &inferred_source {
+                    repo_name = Some(format!("{:?}", src).to_lowercase());
+                } else {
+                    repo_name = Some("unknown".to_string());
+                }
+            }
 
             return Ok(PackageInstallStatus {
                 installed: true,
                 version,
-                repo: packager,
-                source,
+                repo: repo_name,
+                source: inferred_source,
                 actual_package_name: Some(resolved_name),
             });
         }
@@ -1181,4 +1316,84 @@ pub async fn check_installed_status(
         source: None,
         actual_package_name: None,
     })
+}
+
+#[tauri::command]
+pub async fn get_essentials_list(
+    state_repo: State<'_, RepoManager>,
+) -> Result<Vec<String>, String> {
+    // PILLAR 7: Essentials Smart Curation
+
+    // 1. CachyOS Spotlight
+    let mut essentials = vec![];
+    if state_repo.inner().is_repo_enabled("cachyos").await {
+        essentials.extend(vec![
+            "cachyos-settings",
+            "linux-cachyos",
+            "cachyos-browser",
+            "cachyos-fish-config",
+            "paru",
+        ]);
+    }
+
+    // 2. The Core Essentials (Official Arch)
+    essentials.extend(vec![
+        "firefox",
+        "vlc",
+        "neofetch",
+        "htop",
+        "gimp",
+        "libreoffice-fresh",
+        "visual-studio-code-bin",
+        "spotify",
+        "discord",
+        "obs-studio",
+        "steam",
+        "qbittorrent",
+        "mpv",
+        "kitty",
+        "fish",
+        "obsidian",
+        "thunderbird",
+        "thunar",
+        "ark",
+        "partitionmanager",
+        "btop",
+        // Add more popular ones
+        "google-chrome",
+        "slack-desktop",
+        "zoom",
+        "telegram-desktop-bin",
+        "brave-bin",
+    ]);
+
+    // 3. Dynamic DB Override (if exists, it PREPENDS or REPLACES? Let's say it supplements)
+    // Actually, strict file logic says "if path exists, return lines".
+    // We should probably keep that behavior for power users who customized valid paths.
+    let path = std::path::Path::new("/var/lib/monarch/dbs/essentials.db");
+    if path.exists() {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let custom_lines: Vec<String> = content
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .collect();
+
+            if !custom_lines.is_empty() {
+                // Return custom listing instead of default
+                return Ok(custom_lines);
+            }
+        }
+    }
+
+    // Deduplicate just in case
+    let mut unique = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for pkg in essentials {
+        if seen.insert(pkg) {
+            unique.push(pkg.to_string());
+        }
+    }
+
+    Ok(unique)
 }

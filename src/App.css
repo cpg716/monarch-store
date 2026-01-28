@@ -40,9 +40,9 @@
   /* Enhanced Light Mode - Clean, Modern, High Contrast */
   --app-bg: #f8fafc;
   --app-fg: #0f172a;
-  --app-sidebar: #e2e8f0;
+  --app-sidebar: #f1f5f9;
   --app-card: #ffffff;
-  --app-border: rgba(0, 0, 0, 0.15);
+  --app-border: #cbd5e1;
   --app-muted: #64748b;
   --app-accent: #3b82f6;
   /* Light mode specific utilities */

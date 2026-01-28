@@ -36,19 +36,25 @@ We use a composite rating strategy:
 *   **Step 2:** Fallback to **Supabase** community reviews.
 *   **Display:** Merged 5-star rating.
 
-### 4. Hardened System Health (v0.2.30 Overhaul)
+### 4. Butterfly System Health (v0.3.00 "Butterfly" Overhaul)
 MonARCH includes a permission-aware health monitoring ecosystem:
-*   **Sequential Startup**: Intelligent initialization that fixes the system *before* the main UI loads.
-*   **AMD Hardware Rating**: ABM/LZCNT aware feature detection for high-performance architectures.
+*   **Butterfly Probes**: Verifies environmental requirements (`git`, `pkexec`, `polkit`) at startup.
+*   **Parallel Rating Fetches**: Parallelized ODRS backend integration for zero-latency home screen populating.
 *   **Permission-Safe Sensors**: Health checks are now non-privileged, preventing false "Corrupted Keyring" warnings.
 *   **Unified Repair Wizard**: A single authorized maintenance flow for Keyring, Security Polices, and Repo sync.
+
+### 5. Luminosity Visual Engine
+The "Luminosity" update (v0.3.00) prioritizes high-density, AAA storefront aesthetics:
+*   **Header Geometry**: Top-aligned branding with screenshot-aware glassmorphic backdrops.
+*   **Responsive Unity**: Forced horizontal alignment of branding elements on mobile.
+*   **Smooth Interactions**: Seamless scroll-to-reviews and optimized repo switching.
 
 ## 🛠️ Build & Release
 
 To cut a new release:
 1.  Update `version` in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
 2.  Clean build: `npm run tauri build`.
-3.  Tag commit: `git tag -a v0.2.30 -m "v0.2.30 release"`.
+3.  Tag commit: `git tag -a v0.3.00-alpha.1 -m "v0.3.00-alpha.1 release"`.
 4.  Push: `git push origin main --tags`.
 
 ## ☁️ Backend Configuration (Self-Hosting Community Reviews)

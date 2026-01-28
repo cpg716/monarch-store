@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Server, Zap, Database, Globe, Lock, Cpu, AlertTriangle, Terminal, RefreshCw, Star } from 'lucide-react';
+import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Server, Zap, Database, Globe, Lock, Cpu, AlertTriangle, Terminal, RefreshCw, Star, Activity } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
 import { invoke } from '@tauri-apps/api/core';
 import { clsx } from 'clsx';
-import logoSmall from '../assets/logo_small.png';
+import logoFull from '../assets/logo_full.png';
+import archLogo from '../assets/arch-logo.svg';
 
 interface OnboardingModalProps {
     onComplete: () => void;
@@ -25,6 +26,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
     const [step, setStep] = useState(0);
     const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
     const [aurEnabled, setAurEnabled] = useState(false);
+    const [telemetryEnabled, setTelemetryEnabled] = useState(true); // Default to true (Opt-out) for onboarding flow, but user decides.
     const [oneClickEnabled, setOneClickEnabled] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [repoFamilies, setRepoFamilies] = useState<RepoFamily[]>([]);
@@ -83,7 +85,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                         name: 'Official Arch Linux',
                         description: 'The foundation (Core, Extra, Multilib)',
                         members: ['core', 'extra', 'multilib'],
-                        icon: ShieldCheck,
+                        icon: () => <img src={archLogo} className="w-5 h-5 object-contain brightness-0 invert" alt="Arch" />,
                         enabled: true,
                     },
                     {
@@ -121,6 +123,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         }).catch(console.error);
 
         invoke<boolean>('is_aur_enabled').then(setAurEnabled).catch(console.error);
+        invoke<boolean>('is_telemetry_enabled').then(setTelemetryEnabled).catch(console.error);
 
         invoke<boolean>('check_repo_status', { name: 'chaotic-aur' })
             .then(exists => {
@@ -150,6 +153,8 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
             setChaoticLogs(prev => [...prev, res, "Setup complete!"]);
             setChaoticStatus("success");
             setMissingChaotic(false);
+            // Use logoIcon to verify it's not unused
+            console.log("System Initialized with MonARCH DNA");
         } catch (e: any) {
             setChaoticLogs(prev => [...prev, `Error: ${e.message || e}`]);
             setChaoticStatus("error");
@@ -160,6 +165,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         setIsSaving(true);
         try {
             await invoke('set_aur_enabled', { enabled: aurEnabled });
+            await invoke('set_telemetry_enabled', { enabled: telemetryEnabled });
 
             // 1. First, set families (no OS sync yet)
             for (const fam of repoFamilies) {
@@ -185,16 +191,18 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
 
     const steps = [
         {
-            title: "Welcome to MonARCH",
-            subtitle: "The ultimate store for Arch Linux.",
-            color: "bg-blue-600",
-            icon: <img src={logoSmall} alt="MonARCH" className="w-32 h-32 object-contain drop-shadow-2xl" />
+            icon: (
+                <div className="relative group">
+                    <div className="absolute inset-[-40%] bg-blue-500/20 blur-3xl rounded-full opacity-50 transition-opacity" />
+                    <img src={logoFull} alt="MonARCH" className="w-64 md:w-80 object-contain drop-shadow-2xl relative z-10" />
+                </div>
+            )
         },
         {
-            title: "System Preparation",
-            subtitle: "Initializing secure keyrings & verifying environment.",
+            title: "Safety Core Active",
+            subtitle: "Initializing secure keyrings & verifying environment with Arch Pillar 6.",
             color: "bg-emerald-600",
-            icon: <ShieldCheck size={48} className="text-white" />
+            icon: <ShieldCheck size={48} className="text-white drop-shadow-lg" />
         },
         {
             title: "Configure Repos",
@@ -207,6 +215,12 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
             subtitle: "The Arch User Repository (AUR).",
             color: "bg-amber-600",
             icon: <Lock size={48} className="text-white" />
+        },
+        {
+            title: "Privacy First",
+            subtitle: "Transparent, anonymous telemetry.",
+            color: "bg-teal-600",
+            icon: <Activity size={48} className="text-white" />
         },
         {
             title: "Make it Yours",
@@ -333,7 +347,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                 <motion.div key="step0" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
                                     <h3 className="text-2xl font-bold text-app-fg">Supercharged Repository</h3>
                                     <p className="text-app-muted text-base leading-relaxed">
-                                        MonARCH Store is optimized by <strong className="text-blue-500">Chaotic-AUR</strong> for instant binary installs.
+                                        MonARCH Store is optimized by <strong className="text-blue-500">Chaotic-AUR</strong> for instant binary installs and <strong>Seamless State</strong> management.
                                     </p>
                                     <div className="bg-blue-500/10 border border-blue-500/20 p-5 rounded-2xl flex gap-4 items-start">
                                         <Zap className="text-blue-500 shrink-0 mt-1" />
@@ -541,7 +555,9 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                         {repoFamilies.map((fam) => (
                                             <div key={fam.id} onClick={() => toggleRepoFamily(fam.id)} className={clsx("flex items-center justify-between p-3 md:p-4 rounded-xl border cursor-pointer transition-all", fam.enabled ? "bg-indigo-500/10 border-indigo-500/50 shadow-sm" : "bg-app-card border-app-border hover:border-app-fg/30")}>
                                                 <div className="flex items-center gap-3 md:gap-4 text-left">
-                                                    <div className={clsx("p-2 rounded-lg shrink-0", fam.enabled ? "bg-indigo-500 text-white" : "bg-app-fg/5 text-app-muted")}><fam.icon size={18} /></div>
+                                                    <div className={clsx("p-2 rounded-lg shrink-0 flex items-center justify-center", fam.enabled ? "bg-indigo-500 text-white" : "bg-app-fg/5 text-app-muted")}>
+                                                        {typeof fam.icon === 'function' ? <fam.icon /> : <fam.icon size={18} />}
+                                                    </div>
                                                     <div className="min-w-0">
                                                         <div className="flex items-center gap-2 flex-wrap">
                                                             <h4 className="font-bold text-app-fg text-[13px] md:text-sm truncate">{fam.name}</h4>
@@ -572,6 +588,40 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                             )}
 
                             {step === 4 && (
+                                <motion.div key="step4" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 max-w-lg">
+                                    <h3 className="text-2xl font-bold text-app-fg">Privacy & Transparency</h3>
+
+                                    <div className="bg-teal-500/10 border border-teal-500/20 p-5 rounded-2xl text-left">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <Activity size={20} className="text-teal-500" />
+                                            <h4 className="font-bold text-teal-500 text-lg">Help Us Improve</h4>
+                                        </div>
+                                        <div className="space-y-4">
+                                            <div className="bg-white/10 rounded-2xl p-6 border border-white/10">
+                                                <p className="text-white/90 leading-relaxed font-medium">
+                                                    MonARCH collects <span className="text-teal-300 font-bold">anonymous data</span> (Search Trends, App Installs) to help the community.
+                                                </p>
+                                                <p className="text-white/60 text-sm mt-3 font-medium uppercase tracking-wide">
+                                                    <ShieldCheck size={14} className="inline mb-0.5 mr-1" />
+                                                    We never track personal identity.
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div onClick={() => setTelemetryEnabled(!telemetryEnabled)} className={clsx("cursor-pointer border-2 rounded-2xl p-4 transition-all flex items-center justify-between text-left", telemetryEnabled ? "border-teal-500 bg-teal-500/5" : "border-app-border bg-app-card/30")}>
+                                        <div>
+                                            <span className="font-bold text-app-fg block text-base">Share Anonymous Statistics</span>
+                                            <span className="text-xs text-app-muted">Strictly no personal data. Opt-out anytime.</span>
+                                        </div>
+                                        <div className={clsx("w-12 h-6 rounded-full p-1 transition-colors shrink-0", telemetryEnabled ? "bg-teal-500" : "bg-app-fg/20")}>
+                                            <div className={clsx("w-4 h-4 bg-white rounded-full transition-transform", telemetryEnabled ? "translate-x-6" : "translate-x-0")} />
+                                        </div>
+                                    </div>
+                                </motion.div>
+                            )}
+
+                            {step === 5 && (
                                 <motion.div key="step4" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full max-w-lg space-y-8">
                                     <div className="text-center"><h3 className="text-2xl font-bold text-app-fg mb-1 uppercase tracking-tight">Style your MonARCH</h3><p className="text-app-muted">Personalize your visual experience.</p></div>
                                     <div className="grid grid-cols-2 gap-4">

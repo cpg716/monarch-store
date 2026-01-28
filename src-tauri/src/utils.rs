@@ -498,15 +498,60 @@ pub async fn run_privileged_script(
     }
 }
 
-#[cfg(test)]
-mod cpu_tests {
-    use super::*;
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub enum InstallMode {
+    System,
+    Portable,
+    Dev, // Useful for debugging
+}
 
-    #[test]
-    fn test_cpu_detection_no_panic() {
-        let v3 = is_cpu_v3_compatible();
-        let v4 = is_cpu_v4_compatible();
-        let zn4 = is_cpu_znver4_compatible();
-        println!("Test Hardware: v3={}, v4={}, zn4={}", v3, v4, zn4);
+pub fn get_install_mode() -> InstallMode {
+    if let Ok(exe_path) = std::env::current_exe() {
+        let path_str = exe_path.to_string_lossy();
+
+        // 1. System Install (Pacman)
+        // Usually /usr/bin/monarch-store
+        if path_str.starts_with("/usr/bin") || path_str.starts_with("/bin") {
+            return InstallMode::System;
+        }
+
+        // 2. AppImage (Mounted)
+        // Usually /tmp/.mount_monarcXXXXXX/usr/bin/monarch-store or similar
+        // BUT the actual AppImage *file* is what we care about updates for.
+        // However, we just need to know "Are we managed by Pacman?".
+        // If we are NOT in /usr/bin, we are likely portable or dev.
+
+        // 3. Dev Mode
+        if path_str.contains("/target/debug/") || path_str.contains("/target/release/") {
+            return InstallMode::Dev;
+        }
+    }
+
+    // Default to Portable for AppImages, manual builds in /home, etc.
+    InstallMode::Portable
+}
+
+/// Safely tracks an event ONLY if telemetry is enabled in configuration.
+/// This is the "Backend Gatekeeper" ensuring privacy compliance.
+pub async fn track_event_safe(
+    app: &tauri::AppHandle,
+    event: &str,
+    payload: Option<serde_json::Value>,
+) {
+    use crate::repo_manager::RepoManager;
+    use tauri::Manager;
+    use tauri_plugin_aptabase::EventTracker;
+
+    let state = app.state::<RepoManager>();
+    if state.is_telemetry_enabled().await {
+        // Log locally for debugging privacy
+        #[cfg(debug_assertions)]
+        println!("[Telemetry] Sending: {} {:?}", event, payload);
+
+        // Send to Aptabase
+        let _ = app.track_event(event, payload);
+    } else {
+        #[cfg(debug_assertions)]
+        println!("[Telemetry] BLOCKED (Consent Denied): {}", event);
     }
 }

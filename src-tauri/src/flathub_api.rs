@@ -97,7 +97,28 @@ pub fn get_flathub_app_id(pkg_name: &str) -> Option<String> {
         ("heroic-games-launcher-bin", "com.heroicgameslauncher.hgl"),
         ("notion-app", "notion.id"), // Unofficial snap/flatpak usually used or web wrapper
         ("notion-app-enhanced", "notion.id"),
-        ("telegram-desktop-bin", "org.telegram.desktop"), // Explicit mapping to save heuristic check
+        ("telegram-desktop-bin", "org.telegram.desktop"),
+        (
+            "visual-studio-code-insiders-bin",
+            "com.visualstudio.code.insiders",
+        ),
+        ("postman-bin", "com.getpostman.Postman"),
+        ("insomnia-bin", "com.getinsomnia.Insomnia"),
+        ("discord-canary", "com.discordapp.DiscordCanary"),
+        ("discord-ptb", "com.discordapp.DiscordPTB"),
+        ("element-desktop", "im.riot.Riot"),
+        ("standard-notes-bin", "org.standardnotes.standardnotes"),
+        ("simplenote-bin", "com.simplenote.Simplenote"),
+        ("bitwarden-desktop", "com.bitwarden.desktop"),
+        ("authy", "com.authy.Authy"),
+        ("mailspring", "com.getmailspring.Mailspring"),
+        ("balena-etcher", "io.balena.etcher"),
+        ("stremio", "com.stremio.Stremio"),
+        ("plex-desktop", "tv.plex.PlexDesktop"),
+        ("anydesk-bin", "com.anydesk.Anydesk"),
+        ("teamviewer", "com.teamviewer.TeamViewer"),
+        ("minecraft-launcher", "com.mojang.Minecraft"),
+        ("heroic-games-launcher-bin", "com.heroicgameslauncher.hgl"),
     ]);
 
     // Try direct mapping first

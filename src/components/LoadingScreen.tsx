@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Server, Database, Download } from 'lucide-react';
-import logo from '../assets/logo.png';
+import logoIcon from '../assets/logo.png';
 
 const LOADING_TIPS = [
     "Syncing with Arch Linux mirrors...",
@@ -63,7 +63,7 @@ export default function LoadingScreen() {
                         transition={{ type: "spring", stiffness: 100 }}
                         className="relative z-10 w-32 h-32 flex items-center justify-center"
                     >
-                        <img src={logo} alt="MonARCH" className="w-full h-full object-contain drop-shadow-2xl animate-flap" />
+                        <img src={logoIcon} alt="MonARCH" className="w-full h-full object-contain drop-shadow-2xl animate-flap" />
                     </motion.div>
                 </div>
 

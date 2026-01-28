@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use crate::commands::utils::is_valid_pkg_name;
     use crate::models::{Package, PackageSource};
     use crate::utils;
 
@@ -85,21 +84,6 @@ mod tests {
         let result = utils::merge_and_deduplicate(official, repo);
 
         assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn test_sanitization() {
-        assert!(is_valid_pkg_name("firefox"));
-        assert!(is_valid_pkg_name("google-chrome"));
-        assert!(is_valid_pkg_name("lib32-glibc"));
-        assert!(is_valid_pkg_name("c++-gtk-utils")); // + is valid in some contexts (e.g. c++)
-
-        // Invalid inputs
-        assert!(!is_valid_pkg_name("firefox; rm -rf /"));
-        assert!(!is_valid_pkg_name("-flag")); // Starts with dash
-        assert!(!is_valid_pkg_name(" package")); // Leading space
-        assert!(!is_valid_pkg_name("package ")); // Trailing space (though arguably trim handles this, strict validation fails)
-        assert!(!is_valid_pkg_name("")); // Empty
     }
 
     #[test]

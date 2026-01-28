@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LayoutGrid, Download, Settings, RefreshCw, Search, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
 import { clsx } from 'clsx';
-import logoSmall from '../assets/logo_small.png';
+import logoIcon from '../assets/logo.png';
 import { motion } from 'framer-motion';
 
 interface SidebarProps {
@@ -64,7 +64,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                 "flex items-center mb-10 transition-all duration-300",
                 isExpanded ? "px-6 gap-4" : "justify-center"
             )}>
-                <img src={logoSmall} alt="MonARCH" className="w-10 h-10 object-contain drop-shadow-[0_0_12px_rgba(59,130,246,0.3)]" />
+                <img src={logoIcon} alt="MonARCH" className="w-10 h-10 object-contain drop-shadow-[0_0_12px_rgba(59,130,246,0.3)] animate-flap" />
                 {isExpanded && (
                     <motion.div
                         initial={{ opacity: 0, x: -10 }}
@@ -72,7 +72,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                         className="flex flex-col"
                     >
                         <span className="text-lg font-black tracking-tighter text-app-fg leading-none">MonARCH</span>
-                        <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest">Store</span>
+                        <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest">Universal Arch Linux App Manager</span>
                     </motion.div>
                 )}
             </div>

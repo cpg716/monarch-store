@@ -1,5 +1,6 @@
 use crate::{
-    aur_api, chaotic_api, flathub_api, metadata, models, repo_manager::RepoManager, utils,
+    aur_api, chaotic_api, flathub_api, metadata, models, pkgstats_api, repo_manager::RepoManager,
+    utils,
 };
 use serde::Serialize;
 use tauri::State;
@@ -14,6 +15,7 @@ pub struct PaginatedResponse {
 
 #[tauri::command]
 pub async fn search_packages(
+    app: tauri::AppHandle,
     state: State<'_, metadata::MetadataState>,
     state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
     state_repo: State<'_, RepoManager>,
@@ -25,6 +27,17 @@ pub async fn search_packages(
     if query.is_empty() {
         return Ok(vec![]);
     }
+
+    // Telemetry: Track Search Query (Privacy Guarded)
+    utils::track_event_safe(
+        &app,
+        "search_query",
+        Some(serde_json::json!({
+            "term": query,
+            "category": "all"
+        })),
+    )
+    .await;
 
     // 1. Search AppStream (Official/Local Metadata)
     {
@@ -69,15 +82,8 @@ pub async fn search_packages(
     // CRITICAL: Sort by relevance BEFORE deduplication
     utils::sort_packages_by_relevance(&mut repo_results, query);
 
-    // Track seen App IDs to prevent duplicates
-    let mut seen_app_ids: std::collections::HashSet<String> =
-        packages.iter().filter_map(|p| p.app_id.clone()).collect();
-
     for mut pkg in repo_results {
-        if packages.iter().any(|p| p.name == pkg.name) {
-            continue;
-        }
-
+        // Hydrate missing metadata using AppStream heuristic
         if pkg.icon.is_none() || pkg.app_id.is_none() {
             if let Ok(loader) = state.inner().0.lock() {
                 if pkg.icon.is_none() {
@@ -93,76 +99,68 @@ pub async fn search_packages(
             pkg.app_id = flathub_api::get_flathub_app_id(&pkg.name);
         }
 
-        if let Some(id) = &pkg.app_id {
-            if seen_app_ids.contains(id) {
-                continue;
-            }
-            seen_app_ids.insert(id.clone());
-        }
-
         pkg.display_name = Some(utils::to_pretty_name(&pkg.name));
         packages.push(pkg);
     }
 
     // 3. Search Chaotic AUR
-    if let Ok(chaotic_arc) = state_chaotic.inner().fetch_packages().await {
-        let q_lower = query.to_lowercase();
-        let chaotic_matches: Vec<models::Package> = chaotic_arc
-            .iter()
-            .filter(|p| {
-                p.pkgname.to_lowercase().contains(&q_lower)
-                    || p.metadata
+    let chaotic_enabled = state_repo.inner().is_repo_enabled("chaotic-aur").await;
+
+    if chaotic_enabled {
+        if let Ok(chaotic_arc) = state_chaotic.inner().fetch_packages().await {
+            let q_lower = query.to_lowercase();
+            let chaotic_matches: Vec<models::Package> = chaotic_arc
+                .iter()
+                .filter(|p| {
+                    p.pkgname.to_lowercase().contains(&q_lower)
+                        || p.metadata
+                            .as_ref()
+                            .and_then(|m| m.desc.as_ref())
+                            .map(|d| d.to_lowercase().contains(&q_lower))
+                            .unwrap_or(false)
+                })
+                .take(50)
+                .map(|p| models::Package {
+                    name: p.pkgname.clone(),
+                    display_name: Some(utils::to_pretty_name(&p.pkgname)),
+                    description: p
+                        .metadata
                         .as_ref()
-                        .and_then(|m| m.desc.as_ref())
-                        .map(|d| d.to_lowercase().contains(&q_lower))
-                        .unwrap_or(false)
-            })
-            .take(50)
-            .map(|p| models::Package {
-                name: p.pkgname.clone(),
-                display_name: Some(utils::to_pretty_name(&p.pkgname)),
-                description: p
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.desc.clone())
-                    .unwrap_or_default(),
-                version: p.version.clone().unwrap_or_default(),
-                source: models::PackageSource::Chaotic,
-                maintainer: Some("Chaotic-AUR Team".to_string()),
-                license: p
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.license.clone())
-                    .map(|l| vec![l]),
-                url: p.metadata.as_ref().and_then(|m| m.url.clone()),
-                last_modified: None,
-                first_submitted: None,
-                out_of_date: None,
-                keywords: None,
-                num_votes: None,
-                icon: {
-                    let mut icon = None;
-                    if let Ok(loader) = state.inner().0.lock() {
-                        icon = loader.find_icon_heuristic(&p.pkgname);
-                    }
-                    icon
-                },
-                screenshots: None,
-                provides: None,
-                app_id: None,
-                is_optimized: None,
-                depends: None,
-                make_depends: None,
-                is_featured: None,
-                alternatives: None,
-            })
-            .collect();
+                        .and_then(|m| m.desc.clone())
+                        .unwrap_or_default(),
+                    version: p.version.clone().unwrap_or_default(),
+                    source: models::PackageSource::Chaotic,
+                    maintainer: Some("Chaotic-AUR Team".to_string()),
+                    license: p
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.license.clone())
+                        .map(|l| vec![l]),
+                    url: p.metadata.as_ref().and_then(|m| m.url.clone()),
+                    last_modified: None,
+                    first_submitted: None,
+                    out_of_date: None,
+                    keywords: None,
+                    num_votes: None,
+                    icon: {
+                        let mut icon = None;
+                        if let Ok(loader) = state.inner().0.lock() {
+                            icon = loader.find_icon_heuristic(&p.pkgname);
+                        }
+                        icon
+                    },
+                    screenshots: None,
+                    provides: None,
+                    app_id: None,
+                    is_optimized: None,
+                    depends: None,
+                    make_depends: None,
+                    is_featured: None,
+                    alternatives: None,
+                })
+                .collect();
 
-        let mut seen_packages: std::collections::HashSet<String> =
-            packages.iter().map(|p| p.name.clone()).collect();
-
-        for mut pkg in chaotic_matches {
-            if seen_packages.insert(pkg.name.clone()) {
+            for mut pkg in chaotic_matches {
                 if pkg.app_id.is_none() {
                     if let Ok(loader) = state.inner().0.lock() {
                         pkg.app_id = loader.find_app_id(&pkg.name);
@@ -171,13 +169,6 @@ pub async fn search_packages(
 
                 if pkg.app_id.is_none() {
                     pkg.app_id = flathub_api::get_flathub_app_id(&pkg.name);
-                }
-
-                if let Some(id) = &pkg.app_id {
-                    if seen_app_ids.contains(id) {
-                        continue;
-                    }
-                    seen_app_ids.insert(id.clone());
                 }
 
                 packages.push(pkg);
@@ -199,36 +190,24 @@ pub async fn search_packages(
                 .map(|p| (p.name.clone(), p.source.clone()))
                 .collect();
 
-            let mut seen_packages: std::collections::HashSet<String> =
-                packages.iter().map(|p| p.name.clone()).collect();
-
             for mut pkg in aur_results {
-                if seen_packages.insert(pkg.name.clone()) {
-                    if pkg.app_id.is_none() {
-                        if let Ok(loader) = state.inner().0.lock() {
-                            pkg.app_id = loader.find_app_id(&pkg.name);
-                        }
+                if pkg.app_id.is_none() {
+                    if let Ok(loader) = state.inner().0.lock() {
+                        pkg.app_id = loader.find_app_id(&pkg.name);
                     }
-                    if pkg.app_id.is_none() {
-                        pkg.app_id = flathub_api::get_flathub_app_id(&pkg.name);
-                    }
-
-                    if let Some(id) = &pkg.app_id {
-                        if seen_app_ids.contains(id) {
-                            continue;
-                        }
-                        seen_app_ids.insert(id.clone());
-                    }
-
-                    if chaotic_set.contains(&pkg.name) {
-                        pkg.source = models::PackageSource::Chaotic;
-                    } else if let Some(source) = repo_map.get(&pkg.name) {
-                        pkg.source = source.clone();
-                    }
-
-                    pkg.display_name = Some(utils::to_pretty_name(&pkg.name));
-                    packages.push(pkg);
                 }
+                if pkg.app_id.is_none() {
+                    pkg.app_id = flathub_api::get_flathub_app_id(&pkg.name);
+                }
+
+                if chaotic_set.contains(&pkg.name) {
+                    pkg.source = models::PackageSource::Chaotic;
+                } else if let Some(source) = repo_map.get(&pkg.name) {
+                    pkg.source = source.clone();
+                }
+
+                pkg.display_name = Some(utils::to_pretty_name(&pkg.name));
+                packages.push(pkg);
             }
         }
     }
@@ -270,7 +249,12 @@ pub async fn get_packages_by_names(
 
     // Fetch Chaotic Packages for ALL names to allow for alternatives/deduplication
     // (Essentials need the Version Selector too!)
-    let chaotic_pkgs = state_chaotic.inner().get_packages_batch(names).await;
+    let chaotic_enabled = state_repo.inner().is_repo_enabled("chaotic-aur").await;
+    let chaotic_pkgs = if chaotic_enabled {
+        state_chaotic.inner().get_packages_batch(names).await
+    } else {
+        std::collections::HashMap::new()
+    };
 
     for (name, p) in chaotic_pkgs {
         let mut pkg = models::Package {
@@ -328,22 +312,26 @@ pub async fn get_packages_by_names(
 pub async fn get_trending(
     state_meta: State<'_, metadata::MetadataState>,
     state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    state_repo: State<'_, RepoManager>,
 ) -> Result<Vec<models::Package>, String> {
     let mut packages = Vec::new();
-    let trending_names = vec![
-        "google-chrome",
-        "visual-studio-code-bin",
-        "spotify",
-        "discord",
-        "steam",
-        "obs-studio",
-        "vlc",
+
+    // SECTION 1: "The Titans" (Static Foundation)
+    // Always fetch these to ensure the section is never empty and contains high-quality apps.
+    let titan_names = vec![
         "firefox",
+        "vlc",
+        "obs-studio",
+        "discord",
+        "spotify",
+        "steam",
+        "visual-studio-code-bin",
+        "gimp",
     ];
 
     {
         let loader = state_meta.inner().0.lock().unwrap();
-        for name in &trending_names {
+        for name in &titan_names {
             if let Some(app) = loader.find_package(name) {
                 packages.push(models::Package {
                     name: app.pkg_name.clone().unwrap_or(app.app_id.clone()),
@@ -370,53 +358,225 @@ pub async fn get_trending(
                     is_optimized: None,
                     depends: None,
                     make_depends: None,
-                    is_featured: None,
+                    is_featured: Some(true),
                     alternatives: None,
                 });
             }
         }
     }
 
-    // 1. Fetch Dynamic Trending
-    if let Ok(trending_list) = state_chaotic.inner().fetch_trending().await {
-        let dynamic_names: Vec<String> = trending_list
-            .iter()
-            .map(|t| t.pkgbase_pkgname.clone())
-            .collect();
-        let chaotic_pkgs = state_chaotic
-            .inner()
-            .get_packages_batch(dynamic_names.clone())
-            .await;
+    // SECTION 2: "Arch Pulse" (Real-world Popularity)
+    // Fetch top packages from pkgstats (limit to top 8 to avoid overwhelming)
+    // We only take packages that aren't already in "The Titans"
+    if let Ok(arch_top) = pkgstats_api::fetch_top_packages(15).await {
+        for mut pkg in arch_top {
+            // Dedup against Titans
+            if !packages.iter().any(|p| p.name == pkg.name) {
+                // Try to hydrate metadata
+                if let Ok(loader) = state_meta.inner().0.lock() {
+                    if let Some(meta) = loader.find_package(&pkg.name) {
+                        pkg.display_name = Some(meta.name);
+                        pkg.description = meta.summary.unwrap_or(pkg.description);
+                        pkg.icon = meta.icon_url;
+                        pkg.app_id = Some(meta.app_id);
+                    }
+                }
 
-        for name in dynamic_names {
-            if let Some(p) = chaotic_pkgs.get(&name) {
-                if !packages.iter().any(|pkg| pkg.name == name) {
-                    let mut pkg = models::Package {
-                        name: name.clone(),
-                        display_name: Some(utils::to_pretty_name(&name)),
-                        description: p
-                            .metadata
-                            .as_ref()
-                            .and_then(|m| m.desc.clone())
-                            .unwrap_or_default(),
-                        version: p.version.clone().unwrap_or_default(),
-                        source: models::PackageSource::Chaotic,
-                        maintainer: Some("Chaotic-AUR Team".to_string()),
-                        license: p
-                            .metadata
-                            .as_ref()
-                            .and_then(|m| m.license.clone())
-                            .map(|l| vec![l]),
-                        url: p.metadata.as_ref().and_then(|m| m.url.clone()),
+                // Only add if it looks like a "desktop" app (has icon or we want to show it)
+                // For now, we trust pkgstats but limit the count
+                if pkg.icon.is_some()
+                    || ["git", "neovim", "vim", "htop"].contains(&pkg.name.as_str())
+                {
+                    packages.push(pkg);
+                }
+            }
+        }
+    }
+
+    // SECTION 3: "CachyOS Spotlight" (Curated Performance)
+    // Only if CachyOS repos are enabled
+    if state_repo.inner().is_repo_enabled("cachyos").await {
+        let cachy_curated = vec![
+            "linux-cachyos",
+            "cachyos-settings",
+            "cachyos-browser",
+            "cachyos-fish-config",
+        ];
+
+        // We manually construct these since they might not be in AppStream data if typical repo data is missing
+        // But for "trending" we can search them or just manually stub them.
+        // Better yet, let's try to find them in metadata OR just stub them if missing.
+        for name in cachy_curated {
+            if !packages.iter().any(|p| p.name == name) {
+                // Try metadata first
+                let mut found = false;
+                if let Ok(loader) = state_meta.inner().0.lock() {
+                    if let Some(app) = loader.find_package(name) {
+                        // Add from metadata...
+                        packages.push(models::Package {
+                            name: app.pkg_name.clone().unwrap_or(app.app_id.clone()),
+                            display_name: Some(app.name),
+                            description: app.summary.unwrap_or_default(),
+                            version: app.version.unwrap_or_else(|| "optimized".to_string()),
+                            source: models::PackageSource::Official, // It's a repo package
+                            // ... fields ...
+                            maintainer: Some("CachyOS Team".to_string()),
+                            license: None,
+                            url: None,
+                            last_modified: None,
+                            first_submitted: None,
+                            out_of_date: None,
+                            keywords: None,
+                            num_votes: None,
+                            icon: app.icon_url,
+                            screenshots: None,
+                            provides: None,
+                            app_id: Some(app.app_id.clone()),
+                            is_optimized: Some(true),
+                            depends: None,
+                            make_depends: None,
+                            is_featured: Some(true),
+                            alternatives: None,
+                        });
+                        found = true;
+                    }
+                }
+
+                if !found {
+                    // Fallback Stub
+                    packages.push(models::Package {
+                        name: name.to_string(),
+                        display_name: Some(utils::to_pretty_name(name)),
+                        description: "High-performance CachyOS component".to_string(),
+                        version: "latest".to_string(),
+                        source: models::PackageSource::Official,
+                        maintainer: Some("CachyOS Team".to_string()),
+                        license: None,
+                        url: None,
                         last_modified: None,
                         first_submitted: None,
                         out_of_date: None,
                         keywords: None,
                         num_votes: None,
+                        icon: None,
+                        screenshots: None,
+                        provides: None,
+                        app_id: None,
+                        is_optimized: Some(true),
+                        depends: None,
+                        make_depends: None,
+                        is_featured: Some(true),
+                        alternatives: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // SECTION 4: "Chaotic Heat" (Dynamic Build Stats)
+    let chaotic_enabled = state_repo.inner().is_repo_enabled("chaotic-aur").await;
+
+    if chaotic_enabled {
+        if let Ok(trending_list) = state_chaotic.inner().fetch_trending().await {
+            let dynamic_names: Vec<String> = trending_list
+                .iter()
+                .map(|t| t.pkgbase_pkgname.clone())
+                .collect();
+            let chaotic_pkgs = state_chaotic
+                .inner()
+                .get_packages_batch(dynamic_names.clone())
+                .await;
+
+            for name in dynamic_names {
+                if let Some(p) = chaotic_pkgs.get(&name) {
+                    if !packages.iter().any(|pkg| pkg.name == name) {
+                        let mut pkg = models::Package {
+                            name: name.clone(),
+                            display_name: Some(utils::to_pretty_name(&name)),
+                            description: p
+                                .metadata
+                                .as_ref()
+                                .and_then(|m| m.desc.clone())
+                                .unwrap_or_default(),
+                            version: p.version.clone().unwrap_or_default(),
+                            source: models::PackageSource::Chaotic,
+                            maintainer: Some("Chaotic-AUR Team".to_string()),
+                            license: p
+                                .metadata
+                                .as_ref()
+                                .and_then(|m| m.license.clone())
+                                .map(|l| vec![l]),
+                            url: p.metadata.as_ref().and_then(|m| m.url.clone()),
+                            last_modified: None,
+                            first_submitted: None,
+                            out_of_date: None,
+                            keywords: None,
+                            num_votes: None,
+                            icon: {
+                                let mut icon = None;
+                                if let Ok(loader) = state_meta.inner().0.lock() {
+                                    icon = loader.find_icon_heuristic(&name);
+                                }
+                                icon
+                            },
+                            screenshots: None,
+                            provides: None,
+                            app_id: None,
+                            is_optimized: None,
+                            depends: None,
+                            make_depends: None,
+                            is_featured: None,
+                            alternatives: None,
+                        };
+                        if let Ok(loader) = state_meta.inner().0.lock() {
+                            pkg.app_id = loader.find_app_id(&name);
+                        }
+                        packages.push(pkg);
+                    }
+                }
+            }
+        }
+    }
+
+    // SECTION 5: "AUR Hot List" (Curated Community Favorites)
+    // Only if AUR is enabled
+    if state_repo.inner().is_aur_enabled().await {
+        let aur_curated = vec![
+            "google-chrome",
+            "slack-desktop",
+            "zoom",
+            "visual-studio-code-bin", // In case it wasn't found in Titans (e.g. repo issue)
+            "1password",
+            "dropbox",
+        ];
+
+        // Helper to filter out already existing
+        let needed_aur: Vec<&str> = aur_curated
+            .into_iter()
+            .filter(|n| !packages.iter().any(|p| p.name == *n))
+            .collect();
+
+        if !needed_aur.is_empty() {
+            if let Ok(results) = aur_api::get_multi_info(&needed_aur).await {
+                for p in results {
+                    packages.push(models::Package {
+                        name: p.name.clone(),
+                        display_name: Some(utils::to_pretty_name(&p.name)),
+                        description: p.description.clone(),
+                        version: p.version.clone(),
+                        source: models::PackageSource::Aur,
+                        maintainer: p.maintainer,
+                        license: p.license,
+                        url: p.url,
+                        last_modified: p.last_modified,
+                        first_submitted: p.first_submitted,
+                        out_of_date: p.out_of_date,
+                        keywords: p.keywords,
+                        num_votes: p.num_votes,
                         icon: {
                             let mut icon = None;
                             if let Ok(loader) = state_meta.inner().0.lock() {
-                                icon = loader.find_icon_heuristic(&name);
+                                icon = loader.find_icon_heuristic(&p.name);
                             }
                             icon
                         },
@@ -428,71 +588,8 @@ pub async fn get_trending(
                         make_depends: None,
                         is_featured: None,
                         alternatives: None,
-                    };
-                    if let Ok(loader) = state_meta.inner().0.lock() {
-                        pkg.app_id = loader.find_app_id(&name);
-                    }
-                    packages.push(pkg);
+                    });
                 }
-            }
-        }
-    }
-
-    if packages.len() < 10 {
-        // Fallback if dynamic fetch failed or was small
-        let chaotic_pkgs = state_chaotic
-            .inner()
-            .get_packages_batch(
-                trending_names
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>(),
-            )
-            .await;
-        for (name, p) in chaotic_pkgs {
-            if !packages.iter().any(|pkg| pkg.name == name) {
-                let mut pkg = models::Package {
-                    name: name.clone(),
-                    display_name: Some(utils::to_pretty_name(&name)),
-                    description: p
-                        .metadata
-                        .as_ref()
-                        .and_then(|m| m.desc.clone())
-                        .unwrap_or_default(),
-                    version: p.version.clone().unwrap_or_default(),
-                    source: models::PackageSource::Chaotic,
-                    maintainer: Some("Chaotic-AUR Team".to_string()),
-                    license: p
-                        .metadata
-                        .as_ref()
-                        .and_then(|m| m.license.clone())
-                        .map(|l| vec![l]),
-                    url: p.metadata.as_ref().and_then(|m| m.url.clone()),
-                    last_modified: None,
-                    first_submitted: None,
-                    out_of_date: None,
-                    keywords: None,
-                    num_votes: None,
-                    icon: {
-                        let mut icon = None;
-                        if let Ok(loader) = state_meta.inner().0.lock() {
-                            icon = loader.find_icon_heuristic(&name);
-                        }
-                        icon
-                    },
-                    screenshots: None,
-                    provides: None,
-                    app_id: None,
-                    is_optimized: None,
-                    depends: None,
-                    make_depends: None,
-                    is_featured: None,
-                    alternatives: None,
-                };
-                if let Ok(loader) = state_meta.inner().0.lock() {
-                    pkg.app_id = loader.find_app_id(&name);
-                }
-                packages.push(pkg);
             }
         }
     }
@@ -534,21 +631,22 @@ pub async fn get_package_variants(
 
     // 2. Chaotic-AUR (API Fallback)
     if !sources_found.contains(&models::PackageSource::Chaotic) {
-        if let Some(p) = state_chaotic
-            .inner()
-            .get_package_by_name(&resolved_pkg_name)
-            .await
-        {
-            variants.push(models::PackageVariant {
-                source: models::PackageSource::Chaotic,
-                version: p.version.clone().unwrap_or_else(|| "latest".to_string()),
-                repo_name: Some("chaotic-aur".to_string()),
-                pkg_name: Some(resolved_pkg_name.clone()),
-            });
-            sources_found.insert(models::PackageSource::Chaotic);
+        if state_repo.inner().is_repo_enabled("chaotic-aur").await {
+            if let Some(p) = state_chaotic
+                .inner()
+                .get_package_by_name(&resolved_pkg_name)
+                .await
+            {
+                variants.push(models::PackageVariant {
+                    source: models::PackageSource::Chaotic,
+                    version: p.version.clone().unwrap_or_else(|| "latest".to_string()),
+                    repo_name: Some("chaotic-aur".to_string()),
+                    pkg_name: Some(resolved_pkg_name.clone()),
+                });
+                sources_found.insert(models::PackageSource::Chaotic);
+            }
         }
     }
-
     // 3. Official / AppStream Fallback
     if !sources_found.contains(&models::PackageSource::Official) {
         let loader = state_meta.inner().0.lock().unwrap();

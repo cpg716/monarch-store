@@ -1,10 +1,12 @@
 mod aur_api;
 mod chaotic_api;
 mod commands;
+mod distro_context;
 mod flathub_api;
 mod metadata;
 mod models;
 mod odrs_api;
+mod pkgstats_api;
 mod repair;
 mod repo_db;
 mod repo_manager;
@@ -48,7 +50,7 @@ pub fn run() {
         )
         .manage(RepoManager::new())
         .manage(ChaoticApiClient::new())
-        .manage(flathub_api::FlathubApiClient::new())
+        .manage(flathub_api::FlathubApiClient::new()) // ENRICHMENT: Metadata Fallback Active
         .manage(metadata::MetadataState(std::sync::Mutex::new(
             metadata::AppStreamLoader::new(),
         )))
@@ -68,8 +70,8 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 {
-                    use tauri_plugin_aptabase::EventTracker;
-                    let _ = handle.track_event("app_started", None);
+                    // Use the safe tracker to respect user consent
+                    crate::utils::track_event_safe(&handle, "app_started", None).await;
                 }
 
                 let state_repo = handle.state::<RepoManager>();
@@ -95,6 +97,7 @@ pub fn run() {
             // Package Commands
             commands::package::install_package,
             commands::package::uninstall_package,
+            commands::package::get_essentials_list,
             commands::package::abort_installation,
             commands::package::check_installed_status,
             commands::package::perform_system_update,
@@ -116,12 +119,19 @@ pub fn run() {
             commands::system::set_aur_enabled,
             commands::system::is_one_click_enabled,
             commands::system::set_one_click_enabled,
+            commands::system::is_advanced_mode,
+            commands::system::set_advanced_mode,
             commands::system::check_security_policy,
             commands::system::install_monarch_policy,
             commands::system::optimize_system,
+            commands::system::get_all_installed_names, // Smart Curation
+            repair::fix_keyring_issues,
             commands::system::trigger_repo_sync,
             commands::system::update_and_install_package,
             commands::system::check_app_update,
+            commands::system::get_install_mode_command,
+            commands::system::is_telemetry_enabled,
+            commands::system::set_telemetry_enabled,
             // Utils Commands
             commands::utils::get_package_icon,
             commands::utils::clear_cache,
@@ -137,7 +147,6 @@ pub fn run() {
             odrs_api::get_app_ratings_batch,
             odrs_api::get_app_reviews,
             repair::repair_unlock_pacman,
-            repair::repair_reset_keyring,
             repair::check_keyring_health,
             repair::repair_emergency_sync,
             repair::check_pacman_lock,
@@ -149,6 +158,8 @@ pub fn run() {
             repo_setup::set_repo_priority,
             repo_setup::check_repo_status,
             repo_setup::set_one_click_control,
+            // Identity Matrix Command
+            distro_context::get_distro_context,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

@@ -16,9 +16,12 @@ interface AppState {
     infraStats: InfraStats | null;
     loadingTrending: boolean;
     loadingStats: boolean;
+    telemetryEnabled: boolean;
     error: string | null;
     fetchTrending: () => Promise<void>;
     fetchInfraStats: () => Promise<void>;
+    checkTelemetry: () => Promise<void>;
+    setTelemetry: (enabled: boolean) => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -26,6 +29,7 @@ export const useAppStore = create<AppState>((set) => ({
     infraStats: null,
     loadingTrending: false,
     loadingStats: false,
+    telemetryEnabled: false,
     error: null,
     fetchTrending: async () => {
         set({ loadingTrending: true, error: null });
@@ -45,6 +49,22 @@ export const useAppStore = create<AppState>((set) => ({
         } catch (e) {
             console.error("Failed to fetch stats:", e);
             set({ loadingStats: false });
+        }
+    },
+    checkTelemetry: async () => {
+        try {
+            const enabled = await invoke<boolean>('is_telemetry_enabled');
+            set({ telemetryEnabled: enabled });
+        } catch (e) {
+            console.error("Failed to check telemetry:", e);
+        }
+    },
+    setTelemetry: async (enabled: boolean) => {
+        try {
+            await invoke('set_telemetry_enabled', { enabled });
+            set({ telemetryEnabled: enabled });
+        } catch (e) {
+            console.error("Failed to set telemetry:", e);
         }
     },
 }));

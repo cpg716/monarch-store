@@ -3,7 +3,6 @@ import { Download, ShieldCheck, Zap, Heart } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useFavorites } from '../hooks/useFavorites';
 import { clsx } from 'clsx';
-// import { invoke } from '@tauri-apps/api/core';
 import { invoke } from '@tauri-apps/api/core';
 import { resolveIconUrl } from '../utils/iconHelper';
 
@@ -100,14 +99,14 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
     return (
         <motion.div
             onClick={() => onClick(displayPkg)}
-            className="group relative bg-white/70 dark:bg-black/20 border border-slate-200 dark:border-white/5 rounded-3xl p-6 hover:bg-white dark:hover:bg-black/40 transition-all duration-300 hover:border-blue-300/50 dark:hover:border-white/10 hover:-translate-y-1 hover:shadow-xl dark:hover:shadow-2xl shadow-sm dark:shadow-none cursor-pointer overflow-hidden flex flex-col h-full backdrop-blur-md"
+            className="group relative bg-white dark:bg-black/20 border border-slate-200 dark:border-white/5 rounded-3xl p-6 hover:bg-slate-50 dark:hover:bg-black/40 transition-all duration-300 hover:border-blue-300/50 dark:hover:border-white/10 hover:-translate-y-1 hover:shadow-xl dark:hover:shadow-2xl shadow-sm dark:shadow-none cursor-pointer overflow-hidden flex flex-col h-full backdrop-blur-md"
         >
             <div className="flex justify-between items-start mb-4 gap-4">
                 <div className="flex items-center gap-4 min-w-0 flex-1">
                     <div className={clsx(
                         "w-14 h-14 rounded-2xl flex items-center justify-center shadow-inner shrink-0 overflow-hidden relative transition-colors",
                         "text-slate-800 dark:text-white",
-                        (!iconUrl || imgError) ? "bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 p-2" : "bg-transparent"
+                        (!iconUrl || imgError) ? "bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 p-2" : "bg-transparent"
                     )}>
                         {iconUrl && !imgError ? (
                             <img
@@ -123,7 +122,7 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="flex flex-col">
-                            <h3 className="font-bold text-lg leading-tight group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors line-clamp-2 text-app-fg break-words max-w-[200px] md:max-w-none">
+                            <h3 className="font-bold text-lg leading-tight group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors line-clamp-1 text-app-fg break-words max-w-[200px] md:max-w-none" title={displayPkg.display_name || displayPkg.name}>
                                 {displayPkg.display_name || displayPkg.name}
                             </h3>
                         </div>
@@ -136,23 +135,31 @@ const PackageCard: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetadataFet
                         {/* VERSION SELECTOR */}
                         <div className="flex items-center gap-2 mt-1" onClick={(e) => e.stopPropagation()}>
                             {hasVariants ? (
-                                <select
-                                    className="text-[10px] font-mono bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded px-1.5 py-0.5 outline-none focus:border-blue-500 text-slate-600 dark:text-white/70 max-w-[120px] cursor-pointer hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
-                                    value={variants.findIndex(v => v.source === displayPkg.source && v.version === displayPkg.version) !== -1 ? variants.findIndex(v => v.source === displayPkg.source && v.version === displayPkg.version) : 0}
-                                    onChange={(e) => {
-                                        const idx = parseInt(e.target.value);
-                                        const selected = variants[idx];
-                                        const siblings = variants.filter((_, i) => i !== idx);
-                                        const enriched = { ...selected, alternatives: siblings };
-                                        setDisplayPkg(enriched);
-                                    }}
-                                >
-                                    {variants.map((v, i) => (
-                                        <option key={i} value={i} className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">
-                                            {v.version} ({v.source})
-                                        </option>
-                                    ))}
-                                </select>
+                                <div className="relative">
+                                    <select
+                                        className="text-[10px] font-mono bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded px-2 py-0.5 outline-none focus:border-blue-500 text-slate-700 dark:text-white/70 min-w-[80px] cursor-pointer hover:bg-slate-50 dark:hover:bg-white/10 transition-colors shadow-sm appearance-none pr-6"
+                                        value={variants.findIndex(v => v.source === displayPkg.source && v.version === displayPkg.version) !== -1 ? variants.findIndex(v => v.source === displayPkg.source && v.version === displayPkg.version) : 0}
+                                        onChange={(e) => {
+                                            const idx = parseInt(e.target.value);
+                                            const selected = variants[idx];
+                                            const siblings = variants.filter((_, i) => i !== idx);
+                                            const enriched = { ...selected, alternatives: siblings };
+                                            setDisplayPkg(enriched);
+                                        }}
+                                    >
+                                        {variants.map((v, i) => (
+                                            <option key={i} value={i} className="bg-white text-slate-900 dark:bg-[#1a1b1e] dark:text-gray-200">
+                                                {v.version} ({v.source})
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <div className="absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 dark:text-white/30">
+                                        <Heart size={10} className="hidden" /> {/* Dummy import fix if needed, but we used ChevronDown before? No, we need to import ChevronDown */}
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="m6 9 6 6 6-6" />
+                                        </svg>
+                                    </div>
+                                </div>
                             ) : (
                                 <span className="text-[10px] text-slate-400 dark:text-white/40 font-mono">{displayPkg.version}</span>
                             )}

@@ -21,6 +21,8 @@ export function useSettings() {
 
     // 2. Repository Management
     const [oneClickEnabled, setOneClickEnabled] = useState(false);
+    const [telemetryEnabled, setTelemetryEnabled] = useState(false);
+    const [advancedMode, setAdvancedMode] = useState(false);
     const [isAurEnabled, setIsAurEnabled] = useState(false);
     const [repos, setRepos] = useState<Repository[]>([]);
 
@@ -41,20 +43,22 @@ export function useSettings() {
 
     const fetchRepoState = async () => {
         try {
-            // CRITICAL DECOUPLING:
-            // Fetch only essential system state first for instant UI response
             const criticalResults = await Promise.allSettled([
                 invoke<boolean>('is_one_click_enabled'),
+                invoke<boolean>('is_advanced_mode'),
                 invoke<boolean>('is_aur_enabled'),
-                invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states')
+                invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states'),
+                invoke<boolean>('is_telemetry_enabled')
             ]);
 
             if (criticalResults[0].status === 'fulfilled') setOneClickEnabled(criticalResults[0].value);
-            if (criticalResults[1].status === 'fulfilled') setIsAurEnabled(criticalResults[1].value);
+            if (criticalResults[1].status === 'fulfilled') setAdvancedMode(criticalResults[1].value);
+            if (criticalResults[2].status === 'fulfilled') setIsAurEnabled(criticalResults[2].value);
+            if (criticalResults[4].status === 'fulfilled') setTelemetryEnabled(criticalResults[4].value);
 
             let backendRepos: { name: string; enabled: boolean; source: string }[] = [];
-            if (criticalResults[2].status === 'fulfilled') {
-                backendRepos = criticalResults[2].value;
+            if (criticalResults[3].status === 'fulfilled') {
+                backendRepos = criticalResults[3].value;
             }
 
             // Map families immediately so the list is NEVER empty or stuck
@@ -213,10 +217,22 @@ export function useSettings() {
         }
     };
 
+    const toggleAdvancedMode = async (enabled: boolean) => {
+        setAdvancedMode(enabled);
+        await invoke('set_advanced_mode', { enabled });
+    };
+
+    const toggleTelemetry = async (enabled: boolean) => {
+        setTelemetryEnabled(enabled);
+        await invoke('set_telemetry_enabled', { enabled });
+    };
+
     return {
         notificationsEnabled, updateNotifications,
         syncIntervalHours, updateSyncInterval,
         oneClickEnabled, updateOneClick,
+        advancedMode, toggleAdvancedMode,
+        telemetryEnabled, toggleTelemetry,
         isAurEnabled, toggleAur,
         repos, toggleRepo, reorderRepos,
         isSyncing, triggerManualSync, repoCounts,

@@ -78,15 +78,6 @@ pub async fn launch_app(pkg_name: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to launch {}: {}", pkg_name, e))
 }
 
-#[allow(dead_code)]
-pub(crate) fn is_valid_pkg_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '+')
-        && !name.starts_with('-')
-}
-
 pub(crate) fn build_pacman_cmd(
     action_args: &[&str],
     password: &Option<String>,
@@ -110,12 +101,4 @@ pub(crate) fn build_pacman_cmd(
                 .collect(),
         )
     }
-}
-
-pub(crate) fn check_if_system_knows_package(name: &str) -> bool {
-    std::process::Command::new("pacman")
-        .args(["-Si", name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
