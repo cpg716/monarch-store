@@ -1,8 +1,8 @@
 pkgbase = monarch-store
 	pkgdesc = A premium software store for Arch Linux, powered by Tauri
-	pkgver = 0.3.0_alpha.1
+	pkgver = 0.3.0_alpha.2
 	pkgrel = 1
-	url = https://github.com/monarch-store/monarch-store
+	url = https://github.com/cpg716/monarch-store
 	arch = x86_64
 	license = MIT
 	makedepends = cargo
@@ -14,7 +14,7 @@ pkgbase = monarch-store
 	depends = polkit
 	depends = pacman-contrib
 	depends = git
-	source = git+https://github.com/monarch-store/monarch-store.git
+	source = git+https://github.com/cpg716/monarch-store.git
 	sha256sums = SKIP
 
 pkgname = monarch-store

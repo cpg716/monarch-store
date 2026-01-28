@@ -4,7 +4,7 @@
 <policyconfig>
 
   <vendor>MonARCH Store</vendor>
-  <vendor_url>https://github.com/monarch-store/monarch-store</vendor_url>
+   <vendor_url>https://github.com/cpg716/monarch-store</vendor_url>
 
   <action id="com.monarch.store.package-manage">
     <description>Manage system packages and repositories</description>

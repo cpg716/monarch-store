@@ -1,14 +1,14 @@
 # Maintainer: MonARCH Store Contributors <maintainers@monarch.store>
 pkgname=monarch-store
-pkgver=0.3.0_alpha.1
+pkgver=0.3.0_alpha.2
 pkgrel=1
 pkgdesc="A premium software store for Arch Linux, powered by Tauri"
 arch=('x86_64')
-url="https://github.com/monarch-store/monarch-store"
+url="https://github.com/cpg716/monarch-store"
 license=('MIT')
 depends=('webkit2gtk-4.1' 'gtk3' 'openssl' 'polkit' 'pacman-contrib' 'git')
 makedepends=('cargo' 'nodejs' 'npm')
-source=("git+https://github.com/monarch-store/monarch-store.git")
+source=("git+https://github.com/cpg716/monarch-store.git")
 sha256sums=('SKIP')
 
 prepare() {
