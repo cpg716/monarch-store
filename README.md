@@ -1,8 +1,7 @@
-# 🦋 MonARCH Store
+# MonARCH Store: Universal Arch Linux App Manager
+> **The first Distro-Aware App Manager for Arch, Manjaro, and CachyOS.**
 
-**A modern, premium software store for Arch Linux, built with Tauri v2, React, and Rust.**
-
-MonARCH Store is designed to make package management on Arch-based systems (Arch, EndeavourOS, CachyOS, Garuda, etc.) beautiful, fast, and accessible. It unifies **Official Distribution Repositories**, **AUR**, and **Chaotic-AUR** into a single, cohesive experience.
+A premium, distro-agnostic software center built with Tauri and React. MonARCH automatically detects your distribution and adapts its capabilities ("The Identity Matrix") to ensure safety and performance.
 
 ![MonARCH Store Dashboard](screenshots/home.png)
 
@@ -24,15 +23,21 @@ We prioritized speed above all else. MonARCH automatically detects if a package 
 *   **Zero-Compile Updates**: Get AUR packages in seconds, not hours.
 *   **Transparent**: You can always choose to "Build from Source" via the dropdown if you prefer.
 
+### 🧠 Distro-Aware Intelligence
+MonARCH adapts its behavior based on your specific OS ("The Identity Matrix"):
+*   **Manjaro Guard**: Automatically hides dangerous Arch-native repositories (like `chaotic-aur`) to prevent "Partial Upgrade" breakage on stable systems.
+*   **Smart Sync**: Checks database freshness before downloading. If your DB is < 1hr old, we skip the sync for instant results.
+*   **Universal UI**: The interface shifts between "Store Mode" (Discovery) and "Manager Mode" (Maintenance) based on context.
+
 ### 🚀 Hardware Optimization ("God Tier")
 MonARCH detects your CPU capabilities (AVX2, AVX-512) and automatically prioritizes **CachyOS v3/v4** repositories if available.
 *   **10-20% Faster**: Python, compilers, and rendering apps run significantly faster.
 *   **Automatic**: No configuration needed. If your CPU supports it, we use it.
 
 ### 🩺 Hardened System Health
-MonARCH v0.2.30 introduces a robust, permission-safe health monitoring system:
-*   **Sequential Startup**: Intelligent initialization that fixes the system *before* you enter the store.
-*   **AMD-Aware Optimization**: Correctly detects CPU feature sets (ABM/LZCNT) for Zen 4/5 architectures.
+MonARCH v0.3.00 introduces the "Butterfly" system engine:
+*   **Intelligent Startup Prodes**: Verifies `pkexec`, `git`, and `polkit` existence before the UI loads.
+*   **Distro-Aware Optimization**: Automatically applies safety guards for Manjaro and performance mirrors for CachyOS.
 *   **Unified Maintenance Wizard**: A single "God Mode" repair engine for Keyring, Security Policies, and Repository synchronization.
 
 ### 🛡️ Smart Repository Management
@@ -61,10 +66,10 @@ You can personalize your store experience by toggling specific repositories (Cac
 ## 🚀 Installation
 
 ### Option 1: Pre-built Binary (Recommended)
-Download the latest `monarch-store-0.2.40-x86_64.pkg.tar.zst` from the [Releases Page](https://github.com/cpg716/monarch-store/releases).
+Download the latest `monarch-store-0.3.00-alpha.1-x86_64.pkg.tar.zst` from the [Releases Page](https://github.com/cpg716/monarch-store/releases).
 
 ```bash
-sudo pacman -U monarch-store-0.2.40-x86_64.pkg.tar.zst
+sudo pacman -U monarch-store-0.3.00-alpha.1-x86_64.pkg.tar.zst
 ```
 
 ### Option 2: Build from Source

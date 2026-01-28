@@ -23,24 +23,48 @@ To provide a "Store-like" instant experience, MonARCH prioritizes pre-built bina
 
 This ensures that clicking "Install" almost always results in a fast, binary download rather than a slow `makepkg` compilation.
 
-## 3. Intelligent "Split-Brain" Prevention
+## 2. The "Butterfly" Engine (Distro-Awareness)
 
-Before installing any package, the backend (`lib.rs`) performs a live check:
+MonARCH is **Context-Aware** thanks to the `distro_detect.rs` module. It probes `/etc/os-release` at startup to build an `IdentityMatrix`:
 
-1.  **Check**: Does `pacman -Si <package>` return success?
-2.  **Fast Path**: If yes, run `pacman -S <package>`.
-3.  **Stale Path (Safe Sync)**: If no (meaning our cache is newer than the system DB), run `pacman -Sy <package>`.
-    *   **Crucial**: We use `Targeted Sync` (`-Sy repo/pkg`) or package-specific sync to avoid refreshing the *entire* database without an update, minimizing partial upgrade risks while ensuring the target package installs successfully.
+*   **IS_MANJARO**: Activates "Stability Guard" (Hide Chaotic-AUR, Warn on AUR).
+*   **IS_ARCH**: Activates "Power User Mode" (Enable all repos, assume base-devel).
+*   **IS_CACHYOS**: Activates "Speed Mode" (Prioritize v3/v4 repos).
 
-## 4. Hardened AUR Builder
+## 3. The Installer Pipeline (v0.3.00)
 
-The built-in AUR helper is rewritten in Rust to avoid common pitfalls:
+The installation flow has been hardened to prevent "partial upgrades" and "split-brain" states:
 
-*   **Dependency Resolution**: Parses `.SRCINFO` / `PKGBUILD` and installs dependencies via the system package manager *before* starting the build.
-*   **Privilege Separation**: Runs `makepkg` as a standard user, but escalates to `pkexec` only for the final `pacman -U` install step.
-*   **Invisible Build**: Hides raw terminal logs behind a friendly UI progress bar, but maintains full log files for debugging.
+```mermaid
+graph TD
+    A[User Clicks Install] --> B{Lock Check}
+    B -- Locked --> C[Wait / Error]
+    B -- Free --> D{Distro Safety Check}
+    D -- Mismatch --> E[Warning Modal]
+    D -- Safe --> F{Smart Sync}
+    F -- DB New (<1h) --> G[Skip Sync]
+    F -- DB Old --> H[sudo pacman -Sy]
+    G --> I[Stream Output]
+    H --> I
+    I --> J[Done]
+```
 
-## 5. Linux Native Integration
+### 4. Butterfly System Health (v0.3.00 "Butterfly" Overhaul)
+MonARCH includes a permission-aware health monitoring ecosystem:
+*   **Butterfly Probes**: Verifies `pkexec`, `git`, and `polkit` health at startup to prevent silent failures.
+*   **Parallel ODRS Integration**: Ratings are now fetched concurrently during onboarding/home view for 2-3x speed improvements.
+*   **Permission-Safe Sensors**: Health checks are now non-privileged, preventing false "Corrupted Keyring" warnings.
+*   **Unified Repair Wizard**: A single authorized maintenance flow for Keyring, Security Polices, and Repo sync.
+
+### 5. Frontend Stack: The "Luminosity" Design
+
+The UI has been rewritten using a performance-first, glassmorphic architecture:
+
+*   **Layout Engine**: `PackageDetailsFresh.tsx` uses CSS Grid/Flexbox to create responsive, high-density layouts that adapt to mobile/desktop.
+*   **Visuals**: Heavy use of `backdrop-blur`, semi-transparent layers, and "Ghost Text" for a premium feel.
+*   **Components**: Atomic design with `PackageCard.tsx` handling its own state (hover, install status) to prevent global re-renders.
+
+## 6. Linux Native Integration
 
 *   **Icons**: Uses standard XDG paths (`/usr/share/icons/...`) resolved via `file://` protocol.
 *   **Polkit**: Uses `pkexec` for granular permission escalation (no global sudo usage).

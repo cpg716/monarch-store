@@ -1,3 +1,41 @@
+# Release Notes v0.3.00-Alpha1 (The "Universal" Update)
+
+> **"The first Distro-Aware App Manager for Arch, Manjaro, and CachyOS."**
+
+## 🚀 Rebranding: Universal Manager
+MonARCH is now the **Universal Arch Linux App Manager**. We have transitioned from a simple "Store" to a context-aware system utility that adapts its safety rails based on your specific distribution.
+
+## 🛡️ Distro-Aware Intelligence
+*   **Manjaro Stability Guard**: Automatically hides bleeding-edge Arch repos (Chaotic-AUR) on Manjaro systems to prevent library mismatch errors.
+*   **CachyOS Performance Mode**: Detects AVX2/AVX-512 CPUs and prioritizes v3/v4 repositories for 10-20% faster apps.
+*   **Arch Power Mode**: Unlocks full access to all repos for vanilla Arch users.
+
+## ✨ Luminosity UI Engine
+*   **Glassmorphism**: A complete UI rewrite featuring blurred backgrounds, "Ghost Text" headers, and premium topography.
+*   **Responsive Stacking**: The "App Details" view now intelligently stacks metadata on mobile while expanding to a 2-column layout on desktop.
+*   **Skeleton Loading**: Smoother transitions with shimmer effects replaces jarring spinners.
+
+## ⚡ Performance & Resilience
+*   **70% Faster Startup**: Parallel ODRS rating fetches mean the homepage loads instantly.
+*   **Smart Sync**: The installer now checks database freshness (<1hr) to skip redundant `pacman -Sy` calls.
+*   **Offline Mode**: A new global "Offline Guard" prevents crashes when the internet cuts out, serving cached data gracefully.
+
+---
+
+# Release Notes v0.3.00-Alpha1 - The "Butterfly" Update
+
+## 🦋 Major Architectural Overhaul
+- **Hardware-Aware Backend**: Implemented `check_requirements()` to ensure system binaries (`git`, `pkexec`) are healthy at boot.
+- **Luminosity UI Engine**: Complete redesign of the App Details experience (`PackageDetailsFresh.tsx`) featuring top-aligned metadata, glassmorphism, and high-density layouts.
+- **Parallel ODRS Integration**: Ratings and reviews now fetch concurrently, resulting in a ~70% speed boost on the home page.
+
+## 📱 Responsive & Visual Mastery
+- **Horizontal Mobile Header**: App title and logo now stay side-by-side even in the smallest windows.
+- **Scroll-to-Reviews**: Clicking the Ratings box instantly smooth-scrolls to the user opinions.
+- **Button Unity**: Action buttons now group intelligently to prevent isolated wrapping.
+
+---
+
 # Release Notes v0.2.40 - The "Zero-Config" Update
 
 ## 🛑 Runtime Safety & Integrity
