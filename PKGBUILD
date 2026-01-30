@@ -10,7 +10,7 @@ url="https://github.com/cpg716/monarch-store"
 license=('MIT')
 depends=('webkit2gtk-4.1' 'gtk3' 'openssl' 'polkit' 'pacman-contrib' 'git')
 makedepends=('cargo' 'nodejs' 'npm')
-# For -git: SKIP. For release tag: use tarball (see below) and run updpkgsums.
+# For -git: SKIP. After pushing tag v${pkgver}, run: ./scripts/release-finalize-pkgbuild.sh
 source=("git+https://github.com/cpg716/monarch-store.git")
 sha256sums=('SKIP')
 
