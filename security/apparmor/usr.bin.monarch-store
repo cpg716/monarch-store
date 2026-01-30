@@ -1,0 +1,68 @@
+# AppArmor profile for MonARCH Store (GUI — unprivileged)
+# Install: sudo cp security/apparmor/usr.bin.monarch-store /etc/apparmor.d/
+#          sudo apparmor_parser -r /etc/apparmor.d/usr.bin.monarch-store
+# Remove:  sudo apparmor_parser -R /etc/apparmor.d/usr.bin.monarch-store
+#
+# This profile confines the Tauri GUI. The privileged helper (monarch-helper)
+# is invoked via pkexec and is not confined by this profile; use a separate
+# profile for the helper if desired.
+
+#include <tunables/global>
+
+/usr/bin/monarch-store flags=(attach_disconnected, complain) {
+  #include <abstractions/base>
+  #include <abstractions/fonts>
+  #include <abstractions/gnome>
+  #include <abstractions/ibus>
+
+  # Binary and libraries
+  /usr/bin/monarch-store r,
+  /usr/lib/monarch-store/monarch-helper r,
+  /usr/lib/monarch-store/monarch-wrapper r,
+  /usr/lib/** r,
+  /usr/share/monarch-store/** r,
+
+  # Config and state (XDG)
+  owner @{HOME}/.config/monarch-store/** rw,
+  owner @{HOME}/.config/glib/** rw,
+  owner @{HOME}/.local/share/monarch-store/** rw,
+  owner @{HOME}/.cache/monarch-store/** rw,
+
+  # Temp command file (GUI writes; helper reads as root)
+  /tmp/monarch-cmd-*.json rw,
+  /tmp/monarch-install/** rw,
+
+  # Read-only system paths
+  /etc/pacman.conf r,
+  /etc/pacman.d/** r,
+  /var/lib/pacman/sync/** r,
+  /usr/share/icons/** r,
+  /usr/share/applications/** r,
+
+  # Execute pkexec/sudo to invoke helper (no shell)
+  /usr/bin/pkexec ux,
+  /usr/bin/sudo ux,
+  /usr/bin/sudo Ux,
+  /usr/lib/monarch-store/monarch-helper r,
+  /usr/lib/monarch-store/monarch-wrapper r,
+
+  # Build tools (AUR: makepkg, git) — unprivileged
+  /usr/bin/makepkg rux,
+  /usr/bin/git rux,
+  /usr/bin/bash rux,
+  owner @{HOME}/** rw,
+
+  # Network (API: Arch, Chaotic, ODRS, etc.)
+  network inet stream,
+  network inet6 stream,
+  network unix stream,
+
+  # DBus (notifications, portal)
+  #include <abstractions/dbus-session-strict>
+  dbus send,
+  dbus receive bus=session,
+
+  # Allow ptrace for crash reporting (optional; tighten to deny if not needed)
+  # ptrace read,
+  # signal (receive) peer=/usr/bin/monarch-store,
+}

@@ -5,6 +5,8 @@ import { clsx } from 'clsx';
 import { invoke } from '@tauri-apps/api/core';
 import ConfirmationModal from '../components/ConfirmationModal';
 import { useToast } from '../context/ToastContext';
+import { useErrorService } from '../context/ErrorContext';
+import { Package } from '../components/PackageCard';
 
 interface InstalledApp {
     name: string;
@@ -42,14 +44,15 @@ const AppIcon = ({ pkgId }: { pkgId: string }) => {
     return <img src={displayIcon} alt={pkgId} className={clsx("w-full h-full object-contain", !icon && "opacity-50 grayscale")} />;
 };
 
-export default function InstalledPage() {
+export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (pkg: Package) => void }) {
     const [searchQuery, setSearchQuery] = useState('');
     const [apps, setApps] = useState<InstalledApp[]>([]);
     const [loading, setLoading] = useState(true);
     const [totalSize, setTotalSize] = useState('Calculating...');
 
     const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; id: string; name: string } | null>(null);
-    const { success, error } = useToast();
+    const { success } = useToast();
+    const errorService = useErrorService();
 
     // Fetch installed packages on mount
     useEffect(() => {
@@ -66,8 +69,7 @@ export default function InstalledPage() {
                 }, 0);
                 setTotalSize(`${sizeSum.toFixed(1)} MiB used`);
             } catch (e) {
-                console.error('Failed to fetch installed packages:', e);
-                error('Failed to load packages');
+                errorService.reportError(e as Error | string);
             } finally {
                 setLoading(false);
             }
@@ -94,17 +96,36 @@ export default function InstalledPage() {
             setApps(apps.filter(a => a.name !== id));
             success(`${name} uninstalled successfully`);
         } catch (e) {
-            console.error('Uninstall failed:', e);
-            error(`Failed to uninstall ${name}: ${e}`);
+            errorService.reportError(e as Error | string);
         }
     };
 
-    const handleLaunch = async (id: string, name: string) => {
+    const handleLaunch = async (id: string) => {
         try {
             await invoke('launch_app', { pkgName: id });
         } catch (e) {
-            console.error('Launch failed:', e);
-            error(`Could not launch ${name}. Missing desktop entry.`);
+            errorService.reportError(e as Error | string);
+        }
+    };
+
+    const handleNavigation = async (app: InstalledApp) => {
+        try {
+            // Try to get proper package info
+            const results = await invoke<Package[]>('get_packages_by_names', { names: [app.name] });
+            if (results && results.length > 0) {
+                onSelectPackage(results[0]);
+            } else {
+                // Search as fallback
+                const searchResults = await invoke<Package[]>('search_packages', { query: app.name });
+                const exactMatch = searchResults.find(p => p.name.toLowerCase() === app.name.toLowerCase());
+                if (exactMatch) {
+                    onSelectPackage(exactMatch);
+                } else if (searchResults.length > 0) {
+                    onSelectPackage(searchResults[0]);
+                }
+            }
+        } catch (e) {
+            errorService.reportError(e as Error | string);
         }
     };
 
@@ -157,7 +178,8 @@ export default function InstalledPage() {
                                     initial={{ opacity: 0, y: 10 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     exit={{ opacity: 0, height: 0 }}
-                                    className="group bg-white dark:bg-app-card border border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/20 rounded-2xl transition-all overflow-hidden relative shadow-sm dark:shadow-lg hover:shadow-xl dark:hover:shadow-2xl hover:-translate-y-1 backdrop-blur-sm p-4 flex items-center gap-6"
+                                    onClick={() => handleNavigation(app)}
+                                    className="group bg-white dark:bg-app-card border border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/20 rounded-2xl transition-all overflow-hidden relative shadow-sm dark:shadow-lg hover:shadow-xl dark:hover:shadow-2xl hover:-translate-y-1 backdrop-blur-sm p-4 flex items-center gap-6 cursor-pointer"
                                 >
                                     {/* Icon */}
                                     <div className="w-16 h-16 rounded-2xl bg-slate-50 dark:bg-black/20 border border-black/5 dark:border-white/5 flex items-center justify-center shrink-0 overflow-hidden relative shadow-inner p-2.5">
@@ -192,13 +214,13 @@ export default function InstalledPage() {
                                     {/* Actions */}
                                     <div className="flex items-center gap-3 pl-4 border-l border-black/5 dark:border-white/5">
                                         <button
-                                            onClick={() => handleLaunch(app.name, app.name)}
+                                            onClick={(e) => { e.stopPropagation(); handleLaunch(app.name); }}
                                             className="h-10 px-5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-900/20 active:scale-95 border border-white/10 hover:shadow-blue-500/20"
                                         >
                                             <Play size={16} fill="currentColor" /> Launch
                                         </button>
                                         <button
-                                            onClick={() => handleUninstall(app.name, app.name)}
+                                            onClick={(e) => { e.stopPropagation(); handleUninstall(app.name, app.name); }}
                                             className="h-10 w-10 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-500 dark:text-red-400 border border-red-500/10 hover:border-red-500/30 transition-all flex items-center justify-center active:scale-95"
                                             title="Uninstall"
                                         >

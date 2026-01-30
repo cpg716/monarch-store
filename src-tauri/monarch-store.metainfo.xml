@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.monarch.store</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>MonARCH Store</name>
+  <summary>Universal Arch Linux App Manager</summary>
+  <description>
+    <p>MonARCH Store is a distro-aware software center for Arch Linux and compatible distributions (Manjaro, CachyOS). It discovers and installs packages from official repos, Chaotic-AUR, and the AUR with a single interface.</p>
+    <p>Features include soft-disabled repositories, hardware-optimized CachyOS repos, one-click database unlock, and Polkit-based privileged operations. All sync and install operations use atomic transactions (pacman -Syu) to avoid partial upgrades.</p>
+    <p>Created by cpg716 with the help of AI coding tools.</p>
+  </description>
+  <launchable type="desktop">monarch-store.desktop</launchable>
+  <url type="homepage">https://github.com/cpg716/monarch-store</url>
+  <developer>
+    <name>cpg716</name>
+    <url>https://github.com/cpg716</url>
+  </developer>
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-cartoon">none</content_attribute>
+    <content_attribute id="violence-fantasy">none</content_attribute>
+    <content_attribute id="violence-realistic">none</content_attribute>
+    <content_attribute id="violence-bloodshed">none</content_attribute>
+    <content_attribute id="violence-sexual">none</content_attribute>
+    <content_attribute id="violence-description">none</content_attribute>
+    <content_attribute id="drug-alcohol">none</content_attribute>
+    <content_attribute id="drug-narcotics">none</content_attribute>
+    <content_attribute id="drug-tobacco">none</content_attribute>
+    <content_attribute id="drug-description">none</content_attribute>
+    <content_attribute id="sex-nudity">none</content_attribute>
+    <content_attribute id="sex-themes">none</content_attribute>
+    <content_attribute id="sex-homosexuality">none</content_attribute>
+    <content_attribute id="sex-bisexuality">none</content_attribute>
+    <content_attribute id="sex-masturbation">none</content_attribute>
+    <content_attribute id="sex-prostitution">none</content_attribute>
+    <content_attribute id="sex-adultery">none</content_attribute>
+    <content_attribute id="sex-appearance">none</content_attribute>
+    <content_attribute id="language-profanity">none</content_attribute>
+    <content_attribute id="language-hate">none</content_attribute>
+    <content_attribute id="language-discrimination">none</content_attribute>
+    <content_attribute id="language-sexual">none</content_attribute>
+    <content_attribute id="social-chat">none</content_attribute>
+    <content_attribute id="social-info">none</content_attribute>
+    <content_attribute id="social-audio">none</content_attribute>
+    <content_attribute id="social-location">none</content_attribute>
+    <content_attribute id="social-contacts">none</content_attribute>
+    <content_attribute id="money-purchasing">none</content_attribute>
+    <content_attribute id="money-gambling">none</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="0.3.5" date="2025-01-29">
+      <description>
+        <p>Alpha release: AppStream metainfo, focus trap and Escape on all modals, atomic sync proofing, PKGBUILD and distribution metadata ready for tag.</p>
+      </description>
+    </release>
+  </releases>
+</component>

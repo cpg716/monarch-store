@@ -12,9 +12,13 @@ import {
     Info,
     Trash2,
     Activity,
-    ChevronDown
+    ChevronDown,
+    Eye,
+    EyeOff
 } from "lucide-react";
 import { clsx } from 'clsx';
+import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface HealthIssue {
     category: string;
@@ -31,6 +35,12 @@ export default function SystemHealthSection() {
     const [showPasswordInput, setShowPasswordInput] = useState(false);
     const [pendingAction, setPendingAction] = useState<string | null>(null);
     const [healthIssues, setHealthIssues] = useState<HealthIssue[]>([]);
+    const [password, setPassword] = useState("");
+    const [showPassword, setShowPassword] = useState(false);
+    const [classifiedError, setClassifiedError] = useState<any | null>(null);
+
+    useEscapeKey(() => setShowPasswordInput(false), showPasswordInput);
+    const authModalRef = useFocusTrap(showPasswordInput);
 
     useEffect(() => {
         checkLock();
@@ -38,8 +48,12 @@ export default function SystemHealthSection() {
         const unlisten = listen("repair-log", (event) => {
             setLogs((prev) => [...prev, event.payload as string]);
         });
+        const unlistenErr = listen("repair-error-classified", (event) => {
+            setClassifiedError(event.payload);
+        });
         return () => {
             unlisten.then((f) => f());
+            unlistenErr.then((f) => f());
         };
     }, []);
 
@@ -64,6 +78,8 @@ export default function SystemHealthSection() {
     const handleAction = async (action: string) => {
         setPendingAction(action);
         setShowPasswordInput(true);
+        setPassword(""); // Reset password on new action
+        setClassifiedError(null);
         setLogs([]);
     };
 
@@ -71,6 +87,7 @@ export default function SystemHealthSection() {
         if (!pendingAction) return;
         setLoading(true);
         setShowPasswordInput(false);
+        setClassifiedError(null);
         setLogs((p) => [...p, `>>> STARTING: ${pendingAction.toUpperCase()} ...`]);
 
         try {
@@ -83,7 +100,8 @@ export default function SystemHealthSection() {
                     break;
                 case "keyring":
                 case "trigger_repair_flow":
-                    cmd = "repair_reset_keyring";
+                case "repair_reset_keyring":
+                    cmd = "fix_keyring_issues_alias";
                     break;
                 case "emergency_sync":
                     cmd = "repair_emergency_sync";
@@ -112,7 +130,7 @@ export default function SystemHealthSection() {
             }
 
             if (cmd) {
-                await invoke(cmd, { password: null, ...args });
+                await invoke(cmd, { password: password || null, ...args });
                 setLogs((p) => [...p, `>>> SUCCESS: ${pendingAction.toUpperCase()} COMPLETED.`]);
                 checkHealth();
                 checkLock();
@@ -237,8 +255,23 @@ export default function SystemHealthSection() {
                 </div>
 
                 {/* Log Output (Collapsible for Cleanliness) */}
-                <div className="pt-4">
-                    <details className="group">
+                <div className="mt-4 space-y-4">
+                    {classifiedError && (
+                        <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6 animate-in slide-in-from-top-2 duration-300">
+                            <div className="flex items-center gap-3 text-red-500 font-black text-xs uppercase tracking-widest mb-2">
+                                <AlertTriangle size={18} />
+                                {classifiedError.title}
+                            </div>
+                            <p className="text-sm text-red-500/90 leading-relaxed font-medium mb-4">
+                                {classifiedError.description}
+                            </p>
+                            <div className="bg-black/40 rounded-xl p-4 font-mono text-[10px] text-red-500/60 max-h-32 overflow-y-auto border border-red-500/10">
+                                {classifiedError.raw_message}
+                            </div>
+                        </div>
+                    )}
+
+                    <details className="group" open={!classifiedError}>
                         <summary className="flex items-center gap-2 text-xs font-bold text-app-muted cursor-pointer hover:text-app-fg transition-colors select-none list-none">
                             <Terminal size={14} />
                             <span>View Technician Logs</span>
@@ -257,21 +290,39 @@ export default function SystemHealthSection() {
 
             {/* Auth Modal */}
             {showPasswordInput && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-6 z-[100] animate-in fade-in duration-200">
-                    <div className="bg-app-card rounded-[32px] p-10 w-full max-w-lg border border-app-border shadow-2xl space-y-8 animate-in zoom-in-95 duration-300">
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-6 z-[100] animate-in fade-in duration-200" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+                    <div ref={authModalRef} className="bg-app-card rounded-[32px] p-10 w-full max-w-lg border border-app-border shadow-2xl space-y-8 animate-in zoom-in-95 duration-300">
                         <div className="flex items-center gap-5">
                             <div className="p-4 rounded-[20px] bg-blue-600/20 text-blue-500">
                                 <Shield size={32} />
                             </div>
                             <div>
-                                <h3 className="text-2xl font-black text-app-fg leading-tight">Authorize Task</h3>
+                                <h3 id="auth-modal-title" className="text-2xl font-black text-app-fg leading-tight">Authorize Task</h3>
                                 <p className="text-app-muted text-sm mt-1">MonARCH needs your permission to repair: <span className="text-app-fg font-mono font-bold uppercase">{pendingAction}</span></p>
                             </div>
                         </div>
 
-                        <div className="bg-app-bg/50 border border-app-border/50 p-6 rounded-3xl flex items-start gap-4 text-sm text-app-muted leading-relaxed">
-                            <Info className="shrink-0 mt-0.5 text-blue-500" size={20} />
-                            <p>This action will perform system-level changes to ensure your computer stays up to date and secure. You may see a system password prompt shortly.</p>
+                        <div className="bg-app-bg/50 border border-app-border/50 p-6 rounded-3xl flex flex-col gap-4 text-sm text-app-muted leading-relaxed">
+                            <div className="flex start gap-4">
+                                <Info className="shrink-0 mt-0.5 text-blue-500" size={20} />
+                                <p>This action will perform system-level changes. Entering your password here allows MonARCH to handle the permissions securely without multiple system prompts.</p>
+                            </div>
+
+                            <div className="relative group/passwd">
+                                <input
+                                    type={showPassword ? "text" : "password"}
+                                    placeholder="System Password (Optional)"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500/50 transition-all group-hover/passwd:border-white/20 text-app-fg"
+                                />
+                                <button
+                                    onClick={() => setShowPassword(!showPassword)}
+                                    className="absolute right-4 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60"
+                                >
+                                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                                </button>
+                            </div>
                         </div>
 
                         <div className="flex gap-4">

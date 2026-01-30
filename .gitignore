@@ -8,9 +8,16 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.vite-cache
 dist
 dist-ssr
 *.local
+
+# rust-analyzer build cache (separate from tauri dev to avoid file lock)
+.rust-analyzer-target
+
+# tauri dev uses this so it never competes for lock with rust-analyzer
+target-tauri-dev
 
 # Editor directories and files
 .vscode/*

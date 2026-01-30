@@ -1,6 +1,8 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { clsx } from 'clsx';
 import { AlertTriangle, CheckCircle2, Info } from 'lucide-react';
+import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface ConfirmationModalProps {
     isOpen: boolean;
@@ -11,6 +13,9 @@ interface ConfirmationModalProps {
     confirmLabel?: string;
     cancelLabel?: string;
     variant?: 'danger' | 'info' | 'success';
+    showPasswordInput?: boolean;
+    passwordValue?: string;
+    onPasswordChange?: (val: string) => void;
 }
 
 export default function ConfirmationModal({
@@ -21,8 +26,14 @@ export default function ConfirmationModal({
     message,
     confirmLabel = "Confirm",
     cancelLabel = "Cancel",
-    variant = 'info'
+    variant = 'info',
+    showPasswordInput = false,
+    passwordValue = "",
+    onPasswordChange
 }: ConfirmationModalProps) {
+    useEscapeKey(onClose, isOpen);
+    const focusTrapRef = useFocusTrap(isOpen);
+
     if (!isOpen) return null;
 
     const getIcon = () => {
@@ -45,19 +56,47 @@ export default function ConfirmationModal({
         <AnimatePresence>
             <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
                 <motion.div
+                    ref={focusTrapRef}
                     initial={{ opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.9 }}
                     className="w-full max-w-md bg-app-card border border-app-border rounded-2xl shadow-2xl p-6 overflow-hidden relative"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="confirmation-title"
                 >
                     <div className="flex flex-col items-center text-center gap-4">
                         <div className="p-4 bg-app-subtle rounded-full">
                             {getIcon()}
                         </div>
 
-                        <div>
-                            <h3 className="text-xl font-bold text-app-fg mb-2">{title}</h3>
-                            <p className="text-app-muted text-sm leading-relaxed">{message}</p>
+                        <div className="w-full">
+                            <h3 id="confirmation-title" className="text-xl font-bold text-app-fg mb-2">{title}</h3>
+                            <p className="text-app-muted text-sm leading-relaxed mb-4">{message}</p>
+
+                            {showPasswordInput && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: 10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    className="w-full"
+                                >
+                                    <input
+                                        type="password"
+                                        autoFocus
+                                        placeholder="Administrator Password"
+                                        value={passwordValue}
+                                        onChange={(e) => onPasswordChange?.(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                onConfirm();
+                                                onClose();
+                                            }
+                                        }}
+                                        className="w-full px-4 py-3 bg-black/20 border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono text-sm"
+                                    />
+                                    <p className="text-[10px] text-white/40 mt-2 text-left px-1">Required for AUR builds & system updates.</p>
+                                </motion.div>
+                            )}
                         </div>
 
                         <div className="flex gap-3 w-full mt-4">

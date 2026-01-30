@@ -31,41 +31,28 @@ MonARCH is **Context-Aware** thanks to the `distro_detect.rs` module. It probes 
 *   **IS_ARCH**: Activates "Power User Mode" (Enable all repos, assume base-devel).
 *   **IS_CACHYOS**: Activates "Speed Mode" (Prioritize v3/v4 repos).
 
-## 3. The Installer Pipeline (v0.3.00)
+## 3. The Installer Pipeline
 
-The installation flow has been hardened to prevent "partial upgrades" and "split-brain" states:
+The installation flow uses the **monarch-helper** binary (invoked via `pkexec`) so that all ALPM write operations run in one privileged process. This prevents partial upgrades and split-brain states.
 
-```mermaid
-graph TD
-    A[User Clicks Install] --> B{Lock Check}
-    B -- Locked --> C[Wait / Error]
-    B -- Free --> D{Distro Safety Check}
-    D -- Mismatch --> E[Warning Modal]
-    D -- Safe --> F{Smart Sync}
-    F -- DB New (<1h) --> G[Skip Sync]
-    F -- DB Old --> H[sudo pacman -Sy]
-    G --> I[Stream Output]
-    H --> I
-    I --> J[Done]
-```
+*   **GUI (user)**: Validates package name, distro safety, and repo selection; builds a JSON command and writes it to a temp file.
+*   **Helper (root)**: Reads the command from the temp file, runs ALPM transactions (sync + install, or uninstall, or sysupgrade). Progress is streamed back via events.
+*   **Rule**: We **never** run `pacman -Sy` alone. Repo installs use `pacman -Syu --needed` in a single transaction; system updates use one full upgrade. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md).
 
-### 4. Butterfly System Health (v0.3.00 "Butterfly" Overhaul)
+### 4. Butterfly System Health
 MonARCH includes a permission-aware health monitoring ecosystem:
 *   **Butterfly Probes**: Verifies `pkexec`, `git`, and `polkit` health at startup to prevent silent failures.
-*   **Parallel ODRS Integration**: Ratings are now fetched concurrently during onboarding/home view for 2-3x speed improvements.
-*   **Permission-Safe Sensors**: Health checks are now non-privileged, preventing false "Corrupted Keyring" warnings.
-*   **Unified Repair Wizard**: A single authorized maintenance flow for Keyring, Security Polices, and Repo sync.
+*   **Parallel ODRS Integration**: Ratings are fetched concurrently during onboarding/home view for faster load.
+*   **Permission-Safe Sensors**: Health checks are non-privileged, preventing false "Corrupted Keyring" warnings.
+*   **Unified Repair Wizard**: A single authorized maintenance flow for Keyring, Security Policies, and Repo sync.
 
-### 5. Frontend Stack: The "Luminosity" Design
-
-The UI has been rewritten using a performance-first, glassmorphic architecture:
-
-*   **Layout Engine**: `PackageDetailsFresh.tsx` uses CSS Grid/Flexbox to create responsive, high-density layouts that adapt to mobile/desktop.
-*   **Visuals**: Heavy use of `backdrop-blur`, semi-transparent layers, and "Ghost Text" for a premium feel.
-*   **Components**: Atomic design with `PackageCard.tsx` handling its own state (hover, install status) to prevent global re-renders.
+### 5. Frontend Stack
+*   **Stack**: React 19, TypeScript, Tailwind CSS 4, Vite 7, Zustand (state), Framer Motion. Key dirs: `src/components/`, `src/pages/`, `src/hooks/`, `src/store/`.
+*   **Layout**: `PackageDetailsFresh.tsx` and other pages use responsive Grid/Flexbox; glassmorphic styling with `backdrop-blur` and semi-transparent layers.
+*   **Components**: Atomic design with `PackageCard.tsx`, `InstallMonitor.tsx`, and shared hooks for metadata, ratings, and favorites.
 
 ## 6. Linux Native Integration
 
-*   **Icons**: Uses standard XDG paths (`/usr/share/icons/...`) resolved via `file://` protocol.
-*   **Polkit**: Uses `pkexec` for granular permission escalation (no global sudo usage).
-*   **AppStream**: Integrates native metadata for rich descriptions and screenshots.
+*   **Icons**: Uses standard XDG paths and metadata from AppStream and the Flathub API (for icons/descriptions only; we do not ship or install Flatpak apps).
+*   **Polkit**: Privileged operations use `pkexec` with **monarch-helper** at `/usr/lib/monarch-store/monarch-helper` when installed; Polkit policy and rules allow passwordless installs for authorized users. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md).
+*   **Helper command**: The GUI writes the JSON command to a temp file and passes only the file path to the helper to avoid argv truncation and ensure reliable installs.

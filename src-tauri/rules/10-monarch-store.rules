@@ -1,0 +1,16 @@
+// MonARCH Store Polkit rules: script (wrapper) and binary helper (package-manage).
+// One-Click: wheel users get passwordless for package-manage so install/update work without prompt.
+
+polkit.addRule(function(action, subject) {
+    if (action.id == "com.monarch.store.script" &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.AUTH_ADMIN_KEEP; // Remember password for script actions
+    }
+});
+
+polkit.addRule(function(action, subject) {
+    if (action.id == "com.monarch.store.package-manage" &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES; // No password prompt for install/update
+    }
+});

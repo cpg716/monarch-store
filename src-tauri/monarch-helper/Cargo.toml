@@ -1,0 +1,14 @@
+[package]
+name = "monarch-helper"
+version = "0.3.5-alpha"
+edition = "2021"
+authors = ["MonARCH Store Contributors"]
+description = "Privileged ALPM engine for MonARCH Store"
+
+[dependencies]
+alpm = "5.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"

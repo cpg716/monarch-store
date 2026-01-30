@@ -123,8 +123,8 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                                             setIsOpen(false);
                                         }}
                                         className={clsx(
-                                            "flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors group",
-                                            isSelected ? "bg-blue-500/10 dark:bg-app-accent/10" : "hover:bg-slate-100 dark:hover:bg-white/5"
+                                            "flex items-center justify-between px-3 py-2.5 rounded-lg transition-all duration-200 group",
+                                            isSelected ? "bg-blue-500/10 dark:bg-app-accent/10" : "hover:bg-slate-100 dark:hover:bg-white/5 hover:scale-[1.01]"
                                         )}
                                     >
                                         <div className="flex items-center gap-3">

@@ -67,8 +67,8 @@ export default function HeroSection() {
                 transition={{ delay: 0.2 }}
                 className="flex flex-col md:flex-row items-center gap-3 md:gap-6"
             >
-                {/* Distro Badge */}
-                <div className={clsx("flex items-center gap-2 px-4 py-1.5 rounded-full border backdrop-blur-md shadow-lg", badge.border)}>
+                {/* Distro Badge (CachyOS Optimized / Chaotic-AUR value cue) */}
+                <div className={clsx("badge-hover flex items-center gap-2 px-4 py-1.5 rounded-full border backdrop-blur-md shadow-lg", badge.border)}>
                     <BadgeIcon size={14} className={badge.color} />
                     <span className={clsx("text-xs font-bold uppercase tracking-wider", badge.color)}>
                         {badge.label}

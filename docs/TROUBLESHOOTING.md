@@ -2,6 +2,8 @@
 
 Common issues users encounter when using MonARCH Store.
 
+**Install/Update not working or password prompts:** See [Install & Update Audit](INSTALL_UPDATE_AUDIT.md) for the full flow, Polkit setup, and passwordless configuration (Polkit rules, helper path, policy).
+
 ## 🔑 GPG / Signature Errors
 
 **Error:** `signature from "User <email>" is unknown trust` or `invalid or corrupted package (PGP signature)`.
@@ -9,19 +11,24 @@ Common issues users encounter when using MonARCH Store.
 **Cause:** The Arch Linux keyring is out of date, or the package signer's key isn't in your keyring.
 
 **Fix:**
-Open a terminal and run:
-```bash
-sudo pacman -Sy archlinux-keyring
-sudo pacman-key --init
-sudo pacman-key --populate archlinux
-sudo pacman-key --refresh-keys
-```
+1. **Preferred**: Run a full system update (this refreshes the keyring as part of the transaction):
+   ```bash
+   sudo pacman -Syu
+   ```
+2. **Keyring-only** (if you must fix keys without a full upgrade):
+   ```bash
+   sudo pacman -Syu archlinux-keyring
+   sudo pacman-key --init
+   sudo pacman-key --populate archlinux
+   sudo pacman-key --refresh-keys
+   ```
+   Note: MonARCH never runs `pacman -Sy` alone; use `-Syu` for any sync+install.
 
 ## 🔒 Database Locked
 
 **Error:** `status: /var/lib/pacman/db.lck exists`.
 
-**Cause:** Another package manager (pacman, yay, pamac) is currently running, or a previous process crashed without cleaning up.
+**Cause:** Another package manager (pacman, yay, CachyOS updater, Octopi, etc.) is currently running, or a previous process crashed without cleaning up.
 
 **Fix:**
 1.  **Check for running processes:**

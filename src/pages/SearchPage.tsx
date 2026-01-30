@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Clock, X, Sparkles, TrendingUp, Heart } from 'lucide-react';
 import { useSearchHistory } from '../hooks/useSearchHistory';
@@ -34,6 +34,14 @@ export default function SearchPage({
     const [activeFilter, setActiveFilter] = useState('all');
     const [sortBy, setSortBy] = useState<'best_match' | 'name' | 'updated'>('best_match');
     const [displayLimit, setDisplayLimit] = useState(50);
+    const filterChipsRef = useRef<HTMLDivElement>(null);
+
+    // When magic keyword (@aur, @chaotic, @official) is used, scroll filter chips into view
+    useEffect(() => {
+        if (query.trim().startsWith('@') && filterChipsRef.current) {
+            filterChipsRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }, [query]);
 
     // Filtered & Sorted results
     const getFilteredResults = () => {
@@ -119,7 +127,7 @@ export default function SearchPage({
 
                 {/* Filter Chips */}
                 {query && (
-                    <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
+                    <div ref={filterChipsRef} className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
                         <button
                             onClick={() => setActiveFilter('all')}
                             className={clsx(
@@ -274,8 +282,7 @@ export default function SearchPage({
                                     description={`We encountered an error while searching for "${query}".\n${error}`}
                                     actionLabel="Try Again"
                                     onAction={() => {
-                                        if (onRetry) onRetry();
-                                        else onQueryChange('');
+                                        (onRetry || (() => onQueryChange('')))();
                                     }}
                                     variant="error"
                                 />
@@ -297,7 +304,7 @@ export default function SearchPage({
                                 />
                             ) : (
                                 <>
-                                    <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6">
+                                    <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6 max-w-7xl mx-auto w-full">
                                         {displayed.map((pkg) => (
                                             <PackageCard
                                                 key={`${pkg.name}-${pkg.source}`}

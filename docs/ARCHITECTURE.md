@@ -1,6 +1,6 @@
 # System Architecture 🏗️
 
-MonARCH Store is built on top of **Tauri v2**, combining a highly performant Rust backend with a modern React frontend.
+MonARCH Store is built on **Tauri 2**, with a Rust workspace: **monarch-gui** (user process, read-only ALPM + orchestration) and **monarch-helper** (root via Polkit, ALPM write operations). The frontend is React 19 + TypeScript + Tailwind CSS 4 + Vite 7 + Zustand.
 
 ## High-Level Overview
 
@@ -17,14 +17,14 @@ graph TD
 
 ## Backend (Rust)
 
-### Key Modules
-- **`lib.rs`**: Main orchestrator. Handles search, deduplication, and repository prioritization.
-- **`models.rs`**: Shared types. Includes the `Package` model used across the app.
-- **`flathub_api.rs`**: Critical mapping layer that translates Arch package names to AppStream IDs (e.g., `brave-bin` -> `com.brave.Browser`) for fetching reviews.
-- **`odrs_api.rs`**: Fetches global ratings and reviews from the Open Desktop Rating System.
-- **`repo_manager.rs`**: Syncs PACMAN databases and manages source-specific logic.
-- **`repo_db.rs`**: Data Abstraction Layer for repository fetching. Implements a `RepoClient` trait to allow dependency injection for network testing.
-- **`mocks.rs`**: Test infrastructure providing `MockPackageManager` and `MockRepoClient` for safe, offline verification.
+### Workspace Layout
+- **`src-tauri/monarch-gui/`**: Tauri app (user process). Commands in `commands/`; `helper_client.rs` builds JSON command, writes to temp file, spawns `pkexec monarch-helper <cmd_file_path>`. Read-only ALPM in `alpm_read.rs`; AUR builds (unprivileged makepkg) then Helper installs built packages.
+- **`src-tauri/monarch-helper/`**: Privileged binary. Reads command from temp file, runs ALPM transactions (install, uninstall, sysupgrade, sync). Progress/result streamed via stdout; GUI emits `alpm-progress`, `install-complete`, etc.
+
+### Key GUI Modules
+- **`lib.rs`**: Registers Tauri commands and plugins.
+- **`commands/`**: `package.rs` (install/uninstall), `search.rs`, `update.rs`, `system.rs`, `utils.rs`, `reviews.rs`.
+- **`models.rs`**: Shared types (e.g. `Package`). **`metadata.rs`** / **`flathub_api.rs`**: AppStream and Flathub API used for metadata only (icons, descriptions, reviews); we do not add Flatpak runtime or app support. **`odrs_api.rs`**: ODRS ratings. **`repo_manager.rs`**: Repo state and sync. **`error_classifier.rs`**: Classifies install errors for recovery UI.
 
 ### Search & Priority Logic
 To ensure the best user experience, results are processed through a **Weighted Relevance Sort** (`utils::sort_packages_by_relevance`). This system prioritizes:
@@ -35,7 +35,7 @@ To ensure the best user experience, results are processed through a **Weighted R
 **Fallback Chain (Icons & Metadata)**:
 If a package is found in a binary repo (e.g. Chaotic), metadata is enriched via a robust fallback chain:
 1.  **AppStream (Local Cache)**: Main source for official arch packages.
-2.  **Flathub API**: Used for AUR packages that lack AppStream data (e.g. `brave-bin`, `spotify`).
+2.  **Flathub API**: Used for metadata only (icons, descriptions) for AUR packages that lack AppStream data (e.g. `brave-bin`, `spotify`). We do not install or ship Flatpak apps.
 3.  **System Heuristics**: Scans `/usr/share/pixmaps` for installed icons.
 4.  **Web Fallback**: Fetches Favicons or OpenGraph images from the upstream URL if all else fails.
 
@@ -60,8 +60,9 @@ MonArch uses a "Best Effort" review pipeline implemented in `src/services/review
 ## Security & Resilience
 
 ### 1. Privilege Escalation
-- Uses standard `pkexec` for installers and system-wide configuration.
-- **Password-Free Settings**: To reduce user friction, the app uses a "Soft Disable" model. Repos are enabled at the system level once during Onboarding (via `pkexec`); future toggles in Settings only affect UI metadata visibility, requiring no password.
+- **Helper path**: Production uses `/usr/lib/monarch-store/monarch-helper` when present so Polkit policy path matches; dev fallback uses target-built binary. Command is passed via a **temp file** (path only in argv) to avoid truncation and "Invalid JSON" errors.
+- **Polkit**: Policy `com.monarch.store.policy` and rules in `10-monarch-store.rules` allow passwordless install/update for authorized users (e.g. wheel). Installed via Settings "Install policy" or onboarding. See [Install & Update Audit](INSTALL_UPDATE_AUDIT.md).
+- **Soft Disable**: Repos are enabled at the system level once during Onboarding; toggles in Settings only affect UI visibility, requiring no password for repo toggles.
 
 ### 2. GPG Keyring & Hardened Health (v0.2.30)
 MonARCH Store implements a multi-layer GPG synchronization and health monitoring strategy:
@@ -78,8 +79,8 @@ To support existing users, the app includes a mandatory initialization sequence:
 
 ## Deployment (CI/CD)
 - **GitHub Actions**: Automated pipeline in `.github/workflows/release.yml`.
-- **Signing**: Releases are signed with Tauri Updater keys and published to GitHub Releases.
-- **Updates**: Feature-aware versioning. Version `0.2.30` introduces the most significant stability overhaul in the project's history.
+- **Signing**: Releases are signed and published to GitHub Releases.
+- **Package management rules**: Never run `pacman -Sy` alone. Repo installs use `pacman -Syu --needed` in one transaction; system updates use one full upgrade. AUR: unprivileged makepkg, only `pacman -U` is privileged (via Helper). See [AGENTS.md](../AGENTS.md) and [Install & Update Audit](INSTALL_UPDATE_AUDIT.md).
 
 ## Security
 - **Network**: Strict CSP (Content Security Policy) configured in `tauri.conf.json`.

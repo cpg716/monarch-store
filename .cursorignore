@@ -1,0 +1,12 @@
+# Ignore build artifacts
+src-tauri/target/
+src-tauri/**/target/
+dist/
+node_modules/
+
+# Ignore large lock files (confuses the LLM)
+src-tauri/Cargo.lock
+package-lock.json
+
+# Ignore cache
+.alpm_cache/

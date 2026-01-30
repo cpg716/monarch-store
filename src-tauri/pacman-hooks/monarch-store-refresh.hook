@@ -1,0 +1,15 @@
+# Optional: refresh MonARCH Store's local repo index after pacman transactions.
+# When the user runs pacman -Syu in the terminal, this hook sets a flag so that
+# the next time MonARCH starts, it can refresh its cache (~/.cache/monarch-store/dbs).
+# Install: shipped with the monarch-store package in /usr/share/libalpm/hooks/
+# Disable: sudo mv /usr/share/libalpm/hooks/monarch-store-refresh.hook /usr/share/libalpm/hooks/monarch-store-refresh.hook.disabled
+
+[Trigger]
+Type = Package
+Operation = Upgrade
+Target = *
+
+[Action]
+Description = Notify MonARCH Store to refresh index after system update
+When = PostTransaction
+Exec = /usr/bin/monarch-store-refresh-cache

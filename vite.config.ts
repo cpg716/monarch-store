@@ -7,6 +7,8 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+  // Use project-local cache so Vite can write even when node_modules has permission issues
+  cacheDir: ".vite-cache",
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

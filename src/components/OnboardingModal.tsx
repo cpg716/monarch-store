@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Server, Zap, Database, Globe, Lock, Cpu, AlertTriangle, Terminal, RefreshCw, Star, Activity } from 'lucide-react';
+import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Server, Zap, Database, Globe, Lock, Cpu, AlertTriangle, Terminal, RefreshCw, Star, Activity, Eye, EyeOff } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
+import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { invoke } from '@tauri-apps/api/core';
 import { clsx } from 'clsx';
 import logoFull from '../assets/logo_full.png';
 import archLogo from '../assets/arch-logo.svg';
+import { useAppStore } from '../store/internal_store';
 
 interface OnboardingModalProps {
     onComplete: () => void;
@@ -26,7 +29,27 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
     const [step, setStep] = useState(0);
     const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
     const [aurEnabled, setAurEnabled] = useState(false);
-    const [telemetryEnabled, setTelemetryEnabled] = useState(true); // Default to true (Opt-out) for onboarding flow, but user decides.
+    const [password, setPassword] = useState<string>("");
+    const [showPassword, setShowPassword] = useState(false);
+
+    // Use store directly for critical reactivity
+    const telemetryEnabled = useAppStore((state: any) => state.telemetryEnabled);
+    const setTelemetry = useAppStore((state: any) => state.setTelemetry);
+
+    // Atomic local state for ZERO LATENCY UI
+    const [localToggle, setLocalToggle] = useState(telemetryEnabled);
+    useEffect(() => { setLocalToggle(telemetryEnabled); }, [telemetryEnabled]);
+
+    const handleToggle = async () => {
+        const target = !localToggle;
+        setLocalToggle(target); // Immediate visual flip
+        try {
+            await setTelemetry(target);
+        } catch (e) {
+            setLocalToggle(telemetryEnabled); // Rollback visual on error
+        }
+    };
+
     const [oneClickEnabled, setOneClickEnabled] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [repoFamilies, setRepoFamilies] = useState<RepoFamily[]>([]);
@@ -40,10 +63,15 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
     // System Bootstrap State
     const [bootstrapStatus, setBootstrapStatus] = useState<"idle" | "running" | "success" | "error">("idle");
     const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+    const [classifiedError, setClassifiedError] = useState<any | null>(null);
 
     useEffect(() => {
         let unlisten: any;
         const setup = async () => {
+            const { listen } = await import('@tauri-apps/api/event');
+            unlisten = await listen('repair-error-classified', (event) => {
+                setClassifiedError(event.payload);
+            });
         };
         setup();
         return () => { if (unlisten) unlisten(); };
@@ -51,8 +79,10 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
 
     const enableSystem = async (): Promise<boolean> => {
         setBootstrapStatus("running");
+        setBootstrapError(null);
+        setClassifiedError(null);
         try {
-            await invoke("bootstrap_system", { password: null, oneClick: oneClickEnabled });
+            await invoke("bootstrap_system", { password: password || null, oneClick: oneClickEnabled });
             setBootstrapStatus("success");
             localStorage.setItem('monarch_infra_v2_2', 'true'); // Keep infra flag
             localStorage.setItem('monarch_onboarding_v3', 'true'); // Set migration flag early just in case
@@ -123,7 +153,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         }).catch(console.error);
 
         invoke<boolean>('is_aur_enabled').then(setAurEnabled).catch(console.error);
-        invoke<boolean>('is_telemetry_enabled').then(setTelemetryEnabled).catch(console.error);
+        // Note: Global telemetry state is initialized in the store, no need to set local state here.
 
         invoke<boolean>('check_repo_status', { name: 'chaotic-aur' })
             .then(exists => {
@@ -139,6 +169,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
     const enableChaotic = async () => {
         setChaoticStatus("enabling");
         setChaoticLogs(prev => [...prev, "Checking system requirements..."]);
+        setClassifiedError(null);
         try {
             // If already bootstrapped or currently bootstrapping, wait/skip
             if (bootstrapStatus !== 'success') {
@@ -149,12 +180,10 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
             }
 
             setChaoticLogs(prev => [...prev, "System ready. Enabling Chaotic-AUR..."]);
-            const res = await invoke<string>("enable_repo", { name: "chaotic-aur", password: null });
+            const res = await invoke<string>("enable_repo", { name: "chaotic-aur", password: password || null });
             setChaoticLogs(prev => [...prev, res, "Setup complete!"]);
             setChaoticStatus("success");
             setMissingChaotic(false);
-            // Use logoIcon to verify it's not unused
-            console.log("System Initialized with MonARCH DNA");
         } catch (e: any) {
             setChaoticLogs(prev => [...prev, `Error: ${e.message || e}`]);
             setChaoticStatus("error");
@@ -165,7 +194,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         setIsSaving(true);
         try {
             await invoke('set_aur_enabled', { enabled: aurEnabled });
-            await invoke('set_telemetry_enabled', { enabled: telemetryEnabled });
+            // telemetry is already synced via the global store/setTelemetry
 
             // 1. First, set families (no OS sync yet)
             for (const fam of repoFamilies) {
@@ -174,8 +203,8 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
 
             // 2. Commit everything to the OS in one go
             try {
-                await invoke('apply_os_config', { password: null });
-                await invoke('optimize_system', { password: null });
+                await invoke('apply_os_config', { password: password || null });
+                await invoke('optimize_system', { password: password || null });
             } catch (e) {
                 console.error("Final system config failed:", e);
             }
@@ -191,10 +220,17 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
 
     const steps = [
         {
+            title: "",
+            subtitle: "Universal Arch Linux App Manager",
+            color: "bg-slate-950",
             icon: (
-                <div className="relative group">
-                    <div className="absolute inset-[-40%] bg-blue-500/20 blur-3xl rounded-full opacity-50 transition-opacity" />
-                    <img src={logoFull} alt="MonARCH" className="w-64 md:w-80 object-contain drop-shadow-2xl relative z-10" />
+                <div className="relative group scale-100 md:scale-110">
+                    <div className="absolute inset-[-40%] bg-blue-600/30 blur-3xl rounded-full opacity-60 transition-opacity" />
+                    <img
+                        src={logoFull}
+                        alt="MonARCH"
+                        className="w-32 md:w-56 object-contain drop-shadow-[0_0_20px_rgba(255,255,255,0.1)] relative z-10 brightness-125 contrast-125 saturate-110"
+                    />
                 </div>
             )
         },
@@ -251,16 +287,23 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         setRepoFamilies(prev => prev.map(f => f.id === id ? { ...f, enabled: !f.enabled } : f));
     };
 
+    useEscapeKey(onComplete, true);
+    const focusTrapRef = useFocusTrap(true);
+
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-xl">
             <motion.div
+                ref={focusTrapRef}
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="w-full max-w-4xl bg-app-card border border-app-border rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-full max-h-[85vh] md:h-[600px]"
+                className="w-full max-w-4xl bg-app-card border border-app-border rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-[95vh] md:h-[600px] max-h-[800px]"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="onboarding-title"
             >
                 {/* Left Panel */}
                 <div className={clsx(
-                    "w-full md:w-4/12 p-6 md:p-8 flex flex-col transition-colors duration-700 relative overflow-y-auto custom-scrollbar shrink-0",
+                    "w-full md:w-5/12 p-6 md:p-8 flex flex-col transition-colors duration-700 relative overflow-hidden shrink-0",
                     steps[step].color
                 )}>
                     <div className="absolute inset-0 opacity-5 pointer-events-none">
@@ -274,18 +317,35 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
 
                     <div className="relative z-10 flex flex-col h-full">
                         {reason && (
-                            <div className="bg-amber-500/20 text-white p-3 rounded-xl border border-amber-500/30 mb-6 backdrop-blur-md animate-in slide-in-from-top-4 shadow-lg shrink-0">
-                                <div className="flex items-center gap-2 font-bold text-[10px] mb-1">
-                                    <AlertTriangle size={14} className="text-amber-400" />
-                                    <span>SYSTEM INTEGRITY CHECK</span>
+                            <div className="bg-amber-500/20 text-white p-3 md:p-4 rounded-xl border border-amber-500/30 mb-4 backdrop-blur-md animate-in slide-in-from-top-4 shadow-lg shrink-0 overflow-hidden">
+                                <div className="flex items-center gap-2 font-black text-[9px] mb-2 uppercase tracking-widest text-amber-400">
+                                    <AlertTriangle size={14} />
+                                    <span>System Integrity Check</span>
                                 </div>
-                                <p className="text-[10px] opacity-90 leading-tight">{reason}</p>
+                                <p className="text-[10px] opacity-90 leading-relaxed mb-3">{reason}</p>
+
+                                <div className="relative group/passwd">
+                                    <input
+                                        type={showPassword ? "text" : "password"}
+                                        placeholder="System Password (Optional)"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-[10px] focus:outline-none focus:border-amber-500/50 transition-all group-hover/passwd:border-white/20"
+                                    />
+                                    <button
+                                        onClick={() => setShowPassword(!showPassword)}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60"
+                                    >
+                                        {showPassword ? <EyeOff size={12} /> : <Eye size={12} />}
+                                    </button>
+                                </div>
+                                <p className="text-[8px] text-white/40 mt-1.5 italic px-1">Adding your password here prevents multiple system prompts.</p>
                             </div>
                         )}
 
-                        <div className="text-white/60 font-black tracking-widest text-[10px] uppercase mb-4 md:mb-8 text-center md:text-left">Step {step + 1} / {steps.length}</div>
+                        <div id="onboarding-title" className="text-white/60 font-black tracking-widest text-[10px] uppercase mb-4 md:mb-6 text-center md:text-left shrink-0" aria-live="polite">Step {step + 1} / {steps.length}</div>
 
-                        <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 md:space-y-8 min-h-0 py-4">
+                        <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 md:space-y-6 min-h-0 py-4 md:py-2">
                             <motion.div
                                 key={step}
                                 initial={{ scale: 0.5, opacity: 0, rotate: -10 }}
@@ -293,10 +353,10 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                 transition={{ type: "spring", stiffness: 200, damping: 15 }}
                                 className={clsx(
                                     "backdrop-blur-sm shadow-inner transition-all duration-500 shrink-0",
-                                    step === 0 ? "bg-transparent p-0 shadow-none scale-110 md:scale-125" : "bg-white/20 p-6 md:p-8 rounded-full"
+                                    step === 0 ? "bg-transparent p-0 shadow-none" : "bg-white/20 p-6 md:p-8 rounded-full"
                                 )}
                             >
-                                {reason ? (
+                                {reason && step !== 0 ? (
                                     <div className="bg-white/10 p-4 rounded-3xl shrink-0 backdrop-blur-sm">
                                         {steps[step].icon}
                                     </div>
@@ -304,12 +364,12 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                     steps[step].icon
                                 )}
                             </motion.div>
-                            <div className="px-2">
+                            <div className="px-4">
                                 <motion.h2
                                     key={`t-${step}`}
                                     initial={{ opacity: 0, y: 20 }}
                                     animate={{ opacity: 1, y: 0 }}
-                                    className="text-2xl md:text-3xl font-black text-white mb-2 md:mb-3 leading-tight"
+                                    className="text-xl md:text-2xl lg:text-3xl font-black text-white mb-2 md:mb-3 leading-tight"
                                 >
                                     {steps[step].title}
                                 </motion.h2>
@@ -318,7 +378,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                     initial={{ opacity: 0 }}
                                     animate={{ opacity: 1 }}
                                     transition={{ delay: 0.2 }}
-                                    className="text-white/80 text-xs md:text-sm font-medium leading-relaxed max-w-[180px] md:max-w-[200px] mx-auto"
+                                    className="text-white/80 text-[10px] md:text-sm font-medium leading-relaxed max-w-[220px] md:max-w-[200px] mx-auto"
                                 >
                                     {steps[step].subtitle}
                                 </motion.p>
@@ -340,7 +400,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                 </div>
 
                 {/* Right Panel */}
-                <div className="w-full md:w-8/12 p-6 md:p-10 bg-app-bg flex flex-col relative h-full min-h-0">
+                <div className="w-full md:w-7/12 p-4 md:p-10 bg-app-bg flex flex-col relative h-full min-h-0">
                     <div className="flex-1 flex flex-col items-center justify-center overflow-y-auto no-scrollbar scroll-smooth">
                         <AnimatePresence mode='wait'>
                             {step === 0 && (
@@ -397,11 +457,28 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                                     </div>
                                                 )}
 
-                                                {(chaoticStatus === 'error' && chaoticLogs.length > 0) && (
-                                                    <div className="h-20 overflow-auto bg-red-500/10 border border-red-500/20 rounded-lg p-2 font-mono text-[9px] text-red-500">
-                                                        {chaoticLogs.map((l, i) => (
-                                                            <div key={i} className="mb-0.5">{l}</div>
-                                                        ))}
+                                                {(chaoticStatus === 'error' && (classifiedError || chaoticLogs.length > 0)) && (
+                                                    <div className="space-y-3">
+                                                        {classifiedError ? (
+                                                            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 animate-in zoom-in-95 duration-200">
+                                                                <div className="flex items-center gap-2 text-red-500 font-bold text-xs mb-1 uppercase tracking-wider">
+                                                                    <AlertTriangle size={14} />
+                                                                    {classifiedError.title}
+                                                                </div>
+                                                                <p className="text-[10px] text-red-500/80 leading-relaxed">{classifiedError.description}</p>
+                                                                {classifiedError.recovery_action && (
+                                                                    <div className="mt-2 text-[9px] font-bold text-red-500 opacity-60 italic">
+                                                                        Recovery Suggestion: {JSON.stringify(classifiedError.recovery_action)}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="h-20 overflow-auto bg-red-500/10 border border-red-500/20 rounded-lg p-2 font-mono text-[9px] text-red-500">
+                                                                {chaoticLogs.map((l, i) => (
+                                                                    <div key={i} className="mb-0.5">{l}</div>
+                                                                ))}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 )}
 
@@ -469,7 +546,18 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                                     </div>
 
                                                     <div className="flex flex-col gap-3 w-full">
-                                                        {bootstrapError && (
+                                                        {classifiedError ? (
+                                                            <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl space-y-2 animate-in slide-in-from-bottom-2">
+                                                                <div className="flex items-center gap-2 text-red-500 font-black text-[10px] uppercase tracking-widest">
+                                                                    <AlertTriangle size={14} />
+                                                                    {classifiedError.title}
+                                                                </div>
+                                                                <p className="text-[11px] text-red-500/90 leading-tight font-medium">{classifiedError.description}</p>
+                                                                <div className="h-12 overflow-auto bg-black/20 rounded-lg p-2 font-mono text-[8px] opacity-60">
+                                                                    {classifiedError.raw_message}
+                                                                </div>
+                                                            </div>
+                                                        ) : bootstrapError && (
                                                             <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-xl text-xs text-red-500 font-mono overflow-x-auto max-h-24">
                                                                 <span className="font-bold block mb-1">Error Log:</span>
                                                                 {bootstrapError}
@@ -609,13 +697,36 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                         </div>
                                     </div>
 
-                                    <div onClick={() => setTelemetryEnabled(!telemetryEnabled)} className={clsx("cursor-pointer border-2 rounded-2xl p-4 transition-all flex items-center justify-between text-left", telemetryEnabled ? "border-teal-500 bg-teal-500/5" : "border-app-border bg-app-card/30")}>
+                                    <div
+                                        onClick={handleToggle}
+                                        className={clsx("cursor-pointer border-2 rounded-2xl p-4 transition-all flex items-center justify-between text-left", localToggle ? "border-teal-500 bg-teal-500/5" : "border-app-border bg-app-card/30")}
+                                    >
                                         <div>
                                             <span className="font-bold text-app-fg block text-base">Share Anonymous Statistics</span>
                                             <span className="text-xs text-app-muted">Strictly no personal data. Opt-out anytime.</span>
                                         </div>
-                                        <div className={clsx("w-12 h-6 rounded-full p-1 transition-colors shrink-0", telemetryEnabled ? "bg-teal-500" : "bg-app-fg/20")}>
-                                            <div className={clsx("w-4 h-4 bg-white rounded-full transition-transform", telemetryEnabled ? "translate-x-6" : "translate-x-0")} />
+                                        <div
+                                            className={clsx(
+                                                "w-14 h-7 rounded-full p-1 transition-all shadow-xl shrink-0 flex items-center justify-start relative",
+                                                localToggle ? "bg-teal-500" : "bg-slate-400 dark:bg-white/20"
+                                            )}
+                                        >
+                                            <div
+                                                className={clsx(
+                                                    "z-10 w-5 h-5 bg-white rounded-full transition-transform duration-300 shadow-lg flex items-center justify-center pointer-events-none"
+                                                )}
+                                                style={{ transform: localToggle ? 'translateX(28px)' : 'translateX(0px)' }}
+                                            >
+                                                <div className={clsx("w-1 h-1 rounded-full", localToggle ? "bg-teal-500" : "bg-slate-400")} />
+                                            </div>
+                                            <span className={clsx(
+                                                "absolute text-[8px] font-black tracking-tighter transition-opacity duration-300 pointer-events-none",
+                                                localToggle ? "left-1.5 opacity-100 text-white" : "left-1.5 opacity-0"
+                                            )}>ON</span>
+                                            <span className={clsx(
+                                                "absolute text-[8px] font-black tracking-tighter transition-opacity duration-300 pointer-events-none",
+                                                localToggle ? "right-1.5 opacity-0" : "right-1.5 opacity-100 text-white/80"
+                                            )}>OFF</span>
                                         </div>
                                     </div>
                                 </motion.div>

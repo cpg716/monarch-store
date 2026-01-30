@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from "@tauri-apps/api/core";
-import { trackEvent } from '@aptabase/tauri';
 import { ArrowLeft, Heart, AlertCircle } from 'lucide-react';
 import { useFavorites } from './hooks/useFavorites';
 import Sidebar from './components/Sidebar';
@@ -19,15 +18,17 @@ import { useTheme } from './hooks/useTheme';
 import './App.css';
 import LoadingScreen from './components/LoadingScreen';
 import OnboardingModal from './components/OnboardingModal';
+import ErrorModal from './components/ErrorModal';
 import SearchPage from './pages/SearchPage';
 import { useSearchHistory } from './hooks/useSearchHistory';
 import HomePage from './pages/HomePage';
 import { ESSENTIALS_POOL } from './constants';
+import { listen } from '@tauri-apps/api/event';
+import { UpdateProgress } from './store/internal_store';
+import { useToast } from './context/ToastContext';
 
 function App() {
-  const [activeTab, setActiveTab] = useState(() => {
-    return localStorage.getItem('monarch_active_tab') || 'explore';
-  });
+  const [activeTab, setActiveTab] = useState('explore');
   const [activeInstall, setActiveInstall] = useState<{ name: string; source: string; repoName?: string; mode: 'install' | 'uninstall' } | null>(null);
   const [viewAll, setViewAll] = useState<'essentials' | 'trending' | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -39,22 +40,100 @@ function App() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(true);
-  const [systemHealth, setSystemHealth] = useState<{ is_healthy: boolean } | null>(null);
+  const [systemHealth, setSystemHealth] = useState<{ is_healthy: boolean, reasons: string[] } | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const searchRequestIdRef = useRef(0);
+  const updateTimerRef = useRef<number | null>(null);
 
   const { addSearch } = useSearchHistory();
-  const { fetchInfraStats } = useAppStore();
+  const {
+    fetchInfraStats,
+    setUpdateProgress,
+    setUpdateStatus,
+    setUpdatePhase,
+    setUpdating,
+    addUpdateLog,
+    setRebootRequired,
+    setPacnewWarnings
+  } = useAppStore();
   const { accentColor } = useTheme();
   const { favorites } = useFavorites();
+  const { show: showToast } = useToast();
 
   const [enabledRepos, setEnabledRepos] = useState<{ name: string; enabled: boolean; source: string }[]>([]);
 
+  // Polkit rule pre-check at startup: flag immediately if missing so user isn't surprised at first install
+  const polkitCheckedRef = useRef(false);
   useEffect(() => {
-    // 1. Get Repo States
-    invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states').then(repos => {
-      setEnabledRepos(repos.filter(r => r.enabled));
-    }).catch(console.error);
-  }, []);
+    if (polkitCheckedRef.current || isRefreshing) return;
+    polkitCheckedRef.current = true;
+    invoke<boolean>('check_security_policy')
+      .then((installed) => {
+        if (!installed) {
+          showToast(
+            'Polkit rule not installed. Install and system actions may prompt for password. Enable One-Click in Settings to fix.',
+            'warning'
+          );
+        }
+      })
+      .catch(() => {});
+  }, [isRefreshing, showToast]);
+
+  // Global Update Listeners
+  useEffect(() => {
+    const unlistenProgress = listen<UpdateProgress>('update-progress', (event) => {
+      setUpdateProgress(event.payload.progress);
+      setUpdateStatus(event.payload.message);
+      setUpdatePhase(event.payload.phase);
+
+      if (event.payload.phase === 'complete') {
+        // Clear any existing timer before setting a new one
+        if (updateTimerRef.current) window.clearTimeout(updateTimerRef.current);
+        updateTimerRef.current = window.setTimeout(() => {
+          (async () => {
+            try {
+              setUpdating(false);
+              setUpdateProgress(100);
+
+              // Check for post-update states
+              const reboot = await invoke<boolean>('check_reboot_required');
+              setRebootRequired(reboot);
+              const warnings = await invoke<string[]>('get_pacnew_warnings');
+              setPacnewWarnings(warnings);
+            } catch (e) {
+              console.error("Post-update checks failed", e);
+            }
+          })();
+        }, 1500);
+      } else if (event.payload.phase === 'error') {
+        if (updateTimerRef.current) window.clearTimeout(updateTimerRef.current);
+        updateTimerRef.current = window.setTimeout(() => {
+          setUpdating(false);
+          setUpdateProgress(0);
+        }, 3000);
+      }
+    });
+
+    const unlistenLogs = listen<string>('install-output', (event) => {
+      const msg = event.payload;
+      addUpdateLog(msg);
+      setUpdateStatus(msg);
+    });
+
+    const unlistenStatus = listen<string>('update-status', (event) => {
+      setUpdateStatus(event.payload);
+    });
+
+    return () => {
+      // Clean up timers on unmount
+      if (updateTimerRef.current) window.clearTimeout(updateTimerRef.current);
+      unlistenProgress.then(fn => fn()).catch(() => { });
+      unlistenLogs.then(fn => fn()).catch(() => { });
+      unlistenStatus.then(fn => fn()).catch(() => { });
+    };
+  }, [setUpdateProgress, setUpdateStatus, setUpdatePhase, setUpdating, addUpdateLog, setRebootRequired, setPacnewWarnings]);
+
+  // Removed duplicate get_repo_states call - now only fetched in initializeStartup
 
   const handleOnboardingComplete = () => {
     localStorage.setItem('monarch_onboarding_v3', 'true');
@@ -67,6 +146,7 @@ function App() {
       try {
         // 1. Parallel background tasks
         fetchInfraStats();
+        useAppStore.getState().checkTelemetry(); // Initialize privacy state
         invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states')
           .then(repos => setEnabledRepos(repos.filter(r => r.enabled)))
           .catch(console.error);
@@ -76,7 +156,8 @@ function App() {
           needs_policy: boolean,
           needs_keyring: boolean,
           needs_migration: boolean,
-          is_healthy: boolean
+          is_healthy: boolean,
+          reasons: string[]
         }>('check_initialization_status');
 
         setSystemHealth(status);
@@ -89,18 +170,23 @@ function App() {
 
         if (!status.is_healthy) {
           console.warn("System is unhealthy. Triggering repair flow.");
-          setOnboardingReason("MonARCH detected system defects that require a quick maintenance. Your password will be needed once to fix the keyring and security policy.");
+          const reasonText = status.reasons.join(" ");
+          setOnboardingReason(`MonARCH detected system defects: ${reasonText} Your password will be needed once to fix the keyring and security policy.`);
           redoOnboarding = true;
         }
 
         if (redoOnboarding) {
           setShowOnboarding(true);
         } else {
-          // Healthy enough (or legacy user): background sync
+          // Healthy enough (or legacy user): sync only if refresh requested (pacman hook) or "Sync on startup" is on
           if (!isCompleted && legacyCompleted) {
             localStorage.setItem('monarch_onboarding_v3', 'true');
           }
-          invoke('trigger_repo_sync', { syncIntervalHours: 3 }).catch(console.error);
+          const refreshRequested = await invoke<boolean>('check_and_clear_refresh_requested').catch(() => false);
+          const syncOnStartup = await invoke<boolean>('is_sync_on_startup_enabled').catch(() => true);
+          if (refreshRequested || syncOnStartup) {
+            invoke('trigger_repo_sync', { syncIntervalHours: 3 }).catch(console.error);
+          }
 
           // --- PRE-WARM CACHE (Performance Optimization) ---
           try {
@@ -150,6 +236,9 @@ function App() {
   }, [activeTab]);
 
   useEffect(() => {
+    // Increment request ID to track stale responses
+    const currentRequestId = ++searchRequestIdRef.current;
+
     const search = async () => {
       if (!searchQuery) {
         setPackages([]);
@@ -158,13 +247,18 @@ function App() {
       setLoading(true);
       try {
         const results = await invoke<Package[]>('search_packages', { query: searchQuery });
+        // Only update if this is still the latest request (prevents race conditions)
+        if (currentRequestId !== searchRequestIdRef.current) return;
         setPackages(results);
         addSearch(searchQuery);
-        trackEvent('search', { query: searchQuery, result_count: results.length });
+        invoke('track_event', { event: 'search', payload: { query: searchQuery, result_count: results.length } }).catch(() => { });
       } catch (e) {
         console.error("Search failed", e);
       } finally {
-        setLoading(false);
+        // Only update loading state if this is still the latest request
+        if (currentRequestId === searchRequestIdRef.current) {
+          setLoading(false);
+        }
       }
     };
 
@@ -221,12 +315,18 @@ function App() {
 
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
         {!showOnboarding && systemHealth && !systemHealth.is_healthy && (
-          <div className="bg-red-600 text-white px-6 py-2 flex items-center justify-between text-sm font-bold animate-in slide-in-from-top duration-300 z-[100] shrink-0">
-            <div className="flex items-center gap-3">
-              <AlertCircle size={18} />
-              <span>System defects detected. Repository access or security policy may be broken.</span>
+          <div className="bg-red-600 text-white px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-4 text-sm font-bold animate-in slide-in-from-top duration-300 z-[100] shrink-0 shadow-lg">
+            <div className="flex items-start gap-3">
+              <AlertCircle size={20} className="shrink-0 mt-0.5" />
+              <div>
+                <span className="block mb-1 font-black uppercase tracking-tighter text-[10px] opacity-70">Infrastructure Issues Detected</span>
+                <p className="font-bold leading-tight">
+                  {systemHealth.reasons[0] || "Repository access or security policy may be broken."}
+                  {systemHealth.reasons.length > 1 && <span className="ml-2 opacity-70 font-medium">(+{systemHealth.reasons.length - 1} more issues)</span>}
+                </p>
+              </div>
             </div>
-            <button onClick={() => handleTabChange('settings')} className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded-lg transition-colors">
+            <button onClick={() => handleTabChange('settings')} className="bg-white/20 hover:bg-white/30 px-6 py-2 rounded-xl transition-all active:scale-95 whitespace-nowrap shadow-inner border border-white/10 uppercase tracking-widest text-[10px]">
               Repair Now
             </button>
           </div>
@@ -239,13 +339,14 @@ function App() {
             pkg={selectedPackage}
             onBack={handleBack}
             preferredSource={preferredSource}
+            installInProgress={activeInstall !== null}
             onInstall={(p: { name: string; source: string; repoName?: string }) => setActiveInstall({ ...p, mode: 'install' })}
             onUninstall={(p: { name: string; source: string; repoName?: string }) => setActiveInstall({ ...p, mode: 'uninstall' })}
           />
         ) : selectedCategory ? (
           <CategoryView category={selectedCategory} onBack={handleBack} onSelectPackage={setSelectedPackage} />
         ) : viewAll ? (
-          <div className="flex-1 overflow-y-auto pb-32">
+          <div className="flex-1 overflow-y-auto pb-32 scroll-gpu">
             <div className="p-10 pb-6 sticky top-0 bg-app-bg/95 backdrop-blur-xl z-20 border-b border-app-border/50 flex items-center gap-4">
               <button onClick={handleBack} className="p-2 rounded-lg hover:bg-app-fg/10 transition-colors"><ArrowLeft size={24} /></button>
               <h2 className="text-2xl font-bold">{viewAll === 'essentials' ? 'All Essentials' : 'Trending Applications'}</h2>
@@ -258,7 +359,7 @@ function App() {
           <div className="flex-1 overflow-hidden flex flex-col relative">
             <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 via-app-bg/50 to-blue-500/5 pointer-events-none transition-colors" />
 
-            <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0 pb-32 scroll-smooth">
+            <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0 pb-32 scroll-smooth scroll-gpu">
               {activeTab === 'explore' && !searchQuery && (
                 <div className="px-6 pt-6 animate-in fade-in slide-in-from-top-5 duration-700">
                   <HeroSection />
@@ -286,7 +387,7 @@ function App() {
                     onSelectCategory={setSelectedCategory}
                   />
                 ) : activeTab === 'installed' ? (
-                  <InstalledPage />
+                  <InstalledPage onSelectPackage={setSelectedPackage} />
                 ) : activeTab === 'favorites' ? (
                   <div className="py-4">
                     <h2 className="text-2xl font-bold mb-2">Favorites</h2>
@@ -320,6 +421,7 @@ function App() {
           }}
         />
       )}
+      <ErrorModal />
     </div>
   );
 }

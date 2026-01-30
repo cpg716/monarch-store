@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useAppStore } from '../store/internal_store';
 
 export interface Repository {
     id: string;
@@ -19,9 +20,10 @@ export function useSettings() {
         return saved ? parseInt(saved, 10) : 3;
     });
 
+    const [syncOnStartupEnabled, setSyncOnStartupEnabledState] = useState(true);
+
     // 2. Repository Management
     const [oneClickEnabled, setOneClickEnabled] = useState(false);
-    const [telemetryEnabled, setTelemetryEnabled] = useState(false);
     const [advancedMode, setAdvancedMode] = useState(false);
     const [isAurEnabled, setIsAurEnabled] = useState(false);
     const [repos, setRepos] = useState<Repository[]>([]);
@@ -41,24 +43,30 @@ export function useSettings() {
         status: string;
     } | null>(null);
 
+    // 4. Central Telemetry Sync
+    // 4. Central Telemetry Sync
+    const telemetryEnabled = useAppStore((state: any) => state.telemetryEnabled);
+    const setTelemetry = useAppStore((state: any) => state.setTelemetry);
+    const checkTelemetry = useAppStore((state: any) => state.checkTelemetry);
+
     const fetchRepoState = async () => {
         try {
             const criticalResults = await Promise.allSettled([
                 invoke<boolean>('is_one_click_enabled'),
                 invoke<boolean>('is_advanced_mode'),
                 invoke<boolean>('is_aur_enabled'),
+                invoke<boolean>('is_sync_on_startup_enabled'),
                 invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states'),
-                invoke<boolean>('is_telemetry_enabled')
             ]);
 
             if (criticalResults[0].status === 'fulfilled') setOneClickEnabled(criticalResults[0].value);
             if (criticalResults[1].status === 'fulfilled') setAdvancedMode(criticalResults[1].value);
             if (criticalResults[2].status === 'fulfilled') setIsAurEnabled(criticalResults[2].value);
-            if (criticalResults[4].status === 'fulfilled') setTelemetryEnabled(criticalResults[4].value);
+            if (criticalResults[3].status === 'fulfilled') setSyncOnStartupEnabledState(criticalResults[3].value);
 
             let backendRepos: { name: string; enabled: boolean; source: string }[] = [];
-            if (criticalResults[3].status === 'fulfilled') {
-                backendRepos = criticalResults[3].value;
+            if (criticalResults[4].status === 'fulfilled') {
+                backendRepos = criticalResults[4].value;
             }
 
             // Map families immediately so the list is NEVER empty or stuck
@@ -119,16 +127,13 @@ export function useSettings() {
             }
             setRepos(mapped);
 
-            // BACKGROUND TASKS (Decoupled network/heavy ops)
-
-            // 1. Slow Metadata (Counts) - This can take 30s+ due to network
+            // BACKGROUND TASKS
             invoke<Record<string, number>>('get_repo_counts').then(counts => {
                 setRepoCounts(counts);
             }).catch(e => {
                 console.warn("[useSettings] Failed to fetch repo counts", e);
             });
 
-            // 2. Infra Stats
             invoke<any>('get_infra_stats').then(stats => {
                 setInfraStats({
                     latency: `${stats.latency || 45}ms`,
@@ -147,12 +152,28 @@ export function useSettings() {
 
     useEffect(() => {
         fetchRepoState();
+        checkTelemetry();
+        // Sync notifications setting from backend on load
+        invoke<boolean>('is_notifications_enabled')
+            .then(enabled => {
+                setNotificationsEnabled(enabled);
+                localStorage.setItem('notifications-enabled', String(enabled));
+            })
+            .catch(() => {
+                // If backend doesn't have it yet, use localStorage default
+            });
     }, []);
 
     // Actions
-    const updateNotifications = (enabled: boolean) => {
+    const updateNotifications = async (enabled: boolean) => {
         setNotificationsEnabled(enabled);
         localStorage.setItem('notifications-enabled', String(enabled));
+        // Sync to backend
+        try {
+            await invoke('set_notifications_enabled', { enabled });
+        } catch (e) {
+            console.error('Failed to sync notifications setting:', e);
+        }
     };
 
     const updateSyncInterval = (hours: number) => {
@@ -200,7 +221,7 @@ export function useSettings() {
     const triggerManualSync = async () => {
         setIsSyncing(true);
         try {
-            await invoke('trigger_repo_sync', { syncIntervalHours });
+            await invoke('trigger_repo_sync', { sync_interval_hours: syncIntervalHours });
             fetchRepoState();
         } finally {
             setIsSyncing(false);
@@ -223,13 +244,22 @@ export function useSettings() {
     };
 
     const toggleTelemetry = async (enabled: boolean) => {
-        setTelemetryEnabled(enabled);
-        await invoke('set_telemetry_enabled', { enabled });
+        await setTelemetry(enabled);
+    };
+
+    const setSyncOnStartup = async (enabled: boolean) => {
+        setSyncOnStartupEnabledState(enabled);
+        try {
+            await invoke('set_sync_on_startup_enabled', { enabled });
+        } catch (e) {
+            console.error('[useSettings] set_sync_on_startup_enabled failed', e);
+        }
     };
 
     return {
         notificationsEnabled, updateNotifications,
         syncIntervalHours, updateSyncInterval,
+        syncOnStartupEnabled, setSyncOnStartup,
         oneClickEnabled, updateOneClick,
         advancedMode, toggleAdvancedMode,
         telemetryEnabled, toggleTelemetry,

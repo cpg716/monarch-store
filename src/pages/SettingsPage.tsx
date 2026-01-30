@@ -1,19 +1,21 @@
 import { useState, useEffect } from 'react';
 import {
     CheckCircle2, Globe, Palette,
-    Trash2, ShieldCheck, Package, ArrowUp, ArrowDown, RefreshCw, Lock, Clock, ChevronDown, Sparkles, AlertTriangle, Rocket, Activity
+    Trash2, ShieldCheck, Package, ArrowUp, ArrowDown, RefreshCw, Lock, Clock, ChevronDown, Sparkles, AlertTriangle, Rocket, Activity, Eye, EyeOff, HelpCircle
 } from 'lucide-react';
 import ConfirmationModal from '../components/ConfirmationModal';
+import SystemHealthSection from '../components/SystemHealthSection';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
+import { listen } from '@tauri-apps/api/event';
 import { clsx } from 'clsx';
-
-
 
 import { useTheme } from '../hooks/useTheme';
 import { useToast } from '../context/ToastContext';
+import { useErrorService } from '../context/ErrorContext';
 import { useSettings } from '../hooks/useSettings';
 import { useDistro } from '../hooks/useDistro';
+import { useAppStore } from '../store/internal_store';
 
 
 interface SettingsPageProps {
@@ -22,22 +24,44 @@ interface SettingsPageProps {
 
 export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps) {
     const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
-    const { success, error } = useToast();
+    const { success } = useToast();
+    const errorService = useErrorService();
     const { distro } = useDistro(); // <-- Identity Matrix
 
     // Centralized Logic
     const {
         notificationsEnabled, updateNotifications,
         syncIntervalHours, updateSyncInterval,
+        syncOnStartupEnabled, setSyncOnStartup,
         isAurEnabled, toggleAur,
         repos, toggleRepo, reorderRepos,
         isSyncing, triggerManualSync, repoCounts,
         infraStats,
         oneClickEnabled, updateOneClick,
-        telemetryEnabled, toggleTelemetry,
         advancedMode, toggleAdvancedMode,
         refresh
     } = useSettings();
+
+    // Use store directly for critical reactivity
+    const telemetryEnabled = useAppStore((state: any) => state.telemetryEnabled);
+    const setTelemetry = useAppStore((state: any) => state.setTelemetry);
+
+    // Atomic local state for ZERO LANCY UI
+    const [localToggle, setLocalToggle] = useState(telemetryEnabled);
+    useEffect(() => { setLocalToggle(telemetryEnabled); }, [telemetryEnabled]);
+
+    const handleToggle = async () => {
+        const target = !localToggle;
+        setLocalToggle(target); // Immediate visual flip
+        try {
+            await setTelemetry(target);
+            if (target) success("Telemetry Enabled. Thank you!");
+            else success("Telemetry Disabled.");
+        } catch (e) {
+            errorService.reportError(e as Error | string);
+            setLocalToggle(telemetryEnabled); // Rollback visual on error
+        }
+    };
 
     const [isOptimizing, setIsOptimizing] = useState(false);
     const [isRepairing, setIsRepairing] = useState<string | null>(null);
@@ -45,6 +69,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
     const [installMode, setInstallMode] = useState<'system' | 'portable'>('portable');
     const [systemInfo, setSystemInfo] = useState<{ kernel: string, distro: string, cpu_optimization: string, pacman_version: string } | null>(null);
     const [repoSyncStatus, setRepoSyncStatus] = useState<Record<string, boolean> | null>(null);
+    const [syncProgressMessage, setSyncProgressMessage] = useState<string | null>(null);
 
     const [modalConfig, setModalConfig] = useState<{
         isOpen: boolean;
@@ -62,6 +87,15 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
         invoke<any>('get_system_info').then(setSystemInfo).catch(console.error);
         invoke<Record<string, boolean>>('check_repo_sync_status').then(setRepoSyncStatus).catch(console.error);
     }, []);
+
+    // Detailed sync progress (GPG/db steps) for Repository Control
+    useEffect(() => {
+        const unlisten = listen<string>('sync-progress', (event) => setSyncProgressMessage(event.payload));
+        return () => { unlisten.then((f) => f()).catch(() => {}); };
+    }, []);
+    useEffect(() => {
+        if (!isSyncing) setSyncProgressMessage(null);
+    }, [isSyncing]);
 
     // --- LOCKING LOGIC ---
     const isRepoLocked = (name: string): boolean => {
@@ -95,7 +129,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
             const result = await invoke<string>('optimize_system');
             success(result);
         } catch (e) {
-            error(`Optimization failed: ${e}`);
+            errorService.reportError(e as Error | string);
         } finally {
             setIsOptimizing(false);
         }
@@ -114,7 +148,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                     success(result);
                     refresh();
                 } catch (e) {
-                    error(`Cache wipe failed: ${e}`);
+                    errorService.reportError(e as Error | string);
                 } finally {
                     setIsOptimizing(false);
                 }
@@ -150,7 +184,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                         return;
                     }
                 } catch (e) {
-                    error(`Failed: ${e}`);
+                    errorService.reportError(e as Error | string);
                 } finally {
                     setIsRepairing(null);
                 }
@@ -170,7 +204,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
             success(`${label} completed successfully.`);
             refresh();
         } catch (e) {
-            error(`${task} failed: ${e}`);
+            errorService.reportError(e as Error | string);
         } finally {
             setIsRepairing(null);
         }
@@ -324,6 +358,8 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                 <button
                                     onClick={triggerManualSync}
                                     disabled={isSyncing}
+                                    aria-label="Sync repositories now"
+                                    aria-busy={isSyncing}
                                     className={clsx(
                                         "px-8 py-4 rounded-2xl font-bold transition-all flex items-center gap-3 text-lg shadow-xl min-w-[200px] justify-center",
                                         isSyncing
@@ -335,6 +371,11 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                     {isSyncing ? 'Syncing...' : 'Sync Now'}
                                 </button>
                             </div>
+                            {isSyncing && syncProgressMessage && (
+                                <p className="text-sm text-slate-600 dark:text-white/70 font-medium mt-2" aria-live="polite">
+                                    {syncProgressMessage}
+                                </p>
+                            )}
 
                             {/* Stats Grid */}
                             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 pt-8 border-t border-slate-200 dark:border-white/5">
@@ -355,6 +396,41 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                         Waiting for synchronization...
                                     </div>
                                 )}
+                            </div>
+
+                            {/* Sync on startup */}
+                            <div className="pt-6 border-t border-slate-200 dark:border-white/5 mt-6">
+                                <div className="flex items-center justify-between gap-4">
+                                    <div className="flex items-center gap-4">
+                                        <div className="p-3 bg-slate-100 dark:bg-white/10 rounded-xl text-slate-600 dark:text-white/70">
+                                            <RefreshCw size={24} />
+                                        </div>
+                                        <div>
+                                            <h4 className="font-bold text-slate-800 dark:text-white text-lg">Sync repositories when app starts</h4>
+                                            <p className="text-sm text-slate-500 dark:text-white/50">
+                                                Refresh package databases on launch (or use Sync Now manually)
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={syncOnStartupEnabled}
+                                        aria-label={syncOnStartupEnabled ? 'Sync on startup is on' : 'Sync on startup is off'}
+                                        onClick={() => setSyncOnStartup(!syncOnStartupEnabled)}
+                                        className={clsx(
+                                            'relative inline-flex h-8 w-14 shrink-0 rounded-full border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50',
+                                            syncOnStartupEnabled ? 'border-blue-500 bg-blue-500' : 'border-slate-300 dark:border-white/20 bg-slate-200 dark:bg-white/10'
+                                        )}
+                                    >
+                                        <span
+                                            className={clsx(
+                                                'pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition',
+                                                syncOnStartupEnabled ? 'translate-x-6' : 'translate-x-1'
+                                            )}
+                                        />
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Auto Sync Interval */}
@@ -405,49 +481,77 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                             </p>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {repos.map((repo, idx) => (
+                                {repos.map((repo, idx) => {
+                                    const locked = isRepoLocked(repo.name);
+                                    return (
                                     <div key={repo.name} className={clsx(
                                         "relative flex flex-col p-6 rounded-2xl border transition-all duration-300 group overflow-hidden",
                                         repo.enabled ? "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 hover:shadow-xl hover:-translate-y-1" : "bg-slate-100 dark:bg-black/20 border-slate-200 dark:border-white/5 opacity-80 hover:opacity-100"
                                     )}>
                                         <div className="flex items-center justify-between w-full relative z-10">
                                             <div className="flex items-center gap-4">
-                                                <div className="flex flex-col gap-1 text-slate-300 dark:text-white/20 group-hover:text-slate-500 dark:group-hover:text-white/60 transition-colors">
-                                                    <button onClick={() => moveRepo(idx, 'up')} disabled={idx === 0} className="hover:text-slate-800 dark:hover:text-white disabled:opacity-0 transition-colors"><ArrowUp size={16} /></button>
-                                                    <button onClick={() => moveRepo(idx, 'down')} disabled={idx === repos.length - 1} className="hover:text-slate-800 dark:hover:text-white disabled:opacity-0 transition-colors"><ArrowDown size={16} /></button>
+                                                <div className="flex flex-col gap-1 text-slate-300 dark:text-white/20 group-hover:text-slate-500 dark:group-hover:text-white/60 transition-colors" role="group" aria-label={`Reorder ${repo.name}`}>
+                                                    <button type="button" onClick={() => moveRepo(idx, 'up')} disabled={idx === 0} aria-label={`Move ${repo.name} up`} className="hover:text-slate-800 dark:hover:text-white disabled:opacity-0 transition-colors"><ArrowUp size={16} /></button>
+                                                    <button type="button" onClick={() => moveRepo(idx, 'down')} disabled={idx === repos.length - 1} aria-label={`Move ${repo.name} down`} className="hover:text-slate-800 dark:hover:text-white disabled:opacity-0 transition-colors"><ArrowDown size={16} /></button>
                                                 </div>
                                                 <div>
                                                     <h4 className={clsx("font-bold text-lg", repo.enabled ? "text-slate-800 dark:text-white" : "text-slate-500 dark:text-white/50")}>
                                                         {repo.name}
                                                         {idx === 0 && repo.enabled && <span className="ml-3 text-[10px] bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-300 border border-blue-500/20 dark:border-blue-500/30 px-2 py-0.5 rounded-full uppercase tracking-wider font-bold">Primary</span>}
-                                                        {isRepoLocked(repo.name) && (
+                                                        {locked && (
                                                             <span className="ml-3 text-[10px] bg-red-500/10 dark:bg-red-500/20 text-red-600 dark:text-red-300 border border-red-500/20 dark:border-red-500/30 px-2 py-0.5 rounded-full uppercase tracking-wider font-bold flex items-center gap-1 inline-flex">
                                                                 <Lock size={8} /> Blocked by {distro.pretty_name}
                                                             </span>
                                                         )}
                                                     </h4>
                                                     <p className="text-xs text-slate-500 dark:text-white/40 mt-1 line-clamp-1">{repo.description}</p>
+                                                    {/* Identity: Visible vs Hidden vs Blocked */}
+                                                    <p className="text-[10px] font-medium mt-2 flex items-center gap-1.5 text-slate-500 dark:text-white/45">
+                                                        {locked ? (
+                                                            <><Lock size={10} className="shrink-0" /> Incompatible with your system</>
+                                                        ) : repo.enabled ? (
+                                                            <><Eye size={10} className="shrink-0 text-blue-500 dark:text-blue-400" /> Visible in Store</>
+                                                        ) : (
+                                                            <><EyeOff size={10} className="shrink-0" /> Hidden from Store · Still receives updates</>
+                                                        )}
+                                                    </p>
+                                                    {/* Why is this blocked? (Chaotic-AUR on Manjaro etc.) */}
+                                                    {locked && (repo.id === 'chaotic-aur' || repo.name === 'Chaotic-AUR') && (
+                                                        <details className="mt-3 group/why">
+                                                            <summary className="text-[10px] font-bold text-slate-500 dark:text-white/45 cursor-pointer hover:text-slate-700 dark:hover:text-white/70 inline-flex items-center gap-1.5 list-none [&::-webkit-details-marker]:hidden">
+                                                                <HelpCircle size={10} className="shrink-0" /> Why is this blocked?
+                                                            </summary>
+                                                            <p className="mt-2 text-[10px] text-slate-600 dark:text-white/50 leading-relaxed pl-4 border-l-2 border-red-500/30">
+                                                                Chaotic-AUR builds are tied to Arch’s glibc and kernel ABI. On {distro.pretty_name} those differ, so packages from this repo can cause library conflicts and partial upgrades. Keeping it disabled avoids breakage.
+                                                            </p>
+                                                        </details>
+                                                    )}
                                                 </div>
                                             </div>
 
                                             <button
+                                                type="button"
+                                                role="switch"
+                                                aria-checked={repo.enabled}
+                                                aria-disabled={locked}
+                                                aria-label={locked ? `${repo.name} is blocked by ${distro.pretty_name}` : repo.enabled ? `Hide ${repo.name} from Store` : `Show ${repo.name} in Store`}
                                                 onClick={() => {
-                                                    if (isRepoLocked(repo.name)) {
-                                                        error(`This repository is incompatible with ${distro.pretty_name}.`);
+                                                    if (locked) {
+                                                        errorService.reportWarning(`This repository is incompatible with ${distro.pretty_name}.`);
                                                         return;
                                                     }
                                                     toggleRepo(repo.id);
                                                 }}
-                                                disabled={isRepoLocked(repo.name)}
+                                                disabled={locked}
                                                 className={clsx(
                                                     "w-12 h-7 rounded-full p-1 transition-all",
-                                                    isRepoLocked(repo.name) ? "bg-red-500/10 cursor-not-allowed border border-red-500/20" :
+                                                    locked ? "bg-red-500/10 cursor-not-allowed border border-red-500/20" :
                                                         repo.enabled ? "bg-blue-600 shadow-lg shadow-blue-500/30" : "bg-slate-300 dark:bg-white/10"
                                                 )}
                                             >
                                                 <div className={clsx(
                                                     "w-5 h-5 shadow-xl rounded-full transition-transform duration-300",
-                                                    isRepoLocked(repo.name) ? "bg-red-500/50 translate-x-0" :
+                                                    locked ? "bg-red-500/50 translate-x-0" :
                                                         repo.enabled ? "translate-x-5 bg-white" : "translate-x-0 bg-white"
                                                 )} />
                                             </button>
@@ -469,7 +573,8 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                             </div>
                                         )}
                                     </div>
-                                ))}
+                                    );
+                                })}
                             </div>
 
                             {/* AUR Section */}
@@ -494,6 +599,10 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
 
                                     <div className="mt-4 md:mt-0 relative z-10">
                                         <button
+                                            type="button"
+                                            role="switch"
+                                            aria-checked={isAurEnabled}
+                                            aria-label={isAurEnabled ? 'Disable AUR' : 'Enable AUR'}
                                             onClick={() => toggleAur(!isAurEnabled)}
                                             className={clsx(
                                                 "w-14 h-8 rounded-full p-1 transition-all shadow-xl",
@@ -510,6 +619,9 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                             </div>
                         </div>
                     </section>
+
+                    {/* Smart Repair: health-check–driven alerts (DB/keyring) */}
+                    <SystemHealthSection />
 
                     {/* Customization & Workflow Grid */}
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
@@ -712,22 +824,29 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                 </p>
                             </div>
                             <button
-                                onClick={() => {
-                                    const newVal = !telemetryEnabled;
-                                    toggleTelemetry(newVal).then(() => {
-                                        if (newVal) success("Telemetry Enabled. Thank you!");
-                                        else success("Telemetry Disabled.");
-                                    });
-                                }}
+                                onClick={handleToggle}
                                 className={clsx(
-                                    "w-16 h-9 rounded-full p-1 transition-all shadow-xl shrink-0",
-                                    telemetryEnabled ? "bg-teal-500 shadow-teal-500/20" : "bg-slate-200 dark:bg-white/10"
+                                    "w-16 h-9 rounded-full p-1 transition-all shadow-xl shrink-0 flex items-center justify-start relative",
+                                    localToggle ? "bg-teal-500 shadow-teal-500/20" : "bg-slate-400 dark:bg-white/20"
                                 )}
                             >
-                                <div className={clsx(
-                                    "w-7 h-7 bg-white rounded-full transition-transform duration-300 shadow-lg",
-                                    telemetryEnabled ? "translate-x-7" : "translate-x-0"
-                                )} />
+                                <div
+                                    className={clsx(
+                                        "z-10 w-7 h-7 bg-white rounded-full transition-transform duration-300 shadow-lg flex items-center justify-center pointer-events-none"
+                                    )}
+                                    style={{ transform: localToggle ? 'translateX(28px)' : 'translateX(0px)' }}
+                                >
+                                    {/* Subtle indicator dot */}
+                                    <div className={clsx("w-1.5 h-1.5 rounded-full", localToggle ? "bg-teal-500" : "bg-slate-400")} />
+                                </div>
+                                <span className={clsx(
+                                    "absolute text-[9px] font-black tracking-tighter transition-opacity duration-300 pointer-events-none",
+                                    localToggle ? "left-2 opacity-100 text-white" : "left-2 opacity-0"
+                                )}>ON</span>
+                                <span className={clsx(
+                                    "absolute text-[9px] font-black tracking-tighter transition-opacity duration-300 pointer-events-none",
+                                    localToggle ? "right-2 opacity-0" : "right-2 opacity-100 text-white/80"
+                                )}>OFF</span>
                             </button>
                         </div>
                     </section>

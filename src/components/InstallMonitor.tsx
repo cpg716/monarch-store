@@ -1,15 +1,29 @@
 import { useState, useEffect, useRef } from 'react';
-import { Terminal, CheckCircle2, XCircle, Loader2, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw, ChevronUp, Trash2, Download, Package as PackageIcon, Sparkles } from 'lucide-react';
+import { Terminal, CheckCircle2, XCircle, Loader2, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw, ChevronUp, Trash2, Download, Package as PackageIcon, Sparkles, Unlock, Key, HardDrive, Wifi } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { clsx } from 'clsx';
 import { friendlyError } from '../utils/friendlyError';
+import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface InstallMonitorProps {
     pkg: { name: string; source: string; repoName?: string; } | null;
     onClose: () => void;
     mode?: 'install' | 'uninstall';
     onSuccess?: () => void;
+}
+
+// Matches the Rust ClassifiedError structure
+interface ClassifiedError {
+    kind: string;
+    title: string;
+    description: string;
+    recovery_action?: {
+        type: string;
+        payload?: string;
+    };
+    raw_message: string;
 }
 
 export default function InstallMonitor({ pkg, onClose, mode = 'install', onSuccess }: InstallMonitorProps) {
@@ -21,7 +35,12 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const [minimized, setMinimized] = useState(false);
     const [showLogs, setShowLogs] = useState(() => localStorage.getItem('monarch_debug_logs') === 'true');
     const logsEndRef = useRef<HTMLDivElement>(null);
+    const actionStartedForRef = useRef<string | null>(null);
     const [commandPreview, setCommandPreview] = useState<string>('');
+    
+    // Structured error from backend classification
+    const [classifiedError, setClassifiedError] = useState<ClassifiedError | null>(null);
+    const [isRecovering, setIsRecovering] = useState(false);
 
     // Auto-scroll logs
     useEffect(() => {
@@ -39,12 +58,65 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     useEffect(() => {
         if (!pkg) return;
 
+        // ✅ NEW: Listen for structured ALPM progress events
+        const unlistenAlpmProgress = listen('alpm-progress', (event: { payload: any }) => {
+            const evt = event.payload as import('../types/alpm').AlpmProgressEvent;
+            
+            // Update logs
+            setLogs((prev: string[]) => [...prev, evt.message]);
+            
+            // Handle different event types
+            switch (evt.event_type) {
+                case 'download_progress':
+                    if (evt.percent !== undefined) {
+                        // Download phase: 40-90%
+                        setTargetProgress(40 + Math.floor((evt.percent * 50) / 100));
+                        setDetailedStatus(`Downloading ${evt.package || 'package'}... ${evt.percent}%`);
+                    }
+                    break;
+                case 'extract_start':
+                    setTargetProgress(90);
+                    setDetailedStatus(`Extracting ${evt.package || 'package'}...`);
+                    break;
+                case 'extract_progress':
+                    if (evt.percent !== undefined) {
+                        // Extract phase: 90-95%
+                        setTargetProgress(90 + Math.floor((evt.percent * 5) / 100));
+                        setDetailedStatus(`Extracting ${evt.package || 'package'}... ${evt.percent}%`);
+                    }
+                    break;
+                case 'install_start':
+                    setTargetProgress(95);
+                    setDetailedStatus(`Installing ${evt.package || 'package'}...`);
+                    break;
+                case 'install_progress':
+                    if (evt.percent !== undefined) {
+                        // Install phase: 95-100%
+                        setTargetProgress(95 + Math.floor((evt.percent * 5) / 100));
+                        setDetailedStatus(`Installing ${evt.package || 'package'}... ${evt.percent}%`);
+                    }
+                    break;
+                case 'install_complete':
+                    setTargetProgress(100);
+                    setDetailedStatus(`Installed ${evt.package || 'package'}`);
+                    break;
+                case 'progress':
+                    if (evt.percent !== undefined) {
+                        setTargetProgress(evt.percent);
+                        setDetailedStatus(evt.message);
+                    }
+                    break;
+                default:
+                    setDetailedStatus(evt.message);
+            }
+        });
+
         const unlistenOutput = listen('install-output', (event: { payload: unknown }) => {
             if (typeof event.payload !== 'string') return;
             const line = event.payload;
             setLogs((prev: string[]) => [...prev, line]);
 
-            // Enhanced Progress Heuristics
+            // Enhanced Progress Heuristics (fallback for non-ALPM operations like AUR builds)
             if (line.includes('%')) {
                 const match = line.match(/(\d+)%/);
                 if (match) setTargetProgress(parseInt(match[1]));
@@ -85,12 +157,91 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             }
         });
 
+        // Listen for structured error classification from backend
+        const unlistenClassifiedError = listen<ClassifiedError>('install-error-classified', (event) => {
+            setClassifiedError(event.payload);
+            setStatus('error');
+        });
+
         return () => {
-            unlistenOutput.then((f: () => void) => f());
-            unlistenRepair.then((f: () => void) => f());
-            unlistenComplete.then((f: () => void) => f());
+            unlistenAlpmProgress.then((f: () => void) => f()).catch(() => {});
+            unlistenOutput.then((f: () => void) => f()).catch(() => {});
+            unlistenRepair.then((f: () => void) => f()).catch(() => {});
+            unlistenComplete.then((f: () => void) => f()).catch(() => {});
+            unlistenClassifiedError.then((f: () => void) => f()).catch(() => {});
         };
     }, [pkg]);
+
+    // Recovery action handlers
+    const handleRecoveryAction = async (action: string) => {
+        setIsRecovering(true);
+        setLogs(prev => [...prev, `\n--- RECOVERY: ${action.toUpperCase()} ---`]);
+        
+        try {
+            switch (action) {
+                case 'UnlockDatabase':
+                    setLogs(prev => [...prev, 'Checking for stale lock file...']);
+                    await invoke('repair_unlock_pacman', { password: null });
+                    setLogs(prev => [...prev, '✓ Database unlocked successfully']);
+                    break;
+                    
+                case 'RepairKeyring':
+                    setLogs(prev => [...prev, 'Resetting security keyring...', 'This may take a moment...']);
+                    await invoke('fix_keyring_issues', { password: null });
+                    setLogs(prev => [...prev, '✓ Keyring repaired successfully']);
+                    break;
+                    
+                case 'ForceRefreshDb':
+                case 'RefreshMirrors':
+                    setLogs(prev => [...prev, 'Forcing database refresh...']);
+                    await invoke('trigger_repo_sync', { forceRefresh: true });
+                    setLogs(prev => [...prev, '✓ Databases refreshed']);
+                    break;
+                    
+                case 'CleanCache':
+                    setLogs(prev => [...prev, 'Clearing package cache...']);
+                    await invoke('clear_cache', { keepVersions: 1 });
+                    setLogs(prev => [...prev, '✓ Cache cleared']);
+                    break;
+                    
+                default:
+                    setLogs(prev => [...prev, 'Preparing to retry...']);
+            }
+            
+            // Reset state and retry the operation
+            setLogs(prev => [...prev, '\n--- RETRYING OPERATION ---']);
+            setClassifiedError(null);
+            setStatus('running');
+            setTargetProgress(5);
+            
+            // Retry the original action
+            await handleAction();
+            
+        } catch (e) {
+            setLogs(prev => [...prev, `Recovery failed: ${e}`]);
+            setStatus('error');
+        } finally {
+            setIsRecovering(false);
+        }
+    };
+
+    // Get recovery button config based on error kind
+    const getRecoveryConfig = (kind: string) => {
+        switch (kind) {
+            case 'DatabaseLocked':
+                return { icon: Unlock, label: 'Unlock & Retry', color: 'bg-amber-500 hover:bg-amber-600' };
+            case 'KeyringError':
+                return { icon: Key, label: 'Repair Keys & Retry', color: 'bg-purple-500 hover:bg-purple-600' };
+            case 'MirrorFailure':
+                return { icon: Wifi, label: 'Retry Download', color: 'bg-blue-500 hover:bg-blue-600' };
+            case 'DiskFull':
+                return { icon: HardDrive, label: 'Clear Cache & Retry', color: 'bg-red-500 hover:bg-red-600' };
+            case 'PackageNotFound':
+                return { icon: RefreshCw, label: 'Refresh & Retry', color: 'bg-teal-500 hover:bg-teal-600' };
+            default:
+                return { icon: RefreshCw, label: 'Retry', color: 'bg-blue-500 hover:bg-blue-600' };
+        }
+    };
 
     // SMOTH PROGRESS ANIMATION & PSEUDO-PROGRESS
     useEffect(() => {
@@ -118,12 +269,17 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         return () => clearInterval(interval);
     }, [status, targetProgress]);
 
-    // Auto-Start (One-Click Experience)
+    // Auto-Start (One-Click Experience). Guard so we only run once per pkg (avoids React Strict Mode double-invocation → double password prompt).
     useEffect(() => {
-        if (status === 'idle' && pkg) {
+        if (!pkg) {
+            actionStartedForRef.current = null;
+            return;
+        }
+        if (status === 'idle' && actionStartedForRef.current !== pkg.name) {
+            actionStartedForRef.current = pkg.name;
             handleAction();
         }
-    }, [pkg]); // Run once when pkg is set
+    }, [pkg, status]);
 
     const handleAction = async () => {
         if (!pkg) return;
@@ -161,7 +317,8 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         }
     };
 
-    if (!pkg) return null;
+    useEscapeKey(onClose, !!pkg);
+    const focusTrapRef = useFocusTrap(!!pkg && !minimized);
 
     if (!pkg) return null;
 
@@ -240,7 +397,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                         <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${visualProgress}%` }} />
                     </div>
                 </div>
-                <button onClick={() => setMinimized(false)} className="p-2 hover:bg-app-fg/10 rounded-lg text-app-muted">
+                <button onClick={() => setMinimized(false)} className="p-2 hover:bg-app-fg/10 rounded-lg text-app-muted" aria-label="Expand install window">
                     <Maximize2 size={16} />
                 </button>
             </div>
@@ -352,7 +509,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-app-bg/60 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="w-full max-w-2xl bg-app-card border border-app-border rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh] transition-colors">
+            <div ref={focusTrapRef} className="w-full max-w-2xl bg-app-card border border-app-border rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh] transition-colors" role="dialog" aria-modal="true" aria-labelledby="install-monitor-title">
                 {/* Header */}
                 <div className="p-6 border-b border-app-border flex items-center justify-between bg-app-fg/5">
                     <div className="flex items-center gap-3">
@@ -366,7 +523,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                     <Terminal size={20} />}
                         </div>
                         <div>
-                            <h2 className="text-xl font-bold text-app-fg">
+                            <h2 id="install-monitor-title" className="text-xl font-bold text-app-fg">
                                 {updateRequired ? "System Update Required" : displayStatus}
                             </h2>
                             {status === 'error' && errorDetails && (
@@ -394,12 +551,12 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 >
                                     <XCircle size={14} /> Cancel
                                 </button>
-                                <button onClick={() => setMinimized(true)} className="p-2 hover:bg-app-fg/10 rounded-lg text-app-muted transition-colors">
+                                <button onClick={() => setMinimized(true)} className="p-2 hover:bg-app-fg/10 rounded-lg text-app-muted transition-colors" aria-label="Minimize install window">
                                     <Minimize2 size={20} />
                                 </button>
                             </>
                         )}
-                        <button onClick={onClose} className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg text-app-muted transition-colors">
+                        <button onClick={onClose} className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg text-app-muted transition-colors" aria-label="Close">
                             <XCircle size={20} />
                         </button>
                     </div>
@@ -603,10 +760,13 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                             </div>
                                         )}
 
-                                        <div className="flex justify-between text-sm text-app-muted mb-2">
+                                        <div className="flex justify-between text-sm text-app-muted mb-1">
                                             <span>Status: {status === 'running' ? 'Working...' : status.toUpperCase()}</span>
                                             <span>{Math.round(visualProgress)}%</span>
                                         </div>
+                                        {pkg.source === 'aur' && status === 'running' && (detailedStatus.includes('Building') || detailedStatus.includes('Compiling') || (visualProgress >= 25 && visualProgress <= 85)) && (
+                                            <div className="text-xs text-blue-400 font-bold animate-pulse mb-2">Building from source…</div>
+                                        )}
                                         <div className="w-full bg-app-fg/10 h-2 rounded-full overflow-hidden">
                                             {/* Progress Steps for AUR */}
                                             {pkg.source === 'aur' && status === 'running' && (
@@ -662,21 +822,76 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     )}
                 </div>
 
-                {/* Footer Actions */}
+                {/* Footer Actions - Enhanced with Smart Recovery */}
                 {(status === 'error' && !isRepairing && !updateRequired) && (
-                    <div className="p-4 bg-app-fg/5 border-t border-app-border flex justify-end gap-3">
-                        <button
-                            onClick={handleAction}
-                            className="bg-app-accent hover:bg-app-accent/80 text-white px-6 py-2 rounded-lg font-medium transition-colors shadow-lg shadow-app-accent/20"
-                        >
-                            Retry
-                        </button>
-                        <button
-                            onClick={onClose}
-                            className="bg-app-fg/10 hover:bg-app-fg/20 text-app-fg px-6 py-2 rounded-lg font-medium transition-colors"
-                        >
-                            Close
-                        </button>
+                    <div className="p-4 bg-app-fg/5 border-t border-app-border">
+                        {/* Smart Recovery Card when we have a classified error */}
+                        {classifiedError && (
+                            <div className="mb-4 p-4 bg-app-card rounded-xl border border-app-border">
+                                <div className="flex items-start gap-3 mb-3">
+                                    <div className="p-2 bg-red-500/10 rounded-lg text-red-500">
+                                        <XCircle size={20} />
+                                    </div>
+                                    <div className="flex-1">
+                                        <h4 className="font-bold text-app-fg">{classifiedError.title}</h4>
+                                        <p className="text-sm text-app-muted mt-1">{classifiedError.description}</p>
+                                    </div>
+                                </div>
+                                
+                                {/* One-Click Recovery Button */}
+                                {classifiedError.kind && (
+                                    <div className="flex gap-2">
+                                        {(() => {
+                                            const config = getRecoveryConfig(classifiedError.kind);
+                                            const RecoveryIcon = config.icon;
+                                            return (
+                                                <button
+                                                    onClick={() => handleRecoveryAction(classifiedError.kind)}
+                                                    disabled={isRecovering}
+                                                    className={clsx(
+                                                        "flex-1 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 shadow-lg transition-all active:scale-95",
+                                                        config.color,
+                                                        isRecovering && "opacity-50 cursor-not-allowed"
+                                                    )}
+                                                >
+                                                    {isRecovering ? (
+                                                        <Loader2 size={18} className="animate-spin" />
+                                                    ) : (
+                                                        <RecoveryIcon size={18} />
+                                                    )}
+                                                    {isRecovering ? 'Recovering...' : config.label}
+                                                </button>
+                                            );
+                                        })()}
+                                        <button
+                                            onClick={onClose}
+                                            disabled={isRecovering}
+                                            className="px-6 py-3 bg-app-fg/10 hover:bg-app-fg/20 text-app-fg rounded-xl font-medium transition-colors"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        
+                        {/* Fallback buttons when no classified error */}
+                        {!classifiedError && (
+                            <div className="flex justify-end gap-3">
+                                <button
+                                    onClick={handleAction}
+                                    className="bg-app-accent hover:bg-app-accent/80 text-white px-6 py-2 rounded-lg font-medium transition-colors shadow-lg shadow-app-accent/20"
+                                >
+                                    Retry
+                                </button>
+                                <button
+                                    onClick={onClose}
+                                    className="bg-app-fg/10 hover:bg-app-fg/20 text-app-fg px-6 py-2 rounded-lg font-medium transition-colors"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
             </div>

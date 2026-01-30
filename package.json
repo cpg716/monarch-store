@@ -2,13 +2,16 @@
   "name": "monarch-store",
   "private": false,
   "license": "MIT",
-  "version": "0.3.0-alpha.2",
+  "author": "cpg716 (https://github.com/cpg716) — developer and creator, with the help of AI coding tools",
+  "version": "0.3.5-alpha",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --configLoader runner",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri dev": "CARGO_INCREMENTAL=1 tauri dev",
+    "tauri build": "CARGO_TARGET_DIR=\"${PWD}/src-tauri/target\" tauri build"
   },
   "dependencies": {
     "@aptabase/tauri": "file:src-tauri/plugins/tauri-plugin-aptabase",

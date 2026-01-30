@@ -15,19 +15,23 @@ import { clsx } from 'clsx';
 import { resolveIconUrl } from '../utils/iconHelper';
 import { useFavorites } from '../hooks/useFavorites';
 import { submitReview } from '../services/reviewService';
-import { trackEvent } from '@aptabase/tauri';
 import { useToast } from '../context/ToastContext';
+import { useErrorService } from '../context/ErrorContext';
 import archLogo from '../assets/arch-logo.svg';
 import { usePackageReviews } from '../hooks/useRatings';
 import { usePackageMetadata } from '../hooks/usePackageMetadata';
 import { compareVersions } from '../utils/versionHelper';
 import { useDistro } from '../hooks/useDistro';
+import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 // --- Types ---
 interface PackageDetailsProps {
     pkg: Package;
     onBack: () => void;
     preferredSource?: string;
+    /** When true, disable Install/Uninstall to prevent concurrent ALPM operations. */
+    installInProgress?: boolean;
     onInstall: (p: { name: string; source: string; repoName?: string }) => void;
     onUninstall: (p: { name: string; source: string; repoName?: string }) => void;
 }
@@ -74,10 +78,11 @@ const SourceBadge = ({ source }: { source: string }) => {
 
 // --- Main Component ---
 
-export default function PackageDetails({ pkg, onBack, preferredSource, onInstall, onUninstall }: PackageDetailsProps) {
+export default function PackageDetails({ pkg, onBack, preferredSource, installInProgress = false, onInstall, onUninstall }: PackageDetailsProps) {
     // --- State & Hooks ---
     const { metadata: fullMeta } = usePackageMetadata(pkg.name);
-    const { success, error } = useToast();
+    const { success } = useToast();
+    const errorService = useErrorService();
     const { distro } = useDistro();
 
     const lookupId = pkg.app_id || fullMeta?.app_id || pkg.name;
@@ -101,12 +106,15 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
 
     // PKGBUILD Viewing
     const [showPkgbuild, setShowPkgbuild] = useState(false);
+    useEscapeKey(() => setShowPkgbuild(false), showPkgbuild);
+    const pkgbuildModalRef = useFocusTrap(showPkgbuild);
     const [pkgbuildContent, setPkgbuildContent] = useState<string | null>(null);
     const [pkgbuildLoading, setPkgbuildLoading] = useState(false);
     const [pkgbuildError, setPkgbuildError] = useState<string | null>(null);
 
     // Lightbox
     const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+    useEscapeKey(() => setLightboxIndex(null), lightboxIndex !== null);
 
     const { isFavorite, toggleFavorite } = useFavorites();
     const isFav = isFavorite(pkg.name);
@@ -153,7 +161,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                             return;
                         }
                     }
-                } catch (e) { console.error(e); }
+                } catch (e) { errorService.reportError(e as Error | string); }
 
                 // Fallback selection logic
                 if (preferredSource && vars.some(v => v.source === preferredSource)) setSelectedSource(preferredSource);
@@ -175,7 +183,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                 setInstallStatus(res);
                 if (res.installed) setInstalledVariant(res);
             })
-            .catch(console.error);
+            .catch((e) => errorService.reportError(e));
     };
 
     useEffect(() => {
@@ -200,7 +208,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
         try {
             await invoke('launch_app', { pkgName: nameToLaunch });
             success("App launched");
-        } catch (e) { error("Could not launch app: " + String(e)); }
+        } catch (e) { errorService.reportError(e as Error | string); }
     };
 
     const handleReviewSubmit = async () => {
@@ -209,9 +217,9 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
             setShowReviewForm(false);
             setReviewTitle(''); setReviewBody('');
             refreshReviews();
-            trackEvent('review_submitted', { package: pkg.name, rating: reviewRating });
+            invoke('track_event', { event: 'review_submitted', payload: { package: pkg.name, rating: reviewRating } });
             success("Review submitted!");
-        } catch (e) { error("Failed to submit: " + String(e)); }
+        } catch (e) { errorService.reportError(e as Error | string); }
     };
 
     const fetchPkgbuild = async () => {
@@ -287,7 +295,8 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                             initial={{ y: 20, opacity: 0 }}
                             animate={{ y: 0, opacity: 1 }}
                             transition={{ delay: 0.2 }}
-                            className="text-4xl sm:text-5xl md:text-6xl lg:text-8xl font-black text-white tracking-tight leading-[1.1] md:leading-[0.9] mb-4 drop-shadow-2xl break-words"
+                            className="text-4xl sm:text-5xl md:text-6xl lg:text-8xl font-black text-white tracking-tight leading-[1.1] md:leading-[0.9] mb-4 break-words"
+                            style={{ textShadow: '0 0 20px rgba(0,0,0,0.8), 0 2px 4px rgba(0,0,0,0.9), 0 0 40px rgba(0,0,0,0.6)' }}
                         >
                             {pkg.display_name || fullMeta?.name || pkg.name}
                         </motion.h1>
@@ -341,7 +350,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                                             <AlertTriangle size={18} className="text-red-500 shrink-0 mt-0.5" />
                                             <div className="text-xs text-red-200/80 leading-relaxed">
                                                 <span className="font-bold text-red-500 block mb-0.5">⚠ High Risk (Glibc Mismatch)</span>
-                                                This package is built for Arch Linux. Manjaro's older system libraries may cause it to fail or break your OS.
+                                                Manjaro holds back core libraries (e.g. glibc) for stability. This package is built for Arch and may depend on newer versions—it can fail at runtime or break your system.
                                             </div>
                                         </div>
                                     );
@@ -354,7 +363,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                                             <AlertTriangle size={18} className="text-orange-500 shrink-0 mt-0.5" />
                                             <div className="text-xs text-orange-200/80 leading-relaxed">
                                                 <span className="font-bold text-orange-500 block mb-0.5">⚠ Distro Mismatch</span>
-                                                You are installing a Manjaro package on Arch. This may downgrade system packages or introduce patched kernels not tested for your OS.
+                                                You are installing a Manjaro package on Arch. This may downgrade system packages (e.g. glibc, kernel) or introduce patched kernels not tested for your OS.
                                             </div>
                                         </div>
                                     );
@@ -404,6 +413,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                                                     {/* Launch Button */}
                                                     <button
                                                         onClick={handleLaunch}
+                                                        disabled={installInProgress}
                                                         className={clsx(
                                                             "h-14 px-8 rounded-2xl font-bold shadow-xl active:scale-95 transition-all flex items-center gap-3 text-lg border",
                                                             (isUpdateAvailable || isSourceMismatch)
@@ -418,7 +428,8 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                                                     {!isSourceMismatch && isUpdateAvailable && (
                                                         <button
                                                             onClick={handleInstallClick}
-                                                            className="h-14 px-8 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-bold shadow-xl shadow-blue-600/20 active:scale-95 transition-all flex items-center gap-3 text-lg"
+                                                            disabled={installInProgress}
+                                                            className="h-14 px-8 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-bold shadow-xl shadow-blue-600/20 active:scale-95 transition-all flex items-center gap-3 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                                         >
                                                             <Download size={24} /> Update (v{candidateVersion})
                                                         </button>
@@ -427,10 +438,11 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                                                     {/* Uninstall Button */}
                                                     <button
                                                         onClick={() => onUninstall({
-                                                            name: installedVariant?.actual_package_name || pkg.name,
-                                                            source: installedVariant?.source || installedVariant?.repo || 'official'
-                                                        })}
-                                                        className="h-14 px-6 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-red-600 dark:text-red-400 border border-slate-200 dark:border-white/10 rounded-2xl font-bold active:scale-95 transition-all flex items-center gap-2"
+                                                        name: installedVariant?.actual_package_name || pkg.name,
+                                                        source: installedVariant?.source || installedVariant?.repo || 'official'
+                                                    })}
+                                                        disabled={installInProgress}
+                                                        className="h-14 px-6 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-red-600 dark:text-red-400 border border-slate-200 dark:border-white/10 rounded-2xl font-bold active:scale-95 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                                                     >
                                                         <Trash2 size={20} /> Uninstall
                                                     </button>
@@ -444,11 +456,13 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                                             return (
                                                 <button
                                                     onClick={handleInstallClick}
+                                                    disabled={installInProgress}
                                                     className={clsx(
                                                         "h-14 px-10 rounded-2xl font-bold shadow-xl active:scale-95 transition-all flex items-center gap-3 text-lg border",
                                                         isRisky
                                                             ? "bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/20 border-amber-500/20"
-                                                            : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/20 border-white/10"
+                                                            : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/20 border-white/10",
+                                                        "disabled:opacity-50 disabled:cursor-not-allowed"
                                                     )}
                                                 >
                                                     <Download size={24} /> {isRisky ? "Install (Unsafe)" : "Install"}
@@ -503,7 +517,8 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                                                         repoName: v?.repo_name
                                                     });
                                                 }}
-                                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-lg shadow-blue-500/20 transition-all active:scale-95 flex items-center gap-2 whitespace-nowrap"
+                                                disabled={installInProgress}
+                                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-lg shadow-blue-500/20 transition-all active:scale-95 flex items-center gap-2 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
                                                 <RefreshCw size={14} /> Switch Source
                                             </button>
@@ -692,7 +707,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                         onClick={() => setLightboxIndex(null)}
                         className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4"
                     >
-                        <button className="absolute top-6 right-6 p-4 text-white/50 hover:text-white"><X size={32} /></button>
+                        <button onClick={() => setLightboxIndex(null)} className="absolute top-6 right-6 p-4 text-white/50 hover:text-white" aria-label="Close"><X size={32} /></button>
                         <img
                             src={screenshots[lightboxIndex]}
                             className="max-h-[90vh] max-w-[90vw] rounded-lg shadow-2xl"
@@ -711,13 +726,17 @@ export default function PackageDetails({ pkg, onBack, preferredSource, onInstall
                         onClick={() => setShowPkgbuild(false)}
                     >
                         <motion.div
+                            ref={pkgbuildModalRef}
                             initial={{ scale: 0.9 }} animate={{ scale: 1 }} exit={{ scale: 0.9 }}
                             onClick={e => e.stopPropagation()}
                             className="bg-app-card w-full max-w-4xl h-[80vh] rounded-2xl border border-white/10 flex flex-col overflow-hidden shadow-2xl"
+                            role="dialog"
+                            aria-modal="true"
+                            aria-labelledby="pkgbuild-modal-title"
                         >
                             <div className="p-4 border-b border-white/10 flex justify-between items-center bg-white/5">
-                                <h3 className="font-bold text-white flex items-center gap-2"><Code size={20} className="text-blue-400" /> PKGBUILD Preview</h3>
-                                <button onClick={() => setShowPkgbuild(false)}><X size={24} className="text-white/50 hover:text-white" /></button>
+                                <h3 id="pkgbuild-modal-title" className="font-bold text-white flex items-center gap-2"><Code size={20} className="text-blue-400" /> PKGBUILD Preview</h3>
+                                <button onClick={() => setShowPkgbuild(false)} aria-label="Close"><X size={24} className="text-white/50 hover:text-white" /></button>
                             </div>
                             <div className="flex-1 overflow-auto p-4 bg-[#1e1e1e]">
                                 {pkgbuildLoading ? (

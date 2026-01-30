@@ -14,7 +14,7 @@ export const getRotatedEssentials = () => {
     const week = Math.floor(day / 7);
 
     const poolSize = ESSENTIALS_POOL.length;
-    const subsetSize = 7;
+    const subsetSize = 12;
     const startIndex = (week * 3) % poolSize;
 
     let result: string[] = [];

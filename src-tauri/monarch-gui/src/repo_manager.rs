@@ -1,0 +1,819 @@
+use crate::helper_client::{HelperCommand, invoke_helper};
+use crate::models::{Package, PackageSource};
+use crate::repo_db;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RepoConfig {
+    pub name: String,
+    pub url: String,
+    pub source: PackageSource,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StoredConfig {
+    repos: Vec<RepoConfig>,
+    #[serde(default)]
+    aur_enabled: bool,
+    #[serde(default)]
+    one_click_enabled: bool,
+    #[serde(default)]
+    advanced_mode: bool,
+    #[serde(default)]
+    telemetry_enabled: bool,
+    #[serde(default = "default_notifications_enabled")]
+    notifications_enabled: bool,
+    /// Sync repositories when the app starts (default on); when off, no trigger_repo_sync on startup.
+    #[serde(default = "default_sync_on_startup")]
+    sync_on_startup_enabled: bool,
+}
+
+fn default_sync_on_startup() -> bool {
+    true
+}
+
+fn default_notifications_enabled() -> bool {
+    true // Default to enabled
+}
+
+#[derive(Clone)]
+pub struct RepoManager {
+    // Map RepoName -> List of Packages
+    cache: Arc<RwLock<HashMap<String, Vec<Package>>>>,
+    repos: Arc<RwLock<Vec<RepoConfig>>>,
+    pub aur_enabled: Arc<RwLock<bool>>,
+    pub one_click_enabled: Arc<RwLock<bool>>,
+    pub advanced_mode: Arc<RwLock<bool>>,
+    pub telemetry_enabled: Arc<RwLock<bool>>,
+    pub notifications_enabled: Arc<RwLock<bool>>,
+    pub sync_on_startup_enabled: Arc<RwLock<bool>>,
+}
+
+// Helper for Intelligent Priority Sorting (Granular Optimization Ranking)
+pub fn calculate_package_rank(pkg: &Package, opt_level: u8, distro: &crate::distro_context::DistroContext) -> u8 {
+    // Manjaro Strategy: Stability First (Official Repos Priority 0)
+    // We treat "source_first" as "Official/Stable First" here
+    if distro.capabilities.default_search_sort == "source_first" {
+         match pkg.source {
+            PackageSource::Official | PackageSource::Manjaro => 0, // Highest Priority
+            PackageSource::Aur => 2,
+            PackageSource::Chaotic | PackageSource::CachyOS | PackageSource::Garuda | PackageSource::Endeavour => {
+                 // Deprioritize unofficial binaries massively to warn user
+                10 
+            }
+        }
+    } else {
+        // CachyOS/Garuda/Arch Strategy: Performance First (Optimization Level Priority)
+        // opt_level: 0=None, 1=v3, 2=v4, 3=znver4
+        match opt_level {
+            3 => 0, // Rank 0: Zen 4/5 Optimized (ELITE)
+            2 => 1, // Rank 1: x86-64-v4 Optimized
+            1 => 2, // Rank 2: x86-64-v3 Optimized
+            _ => {
+                // Rank 4+: General Priorities (Chaotic=4, Official=5, etc)
+                pkg.source.priority().saturating_add(3)
+            }
+        }
+    }
+}
+
+impl RepoManager {
+    pub fn new() -> Self {
+        let config_path = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("monarch-store");
+        std::fs::create_dir_all(&config_path).unwrap_or_default();
+        // let config_file = config_path.join("repos.json"); // Not used for state init anymore directly here, but later
+
+        // Default Repos - Chaotic-AUR is PRIMARY
+        let mut initial_repos = vec![
+            RepoConfig {
+                name: "chaotic-aur".to_string(),
+                url: "https://cdn-mirror.chaotic.cx/chaotic-aur/x86_64/chaotic-aur.db".to_string(),
+                source: PackageSource::Chaotic,
+                enabled: false, // Default to false, check disk
+            },
+            RepoConfig {
+                name: "cachyos".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64/cachyos/cachyos.db".to_string(),
+                source: PackageSource::CachyOS,
+                enabled: false, 
+            },
+            RepoConfig {
+                name: "cachyos-v3".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v3/cachyos-v3/cachyos-v3.db".to_string(),
+                source: PackageSource::CachyOS,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "cachyos-core-v3".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v3/cachyos-core-v3/cachyos-core-v3.db".to_string(),
+                source: PackageSource::CachyOS,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "cachyos-extra-v3".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v3/cachyos-extra-v3/cachyos-extra-v3.db".to_string(),
+                source: PackageSource::CachyOS,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "cachyos-v4".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-v4/cachyos-v4.db".to_string(),
+                source: PackageSource::CachyOS,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "cachyos-core-v4".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-core-v4/cachyos-core-v4.db".to_string(),
+                source: PackageSource::CachyOS,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "cachyos-extra-v4".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-extra-v4/cachyos-extra-v4.db".to_string(),
+                source: PackageSource::CachyOS,
+                enabled: false,
+            },
+             RepoConfig {
+                name: "cachyos-extra-znver4".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-extra-znver4/cachyos-extra-znver4.db".to_string(),
+                source: PackageSource::CachyOS,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "cachyos-core-znver4".to_string(),
+                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-core-znver4/cachyos-core-znver4.db".to_string(),
+                source: PackageSource::CachyOS,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "garuda".to_string(),
+                url: "https://builds.garudalinux.org/repos/garuda/x86_64/garuda.db".to_string(),
+                source: PackageSource::Garuda,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "endeavouros".to_string(),
+                url: "https://mirror.moson.org/endeavouros/repo/endeavouros/x86_64/endeavouros.db".to_string(),
+                source: PackageSource::Endeavour,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "manjaro-core".to_string(),
+                url: "https://mirror.init7.net/manjaro/stable/core/x86_64/core.db".to_string(),
+                source: PackageSource::Manjaro,
+                enabled: false,
+            },
+            RepoConfig {
+                name: "manjaro-extra".to_string(),
+                url: "https://mirror.init7.net/manjaro/stable/extra/x86_64/extra.db".to_string(),
+                source: PackageSource::Manjaro,
+                enabled: false,
+            },
+            // Official Repos are Always True (Logic handled in filtering usually, but let's keep them here)
+            RepoConfig {
+                name: "core".to_string(),
+                url: "https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db".to_string(),
+                source: PackageSource::Official,
+                enabled: true,
+            },
+            RepoConfig {
+                name: "extra".to_string(),
+                url: "https://geo.mirror.pkgbuild.com/extra/os/x86_64/extra.db".to_string(),
+                source: PackageSource::Official,
+                enabled: true,
+            },
+            RepoConfig {
+                name: "multilib".to_string(),
+                url: "https://geo.mirror.pkgbuild.com/multilib/os/x86_64/multilib.db".to_string(),
+                source: PackageSource::Official,
+                enabled: true,
+            },
+        ];
+
+        // TRUTH FROM DISK (Modular Config Strategy)
+        // Check /etc/pacman.d/monarch/50-{name}.conf
+        let monarch_conf_dir = std::path::Path::new("/etc/pacman.d/monarch");
+        
+        for repo in &mut initial_repos {
+            if repo.source == PackageSource::Official {
+                continue; // Always enabled
+            }
+
+            let conf_name = format!("50-{}.conf", repo.name);
+            let path = monarch_conf_dir.join(conf_name);
+            if path.exists() {
+                // If the file exists, the repo is enabled in the system.
+                // We trust the disk over everything else.
+                repo.enabled = true;
+            } else {
+                repo.enabled = false;
+            }
+        }
+
+        // 4. PERSISTENCE: Trust repos.json for UI persistence (Onboarding/Settings choices)
+        let mut initial_aur = false;
+        let mut initial_one_click = false;
+        let mut initial_advanced = false;
+        let mut initial_telemetry = false;
+        let mut initial_notifications = true; // Default to enabled
+        let mut initial_sync_on_startup = true;
+
+        let config_file = config_path.join("repos.json");
+
+        if config_file.exists() {
+            if let Ok(file) = std::fs::File::open(&config_file) {
+                let reader = std::io::BufReader::new(file);
+                if let Ok(saved_config) = serde_json::from_reader::<_, StoredConfig>(reader) {
+                    initial_aur = saved_config.aur_enabled;
+                    initial_one_click = saved_config.one_click_enabled;
+                    initial_advanced = saved_config.advanced_mode;
+                    initial_telemetry = saved_config.telemetry_enabled;
+                    initial_notifications = saved_config.notifications_enabled;
+                    initial_sync_on_startup = saved_config.sync_on_startup_enabled;
+
+                    // Merge saved repo enabled states
+                    for saved_repo in saved_config.repos {
+                        if let Some(r) = initial_repos.iter_mut().find(|r| r.name == saved_repo.name)
+                        {
+                            // Only overwrite if not an Official repo (Official stay enabled by policy)
+                            if r.source != PackageSource::Official {
+                                r.enabled = saved_repo.enabled;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Self {
+            cache: Arc::new(RwLock::new(HashMap::new())),
+            repos: Arc::new(RwLock::new(initial_repos)),
+            aur_enabled: Arc::new(RwLock::new(initial_aur)),
+            one_click_enabled: Arc::new(RwLock::new(initial_one_click)),
+            advanced_mode: Arc::new(RwLock::new(initial_advanced)),
+            telemetry_enabled: Arc::new(RwLock::new(initial_telemetry)),
+            notifications_enabled: Arc::new(RwLock::new(initial_notifications)),
+            sync_on_startup_enabled: Arc::new(RwLock::new(initial_sync_on_startup)),
+        }
+    }
+
+    async fn save_config_async(&self) {
+        let repos = self.repos.read().await.clone();
+        let aur = *self.aur_enabled.read().await;
+        let one_click = *self.one_click_enabled.read().await;
+        let advanced = *self.advanced_mode.read().await;
+        let telemetry = *self.telemetry_enabled.read().await;
+        let notifications = *self.notifications_enabled.read().await;
+        let sync_on_startup = *self.sync_on_startup_enabled.read().await;
+
+        tokio::task::spawn_blocking(move || {
+            let config = StoredConfig {
+                repos,
+                aur_enabled: aur,
+                one_click_enabled: one_click,
+                advanced_mode: advanced,
+                telemetry_enabled: telemetry,
+                notifications_enabled: notifications,
+                sync_on_startup_enabled: sync_on_startup,
+            };
+
+            let config_path = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("monarch-store");
+            let _ = std::fs::create_dir_all(&config_path);
+            let config_file = config_path.join("repos.json");
+
+            if let Ok(file) = std::fs::File::create(config_file) {
+                let _ = serde_json::to_writer_pretty(file, &config);
+            }
+        });
+    }
+
+    pub async fn set_aur_enabled(&self, _app: &tauri::AppHandle, enabled: bool) {
+        let mut w = self.aur_enabled.write().await;
+        *w = enabled;
+        drop(w);
+        self.save_config_async().await;
+    }
+
+    pub async fn is_aur_enabled(&self) -> bool {
+        *self.aur_enabled.read().await
+    }
+
+    pub async fn set_one_click_enabled(&self, enabled: bool) {
+        let mut w = self.one_click_enabled.write().await;
+        *w = enabled;
+        drop(w);
+        self.save_config_async().await;
+    }
+
+    pub async fn is_one_click_enabled(&self) -> bool {
+        *self.one_click_enabled.read().await
+    }
+
+    pub async fn set_advanced_mode(&self, enabled: bool) {
+        let mut w = self.advanced_mode.write().await;
+        *w = enabled;
+        drop(w);
+        self.save_config_async().await;
+    }
+
+    pub async fn is_advanced_mode(&self) -> bool {
+        *self.advanced_mode.read().await
+    }
+
+    pub async fn set_telemetry_enabled(&self, enabled: bool) {
+        let mut w = self.telemetry_enabled.write().await;
+        *w = enabled;
+        drop(w);
+        self.save_config_async().await;
+    }
+
+    pub async fn is_telemetry_enabled(&self) -> bool {
+        *self.telemetry_enabled.read().await
+    }
+
+    pub async fn set_sync_on_startup_enabled(&self, enabled: bool) {
+        let mut w = self.sync_on_startup_enabled.write().await;
+        *w = enabled;
+        drop(w);
+        self.save_config_async().await;
+    }
+
+    pub async fn is_sync_on_startup_enabled(&self) -> bool {
+        *self.sync_on_startup_enabled.read().await
+    }
+
+    pub async fn set_notifications_enabled(&self, enabled: bool) {
+        let mut w = self.notifications_enabled.write().await;
+        *w = enabled;
+        drop(w);
+        self.save_config_async().await;
+    }
+
+    pub async fn is_notifications_enabled(&self) -> bool {
+        *self.notifications_enabled.read().await
+    }
+
+    pub async fn is_repo_enabled(&self, name: &str) -> bool {
+        let repos = self.repos.read().await;
+        repos.iter().any(|r| r.name == name && r.enabled)
+    }
+
+    pub async fn get_all_repos(&self) -> Vec<RepoConfig> {
+        self.repos.read().await.clone()
+    }
+
+    pub async fn load_initial_cache(&self) {
+         let repos = self.repos.read().await;
+        // Only load enabled or required repos
+        let active_repos: Vec<RepoConfig> = repos.iter().filter(|r| r.enabled).cloned().collect();
+        drop(repos);
+
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("monarch-store")
+            .join("dbs");
+
+        if !cache_dir.exists() {
+            return;
+        }
+
+        println!("Loading initial package cache from disk...");
+        let mut handles = Vec::new();
+
+        for repo in active_repos {
+            // Simplified loading logic...
+            let r = repo.clone();
+            let c_dir = cache_dir.clone();
+             handles.push(tokio::spawn(async move {
+                let file_name = format!("{}.db", r.name);
+                let path = c_dir.join(file_name);
+                if !path.exists() { return None; }
+                 match std::fs::read(&path) {
+                    Ok(_) => {
+                        let client = crate::repo_db::RealRepoClient::new();
+                        match crate::repo_db::fetch_repo_packages(
+                            &client, &r.url, &r.name, r.source, &c_dir, false, 999999,
+                        ).await {
+                            Ok(pkgs) => Some((r.name, pkgs)),
+                            Err(_) => None,
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }));
+        }
+
+         for handle in handles {
+            if let Ok(Some((name, pkgs))) = handle.await {
+                let mut cache = self.cache.write().await;
+                cache.insert(name, pkgs);
+            }
+        }
+    }
+
+    pub async fn sync_all(&self, force: bool, interval_hours: u64, app: Option<tauri::AppHandle>) -> Result<String, String> {
+         use tauri::Emitter;
+        let repos = self.repos.read().await;
+        let active_repos: Vec<RepoConfig> = repos.iter().filter(|r| r.enabled).cloned().collect();
+        drop(repos);
+
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("monarch-store")
+            .join("dbs");
+        std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+        let mut handles = Vec::new();
+
+        for repo in active_repos {
+            let r = repo.clone();
+            let c_dir = cache_dir.clone();
+            let app_clone = app.clone();
+            handles.push(tokio::spawn(async move {
+                 if let Some(ref a) = app_clone {
+                    let _ = a.emit("sync-progress", format!("Updating {}...", r.name));
+                }
+                let client = repo_db::RealRepoClient::new();
+                match repo_db::fetch_repo_packages(&client, &r.url, &r.name, r.source, &c_dir, force, interval_hours).await {
+                    Ok(pkgs) => Ok((r.name, pkgs)),
+                    Err(e) => Err((r.name, e)),
+                }
+            }));
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+             match handle.await {
+                Ok(Ok((name, pkgs))) => {
+                    let mut cache = self.cache.write().await;
+                    let val = if pkgs.len() > 0 { pkgs } else { Vec::new() };
+                    cache.insert(name.clone(), val);
+                     results.push(format!("Synced {} from {}", 0, name)); // Simplified logging
+                }
+                _ => {}
+            }
+        }
+        Ok("Sync Complete".to_string())
+    }
+
+    // MODULAR APPLY LOGIC
+    pub async fn apply_os_config(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        let repos = self.repos.read().await;
+        let all_repos: Vec<RepoConfig> = repos.iter().cloned().collect();
+        drop(repos);
+
+        // 1. Initialize System (Include and Folders)
+        let _ = invoke_helper(app, HelperCommand::Initialize, None).await?.recv().await;
+
+        let mut files_to_write = Vec::new();
+        let mut paths_to_remove = Vec::new();
+
+        // 2. Prepare Batch Operations
+        for repo in all_repos {
+            if repo.source == PackageSource::Official {
+                continue;
+            }
+
+            let filename = format!("50-{}.conf", repo.name);
+            let path = format!("/etc/pacman.d/monarch/{}", filename);
+
+            if repo.enabled {
+                let mut content = String::new();
+                let server_url = if repo.url.ends_with(".db") {
+                    let parts: Vec<&str> = repo.url.split('/').collect();
+                    if parts.len() > 1 {
+                        parts[..parts.len() - 1].join("/")
+                    } else {
+                        repo.url.clone()
+                    }
+                } else {
+                    repo.url.clone()
+                };
+
+                content.push_str(&format!("[{}]\nServer = {}\n", repo.name, server_url));
+
+                if repo.name == "chaotic-aur" || repo.name.starts_with("cachyos") {
+                    content.push_str("SigLevel = PackageRequired\n");
+                } else {
+                    content.push_str("SigLevel = Optional TrustAll\n");
+                }
+                files_to_write.push((path, content));
+            } else {
+                paths_to_remove.push(path);
+            }
+        }
+
+        // 3. Execute Batches
+        if !files_to_write.is_empty() {
+            let _ = invoke_helper(app, HelperCommand::WriteFiles { files: files_to_write }, None).await?.recv().await;
+        }
+        if !paths_to_remove.is_empty() {
+            let _ = invoke_helper(app, HelperCommand::RemoveFiles { paths: paths_to_remove }, None).await?.recv().await;
+        }
+
+        // 4. Sync
+        let _ = invoke_helper(app, HelperCommand::Refresh, None).await?.recv().await;
+
+        Ok(())
+    }
+
+    pub async fn set_repo_state(&self, app: &tauri::AppHandle, name: &str, enabled: bool) -> Result<(), String> {
+        // --- FIREWALL: Identity Matrix Check ---
+        let distro = crate::distro_context::get_distro_context();
+        
+        // Rule 1: Manjaro cannot enable Chaotic-AUR (Glibc Mismatch)
+        if enabled && name == "chaotic-aur" {
+            // Bypass check if in Advanced Mode
+            if !*self.advanced_mode.read().await {
+                if let crate::distro_context::ChaoticSupport::Blocked = distro.capabilities.chaotic_aur_support {
+                     return Err(format!(
+                        "ACTION BLOCKED: Enabling Chaotic-AUR on {} is unsafe due to glibc incompatibility.", 
+                        distro.pretty_name
+                    ));
+                }
+            }
+        }
+        // ---------------------------------------
+
+        let mut repos = self.repos.write().await;
+        if let Some(r) = repos.iter_mut().find(|r| r.name == name) {
+            r.enabled = enabled;
+        }
+        drop(repos);
+
+        // Instant UI Update: Clear from cache if disabled
+        if !enabled {
+            let mut cache = self.cache.write().await;
+            cache.remove(name);
+        }
+
+        self.save_config_async().await;
+        // Default behavior (no skip args in struct so we assume standard apply)
+        // If we want to skip, we need arguments. But this is internal API.
+        // We will call apply explicitly from commands if needed.
+        let _ = self.apply_os_config(app).await;
+        
+        Ok(())
+    }
+
+    /// Toggle all repos belonging to a family (e.g., "cachyos", "manjaro")
+    /// Added skip_os_sync to avoid 4x prompts during onboarding
+    pub async fn set_repo_family_state(&self, app: &tauri::AppHandle, family: &str, enabled: bool, skip_os_sync: bool) -> Result<(), String> {
+        let mut repos = self.repos.write().await;
+        let family_lower = family.to_lowercase();
+        let mut affected_repos = Vec::new();
+
+        for repo in repos.iter_mut() {
+            let repo_lower = repo.name.to_lowercase();
+
+            // Match family by prefix or exact match
+            let belongs_to_family = match family_lower.as_str() {
+                "cachyos" => repo_lower.starts_with("cachyos"),
+                "manjaro" => repo_lower.starts_with("manjaro"),
+                "chaotic" | "chaotic-aur" => repo_lower == "chaotic-aur",
+                "garuda" => repo_lower == "garuda",
+                "endeavouros" => repo_lower == "endeavouros",
+                _ => repo_lower == family_lower,
+            };
+
+            if belongs_to_family {
+                if enabled {
+                    // Smart enable: For CachyOS, only enable if CPU compatible
+                    if repo_lower.contains("-znver4") {
+                        repo.enabled = crate::utils::is_cpu_znver4_compatible();
+                    } else if repo_lower.contains("-v4") {
+                        repo.enabled = crate::utils::is_cpu_v4_compatible();
+                    } else if repo_lower.contains("-v3") || repo_lower.contains("-core") {
+                        repo.enabled = crate::utils::is_cpu_v3_compatible();
+                    } else {
+                        repo.enabled = true;
+                    }
+                } else {
+                    repo.enabled = false;
+                    affected_repos.push(repo.name.clone());
+                }
+            }
+        }
+
+        drop(repos);
+
+        // Instant UI Update: Batch clear
+        if !affected_repos.is_empty() {
+            let mut cache = self.cache.write().await;
+            for name in affected_repos {
+                cache.remove(&name);
+            }
+        }
+
+        self.save_config_async().await;
+        if !skip_os_sync {
+            let _ = self.apply_os_config(app).await;
+        }
+
+        Ok(())
+    }
+
+
+// ... inside RepoManager impl ...
+
+
+    #[allow(dead_code)]
+    pub async fn get_package(&self, name: &str) -> Option<Package> {
+        // Reuse get_all_packages Logic which now sorts by optimization
+        let pkgs = self.get_all_packages(name).await;
+        pkgs.into_iter().next() // Return the top-ranked one
+    }
+
+    pub async fn get_all_packages_with_repos(&self, name: &str) -> Vec<(Package, String)> {
+        let cache = self.cache.read().await;
+        // (Package, opt_level, repo_name)
+        let mut results: Vec<(Package, u8, String)> = Vec::new();
+
+        let cpu_v3 = crate::utils::is_cpu_v3_compatible();
+        let cpu_v4 = crate::utils::is_cpu_v4_compatible();
+        let distro = crate::distro_context::get_distro_context();
+
+        for (repo_name, pkgs) in cache.iter() {
+            let opt_level: u8 = if repo_name.contains("-znver4") && crate::utils::is_cpu_znver4_compatible() {
+                3
+            } else if repo_name.contains("-v4") && cpu_v4 {
+                2
+            } else if (repo_name.contains("-v3") || repo_name.contains("-core-v3") || repo_name.contains("-extra-v3")) && cpu_v3 {
+                1
+            } else {
+                0
+            };
+
+            if let Some(p) = pkgs.iter().find(|p| p.name == name) {
+                results.push((p.clone(), opt_level, repo_name.clone()));
+            }
+        }
+
+        results.sort_by(|(pkg_a, level_a, _), (pkg_b, level_b, _)| {
+            let rank_a = calculate_package_rank(pkg_a, *level_a, &distro);
+            let rank_b = calculate_package_rank(pkg_b, *level_b, &distro);
+            rank_a.cmp(&rank_b)
+        });
+
+        results
+            .into_iter()
+            .map(|(mut p, level, r_name)| {
+                p.is_optimized = Some(level > 0);
+                (p, r_name)
+            })
+            .collect()
+    }
+
+    #[allow(dead_code)]
+    pub async fn get_all_packages(&self, name: &str) -> Vec<Package> {
+        self.get_all_packages_with_repos(name)
+            .await
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect()
+    }
+
+    #[allow(dead_code)]
+    pub async fn get_packages_providing(&self, name: &str) -> Vec<Package> {
+        self.get_packages_providing_with_repos(name)
+            .await
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect()
+    }
+
+    pub async fn get_packages_providing_with_repos(&self, name: &str) -> Vec<(Package, String)> {
+        // Optimization logic could be applied here too if needed, but less critical.
+        // For now keeping it simple.
+        let mut results = Vec::new();
+        let cache = self.cache.read().await;
+
+        for (repo_name, repo_pkgs) in cache.iter() {
+            for pkg in repo_pkgs {
+                if let Some(provides) = &pkg.provides {
+                    if provides.iter().any(|p| p == name) {
+                        results.push((pkg.clone(), repo_name.clone()));
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    pub async fn get_packages_batch(&self, names: &[String]) -> Vec<Package> {
+        let mut results = Vec::new();
+        let cache = self.cache.read().await;
+        // Use HashSet for O(1) lookups instead of O(n) Vec::contains
+        let names_set: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
+        for pkgs in cache.values() {
+            for pkg in pkgs {
+                if names_set.contains(pkg.name.as_str()) {
+                    results.push(pkg.clone());
+                }
+            }
+        }
+        results
+    }
+
+    pub async fn get_package_counts(&self) -> HashMap<String, usize> {
+        let cache = self.cache.read().await;
+        cache
+            .iter()
+            .map(|(name, pkgs)| (name.clone(), pkgs.len()))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Package, PackageSource};
+
+    fn make_test_pkg(source: PackageSource) -> Package {
+        Package {
+            name: "test".to_string(),
+            display_name: None,
+            description: "test".to_string(),
+            version: "1.0".to_string(),
+            source,
+            maintainer: None,
+            url: None,
+            license: None,
+            keywords: None,
+            last_modified: None,
+            first_submitted: None,
+            out_of_date: None,
+            num_votes: None,
+            icon: None,
+            app_id: None,
+            screenshots: None,
+            is_optimized: None,
+            provides: None,
+            depends: None,
+            make_depends: None,
+            is_featured: None,
+            installed: false,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_chaotic_priority() {
+        let p_chaotic = make_test_pkg(PackageSource::Chaotic);
+        let p_official = make_test_pkg(PackageSource::Official);
+        let p_aur = make_test_pkg(PackageSource::Aur);
+        let distro = crate::distro_context::DistroContext::new(); // Default Arch
+
+        // Rank Check directly (Standard Priorities: Chaotic=4, Official=5, Aur=8)
+        assert_eq!(calculate_package_rank(&p_chaotic, 0, &distro), 4);
+        assert_eq!(calculate_package_rank(&p_official, 0, &distro), 5);
+        assert_eq!(calculate_package_rank(&p_aur, 0, &distro), 8);
+
+        // Verify Chaotic beats Official (Lower rank is better)
+        assert!(
+            calculate_package_rank(&p_chaotic, 0, &distro) < calculate_package_rank(&p_official, 0, &distro)
+        );
+    }
+
+    #[test]
+    fn test_optimized_priority() {
+        let p_cachy = make_test_pkg(PackageSource::CachyOS);
+        let distro = crate::distro_context::DistroContext::new(); // Default Arch
+
+        // Optimized tiers vs Standard Cachy (Cachy standard is priority 3+3=6)
+        assert_eq!(calculate_package_rank(&p_cachy, 3, &distro), 0); // znver4
+        assert_eq!(calculate_package_rank(&p_cachy, 2, &distro), 1); // v4
+        assert_eq!(calculate_package_rank(&p_cachy, 1, &distro), 2); // v3
+        assert_eq!(calculate_package_rank(&p_cachy, 0, &distro), 6); // Standard Cachy
+
+        assert!(calculate_package_rank(&p_cachy, 1, &distro) < calculate_package_rank(&p_cachy, 0, &distro));
+    }
+}
+
+// Diagnostic: Check which repos are actually synced in pacman system
+#[tauri::command]
+pub async fn check_repo_sync_status(
+    state_repo: tauri::State<'_, RepoManager>,
+) -> Result<std::collections::HashMap<String, bool>, String> {
+    let repos = state_repo.repos.read().await;
+    let mut status = std::collections::HashMap::new();
+    let sync_dir = std::path::Path::new("/var/lib/pacman/sync");
+
+    for repo in repos.iter() {
+        if !repo.enabled {
+            status.insert(repo.name.clone(), true); // Disabled repos considered "fine"
+            continue;
+        }
+        let db_path = sync_dir.join(format!("{}.db", repo.name));
+        status.insert(repo.name.clone(), db_path.exists());
+    }
+    Ok(status)
+}

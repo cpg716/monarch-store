@@ -1,0 +1,16 @@
+#!/bin/sh
+# Notify MonARCH Store that a pacman transaction completed so it can refresh
+# its local repo index on next start. Creates a flag file in each user's
+# ~/.cache/monarch-store/refresh-requested so the app (running as that user)
+# can check and clear it without root.
+# Runs as root from the pacman hook.
+
+for home in /home/*/; do
+    [ -d "$home" ] || continue
+    flag_dir="${home}.cache/monarch-store"
+    mkdir -p "$flag_dir"
+    touch "${flag_dir}/refresh-requested"
+done
+# Also touch system-wide flag for /var/lib/monarch-store (optional; app uses per-user cache)
+mkdir -p /var/lib/monarch-store
+touch /var/lib/monarch-store/refresh-requested 2>/dev/null || true

@@ -14,18 +14,6 @@
   --color-app-hover: var(--app-hover-bg);
 }
 
-@keyframes flap {
-
-  0%,
-  100% {
-    transform: scaleX(1);
-  }
-
-  50% {
-    transform: scaleX(0.6);
-  }
-}
-
 .butterfly-icon {
   animation: flap 2s ease-in-out infinite;
 }
@@ -138,9 +126,45 @@
   /* yellow-700 */
 }
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* GPU layer promotion: reduce layout thrash during fast scroll and glassmorphism */
+.scroll-gpu {
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+.card-gpu {
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+/* Badge hover: subtle scale for CachyOS/Chaotic-AUR value (GPU-friendly) */
+.badge-hover {
+  will-change: transform;
+  transition: transform 0.2s ease-out;
+}
+.badge-hover:hover {
+  transform: scale(1.05);
+}
+
+/* Skeleton shimmer: GPU-accelerated (will-change + compositor-friendly animation) */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-shimmer {
+  will-change: background-position;
+  background: linear-gradient(
+    90deg,
+    var(--app-subtle-bg) 0%,
+    var(--app-subtle-bg) 40%,
+    rgba(255, 255, 255, 0.12) 50%,
+    var(--app-subtle-bg) 60%,
+    var(--app-subtle-bg) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
 
 @layer utilities {
   .scrollbar-hide::-webkit-scrollbar {
@@ -188,22 +212,32 @@
   animation: flap 0.6s ease-in-out infinite;
 }
 
-@keyframes flap {
+@keyframes butterfly {
 
   0%,
   100% {
-    transform: scaleX(1);
+    transform: scaleX(1) rotate(0deg);
     filter: brightness(1);
   }
 
+  25% {
+    transform: scaleX(0.7) rotate(-5deg);
+    filter: brightness(1.1);
+  }
+
   50% {
-    transform: scaleX(0.6);
-    filter: brightness(1.2);
+    transform: scaleX(1) rotate(0deg);
+    filter: brightness(1);
+  }
+
+  75% {
+    transform: scaleX(0.7) rotate(5deg);
+    filter: brightness(1.1);
   }
 }
 
-.animate-flap {
-  animation: flap 0.6s ease-in-out infinite;
+.animate-butterfly {
+  animation: butterfly 0.8s ease-in-out infinite;
 }
 
 @layer base {

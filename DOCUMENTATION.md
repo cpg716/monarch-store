@@ -26,9 +26,9 @@ When you search for "firefox", MonARCH aggregates results from all enabled sourc
 *Users can manually override this choice using the "Download Source" dropdown in the package details.*
 
 ### 2. Update Consistency
-We strictly enforce **"Update All"** via `perform_system_update`.
-*   **Why?**: Arch Linux does not support partial upgrades. Allowing a user to update just one app (e.g., Firefox) without updating system libraries (`glibc`) can break the OS.
-*   **Mechanism**: The app calls the system's `checkupdates` tool, which respects the "Always On" system config, ensuring 100% update coverage.
+We strictly enforce **"Update All"** via `perform_system_update` (Helper command `Sysupgrade`).
+*   **Why?**: Arch Linux does not support partial upgrades. Updating one app without system libraries (`glibc`) can break the OS.
+*   **Mechanism**: The GUI invokes the Helper with `Sysupgrade`; the Helper runs a single full upgrade (sync + transaction). We **never** run `pacman -Sy` alone. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md).
 
 ### 3. Hybrid Review System
 We use a composite rating strategy:
@@ -36,26 +36,23 @@ We use a composite rating strategy:
 *   **Step 2:** Fallback to **Supabase** community reviews.
 *   **Display:** Merged 5-star rating.
 
-### 4. Butterfly System Health (v0.3.00 "Butterfly" Overhaul)
+### 4. Butterfly System Health
 MonARCH includes a permission-aware health monitoring ecosystem:
 *   **Butterfly Probes**: Verifies environmental requirements (`git`, `pkexec`, `polkit`) at startup.
-*   **Parallel Rating Fetches**: Parallelized ODRS backend integration for zero-latency home screen populating.
-*   **Permission-Safe Sensors**: Health checks are now non-privileged, preventing false "Corrupted Keyring" warnings.
-*   **Unified Repair Wizard**: A single authorized maintenance flow for Keyring, Security Polices, and Repo sync.
+*   **Parallel Rating Fetches**: ODRS and metadata fetched in parallel for faster home screen load.
+*   **Permission-Safe Sensors**: Health checks are non-privileged, preventing false "Corrupted Keyring" warnings.
+*   **Unified Repair Wizard**: A single authorized maintenance flow for Keyring, Security Policies, and Repo sync.
 
-### 5. Luminosity Visual Engine
-The "Luminosity" update (v0.3.00) prioritizes high-density, AAA storefront aesthetics:
-*   **Header Geometry**: Top-aligned branding with screenshot-aware glassmorphic backdrops.
-*   **Responsive Unity**: Forced horizontal alignment of branding elements on mobile.
-*   **Smooth Interactions**: Seamless scroll-to-reviews and optimized repo switching.
+### 5. Frontend (Luminosity Visual Engine)
+*   **Stack**: React 19, TypeScript, Tailwind CSS 4, Vite 7, Zustand, Framer Motion. See [APP_AUDIT](docs/APP_AUDIT.md) for full UI/UX and feature reference.
+*   **Layout**: Glassmorphic backdrops, responsive grids, scroll-to-reviews, repo selector in package details.
 
 ## 🛠️ Build & Release
 
 To cut a new release:
-1.  Update `version` in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
-2.  Clean build: `npm run tauri build`.
-3.  Tag commit: `git tag -a v0.3.00-alpha.1 -m "v0.3.00-alpha.1 release"`.
-4.  Push: `git push origin main --tags`.
+1.  Update `version` in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` (and monarch-gui/monarch-helper as needed).
+2.  Clean build: `npm run tauri build` (from repo root). Rust: `cd src-tauri && cargo check` for backend check.
+3.  Tag and push: `git tag -a v0.3.5-alpha -m "Release message"` then `git push origin main --tags`.
 
 ## ☁️ Backend Configuration (Self-Hosting Community Reviews)
 

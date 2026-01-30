@@ -7,6 +7,7 @@ import PackageCard, { Package, ChaoticPackage } from '../components/PackageCard'
 import PackageCardSkeleton from '../components/PackageCardSkeleton';
 import EmptyState from '../components/EmptyState';
 import { CATEGORIES } from '../components/CategoryGrid';
+import { useErrorService } from '../context/ErrorContext';
 
 // Multi-Select Dropdown Component
 
@@ -118,6 +119,7 @@ interface PaginatedResponse {
 }
 
 const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectPackage }) => {
+    const errorService = useErrorService();
     const [packages, setPackages] = useState<Package[]>([]);
     const [totalPackages, setTotalPackages] = useState(0); // Track total available from backend
     const [loading, setLoading] = useState(true);
@@ -210,7 +212,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
             setHasMore(res.packages.length === LIMIT);
             setError(null);
         } catch (e: any) {
-            console.error("Failed to load category apps", e);
+            errorService.reportError(e as Error | string);
             setError(e.toString() || "Unknown error occurred");
         } finally {
             setLoading(false);
@@ -350,6 +352,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
             </div>
 
             <div className="flex-1 overflow-y-auto p-8">
+                <div className="max-w-7xl mx-auto w-full">
                 {initialLoad && packages.length === 0 ? (
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
                         {[...Array(10)].map((_, i) => (
@@ -431,6 +434,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                         )}
                     </>
                 )}
+                </div>
             </div>
         </div>
     );

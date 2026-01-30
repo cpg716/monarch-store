@@ -1,0 +1,27 @@
+# MonARCH Store - Cursor Rules
+
+## Project Architecture
+This is a Tauri v2 application with a split architecture:
+1. **Frontend:** React + TypeScript + Tailwind (Glassmorphism UI). State: Zustand in `src/store/`. Key dirs: `src/components/`, `src/pages/`, `src/hooks/`.
+2. **Backend (GUI):** `src-tauri/monarch-gui/`. Runs as USER. Handles Read-Only ALPM, Configuration, and IPC. Key: `commands/`, `helper_client.rs`, `alpm_read.rs`.
+3. **Backend (Helper):** `src-tauri/monarch-helper/`. Runs as ROOT (via Polkit). Handles Write ALPM (Install/Update/Remove). Key: `transactions.rs`, `main.rs`, `self_healer.rs`, `alpm_errors.rs`, `logger.rs`.
+
+## Critical Rules
+- **NEVER** suggest running `makepkg` or AUR builds in `monarch-helper` (Root). Builds MUST happen in `monarch-gui` (User).
+- **IPC Protocol:** The GUI invokes the Helper with the command JSON as **argv** (e.g. `pkexec /path/to/monarch-helper '{"command":"Sysupgrade"}'`). The Helper replies via **stdout** JSON lines (progress/events). Stdin is only used for sudo password when applicable.
+- **ALPM Safety:** In `monarch-helper`, check for `db.lck` before sysupgrade (see `main.rs` Sysupgrade branch). Use `alpm::TransFlag` (e.g. `ALL_DEPS`, `DOWNLOAD_ONLY`). Use the question callback to auto-answer (NOCONFIRM behavior).
+- **Package Management:** Never run `pacman -Sy` alone; use a single transaction (e.g. `-Syu`). AUR: build in GUI, copy built `.pkg.tar.zst` to `/tmp/monarch-install/` before calling Helper `AlpmInstallFiles`.
+
+## Coding Style
+- **Rust:** Prefer `anyhow` or `thiserror` for error handling. Use `serde` for all IPC structs. In helper, use `logger::trace`/`info` for diagnostics (log file: `/var/log/monarch-helper.log` or `/tmp/monarch-helper.log`).
+- **React:** Functional components, `lucide-react` icons, `clsx` + `tailwind-merge` for class names. Tauri: `invoke()` from `@tauri-apps/api/core`.
+- **Tauri:** Use `tauri::command` for frontend-to-gui communication.
+
+## Context Awareness
+- **Updates:** `monarch-gui/src/commands/update.rs` AND `monarch-helper/src/transactions.rs` (and Sysupgrade/lock check in `main.rs`).
+- **Search:** `monarch-gui/src/commands/search.rs` and `monarch-gui/src/alpm_read.rs`.
+- **Install/Uninstall:** `monarch-gui/src/commands/package.rs`, `helper_client.rs`, `monarch-helper/src/transactions.rs`.
+- **Errors:** `monarch-helper/src/alpm_errors.rs` (classify) + `src/utils/friendlyError.ts` (frontend). Self-heal: `monarch-helper/src/self_healer.rs`.
+
+## Build
+- Full app: `npm run tauri dev` or `npm run tauri build`. Rust only: `cd src-tauri && cargo check`. See `AGENTS.md` for more.

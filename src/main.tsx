@@ -11,13 +11,16 @@ import ErrorBoundary from "./components/ErrorBoundary";
 
 import { ToastProvider } from './context/ToastContext';
 import { RepoStatusProvider } from './context/RepoStatusContext';
+import { ErrorProvider } from './context/ErrorContext';
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
       <RepoStatusProvider>
         <ToastProvider>
-          <App />
+          <ErrorProvider>
+            <App />
+          </ErrorProvider>
         </ToastProvider>
       </RepoStatusProvider>
     </ErrorBoundary>

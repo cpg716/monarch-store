@@ -1,6 +1,25 @@
+# Use a dedicated target dir so tauri dev never competes for lock with rust-analyzer
+# (rust-analyzer sets CARGO_TARGET_DIR via .vscode settings and overrides this)
+[build]
+target-dir = "../target-tauri-dev"
+
 [target.x86_64-unknown-linux-gnu]
-# Avoid the 'ring' symbol errors with lld on Linux by using the default GCC linker
-linker = "gcc"
+# Use mold (fastest linker) for up to 7x faster linking during development
+# Requires: sudo pacman -S mold clang
+# Fallback: If you encounter symbol errors, switch to lld or gcc
+linker = "clang"
+rustflags = [
+  "-C", "link-arg=-fuse-ld=/usr/bin/mold",
+  "-C", "link-arg=-Wl,-z,relro,-z,now",   # Full RELRO
+  "-C", "link-arg=-Wl,-z,noexecstack",    # No executable stack
+]
+
+# Alternative: Use lld (more stable, still fast)
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# Fallback: Use gcc (slowest, but most compatible)
+# linker = "gcc"
 
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import PackageCard, { Package, ChaoticPackage } from './PackageCard';
+import { useErrorService } from '../context/ErrorContext';
 
 interface TrendingSectionProps {
     title: string;
@@ -12,6 +13,7 @@ interface TrendingSectionProps {
 }
 
 export default function TrendingSection({ title, onSelectPackage, filterIds, limit, onSeeAll, variant = 'grid' }: TrendingSectionProps) {
+    const errorService = useErrorService();
     const [packages, setPackages] = useState<Package[]>([]);
     const [loading, setLoading] = useState(true);
     const [chaoticInfoMap, setChaoticInfoMap] = useState<Map<string, ChaoticPackage>>(new Map());
@@ -29,7 +31,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                     try {
                         result = await invoke<Package[]>('get_packages_by_names', { names: filterIds });
                     } catch (e) {
-                        console.error("Failed to fetch essentials batch", e);
+                        errorService.reportError(e as Error | string);
                     }
                 } else {
                     result = await invoke<Package[]>('get_trending');
@@ -72,7 +74,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                     return next;
                 });
             } catch (e) {
-                console.error("Trending batch fetch failed", e);
+                errorService.reportError(e as Error | string);
             }
         };
 
@@ -109,7 +111,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
             </div>
 
             {isScroll ? (
-                <div className="relative group/scroll">
+                <div className="relative group/scroll max-w-7xl mx-auto">
                     <div
                         className="flex gap-6 overflow-x-auto pb-6 scrollbar-hide snap-x relative z-0"
                         style={{
@@ -142,7 +144,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                     </div>
                 </div>
             ) : (
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6">
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6 max-w-7xl mx-auto w-full">
                     {displayedPackages.map((pkg) => (
                         <PackageCard
                             key={`${pkg.name}-${pkg.source}`}

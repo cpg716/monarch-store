@@ -1,0 +1,17 @@
+#!/bin/bash
+# /usr/lib/monarch-store/monarch-wrapper
+# This file allows MonARCH to have a distinct Polkit Identity.
+
+# Security: Only allow specific binaries
+case "$1" in
+    "/usr/bin/pacman")
+        exec "$@"
+        ;;
+    "/usr/bin/makepkg") # Rare case, usually run as user
+        exec "$@"
+        ;;
+    *)
+        echo "Error: Unauthorized command $1"
+        exit 1
+        ;;
+esac

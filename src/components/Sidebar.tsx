@@ -90,6 +90,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                                     ? "bg-blue-600/10 text-blue-500 shadow-sm"
                                     : "text-app-muted hover:text-app-fg hover:bg-app-subtle/50"
                             )}
+                            aria-label={tab.label}
                         >
                             <tab.icon size={22} strokeWidth={activeTab === tab.id ? 2.5 : 2} className={clsx(
                                 "transition-transform group-hover/btn:scale-110",
@@ -148,6 +149,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                 <button
                     onClick={() => setIsExpanded(!isExpanded)}
                     className="w-full flex items-center justify-center p-3 rounded-2xl text-app-muted hover:text-app-fg hover:bg-app-subtle/50 border border-transparent hover:border-app-border transition-all group"
+                    aria-label={isExpanded ? "Collapse sidebar" : "Expand sidebar"}
                 >
                     {isExpanded ? (
                         <div className="flex items-center gap-2">

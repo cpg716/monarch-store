@@ -1,3 +1,9 @@
+# Release Notes
+
+**Current version:** v0.3.5-alpha
+
+---
+
 # Release Notes v0.3.00-Alpha1 (The "Universal" Update)
 
 > **"The first Distro-Aware App Manager for Arch, Manjaro, and CachyOS."**
@@ -17,7 +23,7 @@ MonARCH is now the **Universal Arch Linux App Manager**. We have transitioned fr
 
 ## ⚡ Performance & Resilience
 *   **70% Faster Startup**: Parallel ODRS rating fetches mean the homepage loads instantly.
-*   **Smart Sync**: The installer now checks database freshness (<1hr) to skip redundant `pacman -Sy` calls.
+*   **Smart Sync**: The installer uses the Helper for all ALPM write operations. We never run `pacman -Sy` alone; repo installs use `pacman -Syu --needed` in one transaction.
 *   **Offline Mode**: A new global "Offline Guard" prevents crashes when the internet cuts out, serving cached data gracefully.
 
 ---

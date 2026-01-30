@@ -13,9 +13,7 @@ export function resolveIconUrl(icon: string | null | undefined): string | undefi
     // Handle file:// protocol
     if (icon.startsWith('file://')) {
         const path = icon.replace('file://', '');
-        const assetUrl = convertFileSrc(path);
-        console.log(`[IconHelper] Converting: ${icon} -> ${assetUrl}`);
-        return assetUrl;
+        return convertFileSrc(path);
     }
 
     // Handle local absolute paths (Linux/macOS) that might miss the protocol

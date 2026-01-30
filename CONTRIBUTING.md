@@ -35,11 +35,11 @@ This section guides you through submitting an enhancement suggestion, including 
 
 ### ⚠️ REPO SAFETY RULES (CRITICAL)
 
-**Any modification to package management logic (pacman/makepkg wrappers, root command execution) requires MANDATORY Security Review.**
+**Any modification to package management logic (pacman/makepkg wrappers, root command execution) requires MANDATORY Security Review.** See [AGENTS.md](AGENTS.md) for full rules.
 
-- **No Arbitrary Command Execution:** Never construct shell commands from unsanitized user input.
-- **Root Privileges:** Mininize `sudo` or `pkexec` usage.
-- **Partial Upgrades:** Ensure `pacman -Sy` is NEVER used without safeguards. Only `pacman -S` or full system upgrades are allowed.
+- **No Arbitrary Command Execution:** Never construct shell commands from unsanitized user input. Validate package names with `utils::validate_package_name()` before shell ops.
+- **Root Privileges:** Privileged operations go through **monarch-helper** via `pkexec`; command passed via temp file (path only in argv).
+- **Partial Upgrades:** **NEVER** run `pacman -Sy` alone. Repo installs use `pacman -Syu --needed` in one transaction; system updates use one full upgrade. AUR: unprivileged makepkg; only `pacman -U` is privileged (via Helper).
 
 Violating these rules will result in immediate PR closure.
 
@@ -68,6 +68,11 @@ Violating these rules will result in immediate PR closure.
     *   Rust (latest stable)
     *   Node.js (LTS) & NPM
     *   System dependencies: `webkit2gtk`, `base-devel`, `curl`, `wget`, `file`, `openssl`, `appmenu-gtk-module`, `gtk3`, `libappindicator-gtk3`, `librsvg`, `libvips`
+    *   **Faster linking** (recommended): `mold` and `clang` for up to 7x faster development builds:
+      ```bash
+      sudo pacman -S mold clang
+      ```
+      The project is configured to use `mold` by default. If you encounter linker errors, see `src-tauri/.cargo/config.toml` for fallback options (`lld` or `gcc`).
 
 2.  **Installation**:
 
@@ -91,4 +96,8 @@ Violating these rules will result in immediate PR closure.
 
 ## Architecture Overview
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for a high-level overview of how the app is structured.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Core philosophy, Soft Disable, Butterfly engine, installer pipeline.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System architecture (Tauri 2, monarch-gui + monarch-helper).
+- [docs/APP_AUDIT.md](docs/APP_AUDIT.md) — Full app audit (UI/UX, frontend, backend, features).
+- [docs/INSTALL_UPDATE_AUDIT.md](docs/INSTALL_UPDATE_AUDIT.md) — Install/update flow, Polkit, passwordless setup.
+- [AGENTS.md](AGENTS.md) — Build commands, code style, package management rules.

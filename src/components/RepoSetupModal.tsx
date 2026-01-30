@@ -2,6 +2,8 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 import { AlertTriangle, Check, Cpu, X, Terminal } from "lucide-react";
+import { useEscapeKey } from "../hooks/useEscapeKey";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 interface RepoSetupModalProps {
     repoName: string; // Friendly name like "CachyOS"
@@ -43,16 +45,23 @@ export default function RepoSetupModal({
         }
     };
 
+    useEscapeKey(onClose, isOpen);
+    const focusTrapRef = useFocusTrap(isOpen);
+
     if (!isOpen) return null;
 
     return (
         <AnimatePresence>
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
                 <motion.div
+                    ref={focusTrapRef}
                     initial={{ opacity: 0, y: 20, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.95 }}
                     className="w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-[#1a1b26] shadow-2xl"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="repo-setup-title"
                 >
                     {/* Header */}
                     <div className="flex items-center justify-between border-b border-white/5 px-6 py-4">
@@ -61,13 +70,14 @@ export default function RepoSetupModal({
                                 <Cpu size={20} />
                             </div>
                             <div>
-                                <h3 className="text-lg font-semibold text-white">Setup {repoName}</h3>
+                                <h3 id="repo-setup-title" className="text-lg font-semibold text-white">Setup {repoName}</h3>
                                 <p className="text-xs text-white/50">System Configuration Required</p>
                             </div>
                         </div>
                         <button
                             onClick={onClose}
                             className="rounded-lg p-2 text-white/40 hover:bg-white/5 hover:text-white"
+                            aria-label="Close"
                         >
                             <X size={20} />
                         </button>

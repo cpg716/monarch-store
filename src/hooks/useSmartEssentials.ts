@@ -30,9 +30,13 @@ export function useSmartEssentials() {
                     return true;
                 });
 
-                // Apply simple rotation if needed, or take top N?
-                // For now, take top 40 effectively
-                setSmartEssentials(filtered);
+                // 4. Ensure at least 4 apps are shown even if they are installed
+                // This prevents the homepage from looking "empty" for power users.
+                if (filtered.length < 4) {
+                    setSmartEssentials(essentialsPool.slice(0, 8));
+                } else {
+                    setSmartEssentials(filtered);
+                }
             } catch (err) {
                 console.error("Failed to curate essentials:", err);
                 // Fallback to static list on error (Logic kept in backend usually, but defensive here)
