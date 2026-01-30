@@ -2,13 +2,12 @@
 
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
-| < 1.0   | :x:                |
+| Version   | Supported          |
+| --------- | ------------------ |
+| 0.3.5.x   | :white_check_mark: |
+| 0.3.x     | :white_check_mark: |
+| 1.0.x     | :white_check_mark: (when released) |
+| &lt; 0.3   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -21,7 +20,7 @@ If you believe you have found a security vulnerability in MonARCH Store, please 
 ### Disclosure Process
 
 1.  **Email:** Please email `security@monarch.store` with a detailed summary.
-2.  **Encryption:** If possible, encrypt your email using our PGP key (Key ID: `0xDEADBEEF`).
+2.  **Encryption:** If possible, encrypt your email using our PGP key (Key ID: contact maintainers for current key).
 3.  **Response:** You will receive a response within 48 hours acknowledging receipt.
 4.  **Timeline:** We ask for a 90-day embargo period before public disclosure to allow us to release a patch.
 

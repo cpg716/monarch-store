@@ -1,6 +1,16 @@
 # Release Notes
 
-**Current version:** v0.3.5-alpha
+**Current version:** v0.3.5-alpha.1
+
+---
+
+# Release Notes v0.3.5-alpha.1 (Ready for Push)
+
+- **AppStream:** `monarch-store.metainfo.xml` (com.monarch.store, developer cpg716, OARS 1.1).
+- **Accessibility:** Escape key and focus trap on all modals (Onboarding, Confirmation, InstallMonitor, RepoSetup, Error, Auth, PKGBUILD, lightbox).
+- **Atomic sync:** No naked `pacman -Sy`; all paths use `-Syu` / `-Syu --needed` (see [ATOMIC_SYNC_AUDIT_v0.3.5](docs/ATOMIC_SYNC_AUDIT_v0.3.5.md)).
+- **Author:** cpg716 as developer/creator (with AI coding tools) in metainfo, package.json, README, PKGBUILD.
+- **Distribution:** PKGBUILD pkgdesc &lt; 80 chars; release tarball + checksums via `scripts/release-finalize-pkgbuild.sh` after tag push (see [RELEASE_PUSH_STEPS](docs/RELEASE_PUSH_STEPS.md)).
 
 ---
 

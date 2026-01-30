@@ -1,4 +1,6 @@
-# Arch Linux Native Standards & KISS Audit — MonARCH Store v0.3.5-alpha
+# Arch Linux Native Standards & KISS Audit — MonARCH Store v0.3.5-alpha.1
+
+**Last updated:** 2025-01-29
 
 **Role:** Senior Arch Linux Developer and Repository Maintainer  
 **Objective:** Ensure native integration, simplicity, and strict adherence to upstream/Arch standards.

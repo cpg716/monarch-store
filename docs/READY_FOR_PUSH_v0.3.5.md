@@ -67,4 +67,6 @@
 
 ## Ready for Push
 
-**Verdict: READY.** All deficit-list items are resolved. AppStream metadata is in place, keyboard sovereignty (Escape + focus trap) is implemented across modals, atomic sync is audited and documented, and PKGBUILD/.SRCINFO are release-ready. For a versioned release tag, update `source` and `sha256sums` in PKGBUILD to the release tarball and regenerate `.SRCINFO`.
+**Verdict: READY.** All deficit-list items are resolved. AppStream metadata is in place, keyboard sovereignty (Escape + focus trap) is implemented across modals, atomic sync is audited and documented, and PKGBUILD/.SRCINFO are release-ready.
+
+**After pushing the tag:** Run `scripts/release-finalize-pkgbuild.sh` to switch PKGBUILD to the release tarball, run `updpkgsums`, and regenerate `.SRCINFO`. See [RELEASE_PUSH_STEPS](RELEASE_PUSH_STEPS.md).

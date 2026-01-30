@@ -1,5 +1,7 @@
 # Install & Update Audit: Why It Fails and Passwordless Polkit
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 This document audits the install and update flows, root causes of failures, and how to make installs/updates work **without** a password prompt when Polkit is configured.
 
 ---

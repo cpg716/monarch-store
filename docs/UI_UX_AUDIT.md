@@ -1,4 +1,6 @@
-# High-Density UI/UX & Design Systems Audit — MonARCH Store v0.3.5-alpha
+# High-Density UI/UX & Design Systems Audit — MonARCH Store v0.3.5-alpha.1
+
+**Last updated:** 2025-01-29
 
 **Role:** Lead Product Designer / UX Researcher (Desktop Linux: KDE/GNOME)  
 **Date:** Production Release Audit  
@@ -494,4 +496,4 @@ const modalRef = useFocusTrap(isOpen);
 
 ---
 
-**Deliverable:** This audit provides actionable fixes with code snippets. Priority P0 items should be addressed before v0.3.5-alpha release; P1/P2 can follow in a patch.
+**Deliverable:** This audit provides actionable fixes with code snippets. Priority P0 items should be addressed before v0.3.5-alpha.1 release; P1/P2 can follow in a patch.

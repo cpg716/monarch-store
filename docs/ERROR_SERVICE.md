@@ -1,5 +1,7 @@
 # ErrorService - Centralized Error Handling
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 ## Overview
 
 The `ErrorService` provides a unified API for handling and displaying errors throughout the MonARCH Store application. It replaces scattered error handling patterns with a single, consistent system.

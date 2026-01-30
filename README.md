@@ -3,6 +3,8 @@
 
 **Author:** [cpg716](https://github.com/cpg716) — developer and creator of MonARCH Store, with the help of AI coding tools.
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 A premium, distro-agnostic software center built with Tauri and React. MonARCH automatically detects your distribution and adapts its capabilities to ensure safety and performance.
 
 ![MonARCH Store Dashboard](screenshots/home.png)
@@ -71,10 +73,10 @@ You can personalize your store experience by toggling specific repositories (Cac
 ## 🚀 Installation
 
 ### Option 1: Pre-built Binary (Recommended)
-Download the latest `monarch-store-0.3.5-alpha-x86_64.pkg.tar.zst` from the [Releases Page](https://github.com/cpg716/monarch-store/releases).
+Download the latest `monarch-store-0.3.5_alpha.1-x86_64.pkg.tar.zst` (or current version) from the [Releases Page](https://github.com/cpg716/monarch-store/releases).
 
 ```bash
-sudo pacman -U monarch-store-0.3.5-alpha-x86_64.pkg.tar.zst
+sudo pacman -U monarch-store-0.3.5_alpha.1-1-x86_64.pkg.tar.zst
 ```
 
 ### Option 2: Build from Source

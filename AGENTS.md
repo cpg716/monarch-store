@@ -1,5 +1,7 @@
 # AGENTS.md - MonARCH Store
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 ## Build Commands
 - `npm run dev` - Start Vite dev server (frontend only)
 - `npm run build` - TypeScript check + Vite build

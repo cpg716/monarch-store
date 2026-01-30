@@ -1,4 +1,6 @@
-# Atomic Sync Audit — MonARCH Store v0.3.5
+# Atomic Sync Audit — MonARCH Store v0.3.5-alpha.1
+
+**Last updated:** 2025-01-29
 
 **Objective:** Ensure no code path can trigger a naked `pacman -Sy` (sync without upgrade), which causes partial upgrades and system breakage.
 

@@ -1,4 +1,4 @@
-# MonARCH Store v0.3.5-alpha
+# MonARCH Store v0.3.5-alpha.1
 
 **The first Distro-Aware App Manager for Arch, Manjaro, and CachyOS.**
 
@@ -37,10 +37,10 @@ This alpha release focuses on **1% polish**, **system integrity**, and **communi
 ## Installation
 
 ### Pre-built package (recommended)
-Download `monarch-store-0.3.5-alpha-x86_64.pkg.tar.zst` from the assets below, then:
+Download `monarch-store-0.3.5_alpha.1-1-x86_64.pkg.tar.zst` (or current version) from the assets below, then:
 
 ```bash
-sudo pacman -U monarch-store-0.3.5-alpha-x86_64.pkg.tar.zst
+sudo pacman -U monarch-store-0.3.5_alpha.1-1-x86_64.pkg.tar.zst
 ```
 
 ### From AUR

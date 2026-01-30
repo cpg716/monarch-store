@@ -1,6 +1,15 @@
 # 📈 MonARCH Progress Report
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 ## 🏆 Recent Achievements
+
+### v0.3.5-alpha.1 (Release readiness)
+- **AppStream:** Production `monarch-store.metainfo.xml` with `com.monarch.store`, developer cpg716, OARS content rating.
+- **Keyboard sovereignty:** Escape key and focus trap on all modals (including Auth and PKGBUILD).
+- **Atomic sync:** Full audit; no naked `pacman -Sy` in repair, repo_setup, or monarch-helper.
+- **Author credits:** cpg716 listed as developer/creator (with AI coding tools) in metainfo, package.json, README, PKGBUILD.
+- **Release script:** `scripts/release-finalize-pkgbuild.sh` and [RELEASE_PUSH_STEPS](docs/RELEASE_PUSH_STEPS.md) for tarball + checksums after tag push.
 
 ### Install & Update Reliability
 - **Temp-file command**: Helper receives command via temp file (path in argv) to avoid "Invalid JSON" and argv truncation.

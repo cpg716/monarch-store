@@ -1,5 +1,7 @@
 # 📘 MonARCH Store - Technical Documentation
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 ## Architecture Overview: Infrastructure 2.0
 
 MonARCH Store uses a **"Soft Disable"** architecture to balance User Experience with System Safety.
@@ -50,9 +52,9 @@ MonARCH includes a permission-aware health monitoring ecosystem:
 ## 🛠️ Build & Release
 
 To cut a new release:
-1.  Update `version` in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` (and monarch-gui/monarch-helper as needed).
+1.  Update `version` in `package.json`, `src-tauri/monarch-gui/tauri.conf.json`, and both `src-tauri/monarch-gui/Cargo.toml` and `src-tauri/monarch-helper/Cargo.toml` (e.g. `0.3.5-alpha.1`).
 2.  Clean build: `npm run tauri build` (from repo root). Rust: `cd src-tauri && cargo check` for backend check.
-3.  Tag and push: `git tag -a v0.3.5-alpha -m "Release message"` then `git push origin main --tags`.
+3.  Tag and push: `git tag -a v0.3.5_alpha.1 -m "Release message"` then `git push origin main && git push origin v0.3.5_alpha.1`.
 
 ## ☁️ Backend Configuration (Self-Hosting Community Reviews)
 

@@ -1,5 +1,7 @@
 # Troubleshooting Guide 🛟
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 Common issues users encounter when using MonARCH Store.
 
 **Install/Update not working or password prompts:** See [Install & Update Audit](INSTALL_UPDATE_AUDIT.md) for the full flow, Polkit setup, and passwordless configuration (Polkit rules, helper path, policy).

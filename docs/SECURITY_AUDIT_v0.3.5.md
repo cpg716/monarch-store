@@ -1,4 +1,6 @@
-# Full-Spectrum Security & Privilege Audit — MonARCH Store v0.3.5-alpha
+# Full-Spectrum Security & Privilege Audit — MonARCH Store v0.3.5-alpha.1
+
+**Last updated:** 2025-01-29
 
 **Role:** Senior Security Researcher / DevSecOps  
 **Scope:** Split-privilege architecture, Polkit, JSON-over-IPC, ALPM safety, supply chain, UI safety.

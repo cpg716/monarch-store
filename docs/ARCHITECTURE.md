@@ -1,5 +1,7 @@
 # System Architecture 🏗️
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 MonARCH Store is built on **Tauri 2**, with a Rust workspace: **monarch-gui** (user process, read-only ALPM + orchestration) and **monarch-helper** (root via Polkit, ALPM write operations). The frontend is React 19 + TypeScript + Tailwind CSS 4 + Vite 7 + Zustand.
 
 ## High-Level Overview

@@ -1,5 +1,7 @@
 # 🏗️ MonARCH Store Architecture
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 ## Core Philosophy: "Safe by Default, Powerful by Choice"
 
 MonARCH Store is designed to solve the "Split-Brain" problem common in Arch Linux GUI store wrappers, where the GUI database falls out of sync with the system database, causing partial upgrade failures.

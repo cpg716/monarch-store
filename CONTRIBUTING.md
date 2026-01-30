@@ -1,5 +1,7 @@
 # Contributing to MonARCH Store 🦋
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 First off, thanks for taking the time to contribute! 🎉
 
 The following is a set of guidelines for contributing to MonARCH Store. These are predominantly guidelines, not rules. Use your best judgment, and feel free to propose changes to this document in a pull request.

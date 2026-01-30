@@ -1,7 +1,7 @@
-# MonARCH Store v0.3.5-alpha — Release Gate Audit
+# MonARCH Store v0.3.5-alpha.1 — Release Gate Audit
 
 **Audit date:** 2025-01-29  
-**Target version:** v0.3.5-alpha  
+**Target version:** v0.3.5-alpha.1  
 **Scope:** 1% Polish & Integrity (modal sovereignty, perceived speed, atomic transactions, Polkit path, AUR compliance, metadata scrub, security gate).
 
 ---
@@ -32,7 +32,7 @@
 
 ## AUR / Repository Compliance
 
-- **PKGBUILD:** `pkgver=0.3.5_alpha`, `pkgrel=1`. For first alpha release, AUR often uses `pkgver=0.3.5_alpha.1`; current form is valid; bump to `0.3.5_alpha.1` optional for AUR submission.
+- **PKGBUILD:** `pkgver=0.3.5_alpha.1`, `pkgrel=1`. AUR-compliant first alpha release.
 - **namcap:** Run `namcap PKGBUILD` and `namcap monarch-store-*.pkg.tar.zst` before upload; prune any reported orphan dependencies (e.g. `libappindicator-gtk3` only if strictly required for tray).
 - **.SRCINFO:** Updated from current PKGBUILD; commit alongside PKGBUILD for AUR.
 
@@ -42,7 +42,7 @@
 
 **Verdict: GO**
 
-All P0 release-critical checks pass. Modal sovereignty, atomic pacman usage, db.lck UX, Polkit path, package-name validation, and release hardening are in place. Polish (badge hover, shimmer, metadata scrub) is complete. No remaining blockers for v0.3.5-alpha.
+All P0 release-critical checks pass. Modal sovereignty, atomic pacman usage, db.lck UX, Polkit path, package-name validation, and release hardening are in place. Polish (badge hover, shimmer, metadata scrub) is complete. No remaining blockers for v0.3.5-alpha.1.
 
 ---
 

@@ -1,4 +1,6 @@
-# Black Box Security & Trust Audit — MonARCH Store v0.3.5-alpha
+# Black Box Security & Trust Audit — MonARCH Store v0.3.5-alpha.1
+
+**Last updated:** 2025-01-29
 
 **Role:** Red Team Security Auditor + Senior Arch Linux Trusted User (TU)  
 **Objective:** Identify deal-breaker issues that would cause loss of trust, malware flags, or AUR/official repo rejection.

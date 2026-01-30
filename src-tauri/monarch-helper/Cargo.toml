@@ -1,6 +1,6 @@
 [package]
 name = "monarch-helper"
-version = "0.3.5-alpha"
+version = "0.3.5-alpha.1"
 edition = "2021"
 authors = ["MonARCH Store Contributors"]
 description = "Privileged ALPM engine for MonARCH Store"

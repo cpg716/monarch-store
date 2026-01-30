@@ -1,5 +1,7 @@
 # MonARCH Store — Full App Audit
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 Exhaustive review of UI/UX, frontend, backend, and every feature area. Reference for understanding the app to the smallest details.
 
 ---

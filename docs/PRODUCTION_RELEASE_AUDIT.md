@@ -1,4 +1,6 @@
-# Final Production Release & Submission Audit — MonARCH Store v0.3.5-alpha
+# Final Production Release & Submission Audit — MonARCH Store v0.3.5-alpha.1
+
+**Last updated:** 2025-01-29
 
 **Role:** Senior Systems Architect / Arch Linux Package Maintainer  
 **Date:** Audit against current codebase  
@@ -10,12 +12,12 @@
 
 | Check | Status | Notes |
 |-------|--------|--------|
-| **Standardize version to 0.3.5-alpha** | **GO** | `package.json`, `tauri.conf.json`, both `Cargo.toml` (monarch-gui, monarch-helper) use `0.3.5-alpha`. |
-| **AUR-compliant PKGBUILD** | **GO** | `pkgver=0.3.5_alpha` (Arch: no hyphen in pkgver). |
-| **.SRCINFO** | **GO** | Regenerated; `pkgver = 0.3.5_alpha`, `pkgrel = 1`, all deps/source listed. |
-| **Checksum (updpkgsums)** | **CONDITIONAL** | Current `source` is `git+https://...` → `sha256sums=('SKIP')` is correct. To use real SHA256: switch to tagged tarball, e.g. `source=("https://github.com/cpg716/monarch-store/archive/refs/tags/v0.3.5-alpha.tar.gz")`, then run `updpkgsums` in the same directory as PKGBUILD. |
+| **Standardize version to 0.3.5-alpha.1** | **GO** | `package.json`, `tauri.conf.json`, both `Cargo.toml` (monarch-gui, monarch-helper) use `0.3.5-alpha.1`. |
+| **AUR-compliant PKGBUILD** | **GO** | `pkgver=0.3.5_alpha.1` (Arch: no hyphen in pkgver). |
+| **.SRCINFO** | **GO** | Regenerated; `pkgver = 0.3.5_alpha.1`, `pkgrel = 1`, all deps/source listed. |
+| **Checksum (updpkgsums)** | **CONDITIONAL** | Current `source` is `git+https://...` → `sha256sums=('SKIP')` is correct. To use real SHA256: switch to tagged tarball, e.g. `source=("https://github.com/cpg716/monarch-store/archive/refs/tags/v0.3.5_alpha.1.tar.gz")`, then run `updpkgsums` in the same directory as PKGBUILD. |
 
-**Deliverable:** `.SRCINFO` updated to match current PKGBUILD (v0.3.5_alpha). PKGBUILD left with git source + SKIP; optional tarball variant documented in audit.
+**Deliverable:** `.SRCINFO` updated to match current PKGBUILD (v0.3.5_alpha.1). PKGBUILD left with git source + SKIP; optional tarball variant documented in audit.
 
 ---
 
@@ -47,9 +49,9 @@
 
 | Check | Status | Notes |
 |-------|--------|--------|
-| **namcap on .pkg.tar.zst** | **MANUAL** | Must build package (`makepkg -sf`) then run `namcap monarch-store-0.3.5_alpha-1-x86_64.pkg.tar.zst`. Not run in this audit. |
-| **Chaotic-AUR / AUR strategy** | **DOCUMENTED** | AUR package is the primary source; Chaotic-AUR builders consume AUR or GitHub releases. Ensure GitHub tag `v0.3.5-alpha` exists and release artifact name matches README (e.g. `monarch-store-0.3.5-alpha-x86_64.pkg.tar.zst`). |
-| **README & RELEASE_NOTES** | **GO** | README: install path and version 0.3.5-alpha; RELEASE_NOTES: current version v0.3.5-alpha at top. |
+| **namcap on .pkg.tar.zst** | **MANUAL** | Must build package (`makepkg -sf`) then run `namcap monarch-store-0.3.5_alpha.1-1-x86_64.pkg.tar.zst`. Not run in this audit. |
+| **Chaotic-AUR / AUR strategy** | **DOCUMENTED** | AUR package is the primary source; Chaotic-AUR builders consume AUR or GitHub releases. Ensure GitHub tag `v0.3.5_alpha.1` exists and release artifact name matches README (e.g. `monarch-store-0.3.5_alpha.1-1-x86_64.pkg.tar.zst`). |
+| **README & RELEASE_NOTES** | **GO** | README: install path and version 0.3.5_alpha.1; RELEASE_NOTES: current version v0.3.5-alpha.1 at top. |
 
 **Deliverable:** Audit doc only; namcap and tagging to be done at release time.
 
@@ -57,13 +59,13 @@
 
 ## 5. Finalized PKGBUILD and .SRCINFO
 
-- **PKGBUILD:** Already compliant; `pkgver=0.3.5_alpha`, installs helper to `/usr/lib/monarch-store/monarch-helper`, policy and rules to standard locations. No edits applied.
-- **.SRCINFO:** Regenerated for `pkgver = 0.3.5_alpha`, `pkgrel = 1`; `sha256sums = SKIP` for git source.
+- **PKGBUILD:** Already compliant; `pkgver=0.3.5_alpha.1`, installs helper to `/usr/lib/monarch-store/monarch-helper`, policy and rules to standard locations. No edits applied.
+- **.SRCINFO:** Regenerated for `pkgver = 0.3.5_alpha.1`, `pkgrel = 1`; `sha256sums = SKIP` for git source.
 
 **Optional (for non-git AUR release):** To use SHA256 checksums, in PKGBUILD set for example:
 
 ```bash
-source=("https://github.com/cpg716/monarch-store/archive/refs/tags/v0.3.5-alpha.tar.gz")
+source=("https://github.com/cpg716/monarch-store/archive/refs/tags/v0.3.5_alpha.1.tar.gz")
 ```
 
 Then run `updpkgsums` and `makepkg --printsrcinfo > .SRCINFO`.

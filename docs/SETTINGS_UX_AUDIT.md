@@ -1,5 +1,7 @@
 # Settings & Config UX Audit
 
+**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+
 **Role:** Principal UX (Distro-Aware system utilities)  
 **Scope:** SettingsPage.tsx, repository management, sync and repair flows.
 
