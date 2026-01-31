@@ -37,7 +37,14 @@ Use this checklist before pushing to GitHub (main and/or release tag).
 
 ## 3. Commands to push
 
-From repo root:
+**If commit and tag are already done** (e.g. by an agent), you only need to push:
+
+```bash
+git push origin main
+git push origin v0.3.5_alpha
+```
+
+**Otherwise**, from repo root:
 
 ```bash
 # 1. Stage all changes (respects .gitignore)

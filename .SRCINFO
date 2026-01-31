@@ -1,6 +1,6 @@
 pkgbase = monarch-store
 	pkgdesc = Distro-aware software store for Arch, Manjaro, CachyOS (Tauri)
-	pkgver = 0.3.5_alpha.1
+	pkgver = 0.3.5_alpha
 	pkgrel = 1
 	url = https://github.com/cpg716/monarch-store
 	arch = x86_64
