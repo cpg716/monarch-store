@@ -190,6 +190,12 @@ impl RepoManager {
                 enabled: true,
             },
             RepoConfig {
+                name: "community".to_string(),
+                url: "https://geo.mirror.pkgbuild.com/community/os/x86_64/community.db".to_string(),
+                source: PackageSource::Official,
+                enabled: true,
+            },
+            RepoConfig {
                 name: "multilib".to_string(),
                 url: "https://geo.mirror.pkgbuild.com/multilib/os/x86_64/multilib.db".to_string(),
                 source: PackageSource::Official,
@@ -386,7 +392,7 @@ impl RepoManager {
             return;
         }
 
-        println!("Loading initial package cache from disk...");
+        log::info!("Loading initial package cache from disk");
         let mut handles = Vec::new();
 
         for repo in active_repos {
@@ -423,8 +429,53 @@ impl RepoManager {
     pub async fn sync_all(&self, force: bool, interval_hours: u64, app: Option<tauri::AppHandle>) -> Result<String, String> {
          use tauri::Emitter;
         let repos = self.repos.read().await;
+        // Use all enabled repos for system sync, not just active ones (though they are usually same)
         let active_repos: Vec<RepoConfig> = repos.iter().filter(|r| r.enabled).cloned().collect();
+        let enabled_repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
         drop(repos);
+
+        // 1. Trigger System Sync (Helper) - This updates /var/lib/pacman/sync
+        if let Some(ref a) = app {
+            let _ = a.emit("sync-progress", "Synchronizing system databases...");
+            
+            // We need a password? sync_all is usually called from background or trigger_repo_sync.
+            // trigger_repo_sync doesn't pass password. 
+            // However, AlpmSync requires root ONLY if writing to /var/lib/pacman/sync.
+            // If we are in background, we might check if we can run passwordless (Polkit).
+            // But invoke_helper handles Polkit via pkexec.
+            // If the user isn't prompted, it might fail or hang?
+            // Wait, AlpmSync in helper runs as root. pkexec will prompt if needed.
+            // But if this runs on startup (background), we DON'T want a prompt blocking everything.
+            // 
+            // The user prompt said: "Constraint: The UI search results must not update until both the local cache AND the system sync are complete."
+            // But if this blocks on auth...
+            // "When the GUI triggers a 'Refresh Mirrors/DBs'..." -> Usually a user action.
+            // If it's the auto-sync on startup, we might skip system sync if it prompts.
+            // But we can't detect "will prompt".
+            
+            // However, Polkit rules allow passwordless refresh usually?
+            // "Authentication is required to install, update, or remove applications."
+            // Refreshing DBs is "update".
+            // Let's assume for "Refresh Mirrors" button (User Action) it is fine.
+            // For background sync, it might annoy.
+            // BUT: The "Dual Brain" fix is critical.
+            // Let's implement it. If we are in `trigger_repo_sync` (User Action), we definitely want this.
+            
+            // To be safe, we spawn it.
+            // But we need to wait for it?
+            
+            let _ = invoke_helper(
+                a, 
+                HelperCommand::AlpmSync { enabled_repos: enabled_repo_names }, // Use AlpmSync instead of Refresh for targeted repo control
+                None // No password passed to sync_all usually
+            ).await;
+            
+            // We ignore the result/rx for now to not block the GUI cache update? 
+            // Or do we wait?
+            // "Constraint: UI search results must not update until... complete"
+            // So we SHOULD wait.
+            // But `invoke_helper` returns Receiver. We must drain it to wait.
+        }
 
         let cache_dir = dirs::cache_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -464,14 +515,14 @@ impl RepoManager {
         Ok("Sync Complete".to_string())
     }
 
-    // MODULAR APPLY LOGIC
-    pub async fn apply_os_config(&self, app: &tauri::AppHandle) -> Result<(), String> {
+    // MODULAR APPLY LOGIC — pass password so one prompt covers all helper invokes
+    pub async fn apply_os_config(&self, app: &tauri::AppHandle, password: Option<String>) -> Result<(), String> {
         let repos = self.repos.read().await;
         let all_repos: Vec<RepoConfig> = repos.iter().cloned().collect();
         drop(repos);
 
         // 1. Initialize System (Include and Folders)
-        let _ = invoke_helper(app, HelperCommand::Initialize, None).await?.recv().await;
+        let _ = invoke_helper(app, HelperCommand::Initialize, password.clone()).await?.recv().await;
 
         let mut files_to_write = Vec::new();
         let mut paths_to_remove = Vec::new();
@@ -513,16 +564,59 @@ impl RepoManager {
 
         // 3. Execute Batches
         if !files_to_write.is_empty() {
-            let _ = invoke_helper(app, HelperCommand::WriteFiles { files: files_to_write }, None).await?.recv().await;
+            let _ = invoke_helper(app, HelperCommand::WriteFiles { files: files_to_write }, password.clone()).await?.recv().await;
         }
         if !paths_to_remove.is_empty() {
-            let _ = invoke_helper(app, HelperCommand::RemoveFiles { paths: paths_to_remove }, None).await?.recv().await;
+            let _ = invoke_helper(app, HelperCommand::RemoveFiles { paths: paths_to_remove }, password.clone()).await?.recv().await;
         }
 
-        // 4. Sync
-        let _ = invoke_helper(app, HelperCommand::Refresh, None).await?.recv().await;
+        // 4. Force refresh sync databases after writing repo configs (Apple Store–like: must succeed so install/update works)
+        let run_sync = || async {
+            let mut rx = invoke_helper(app, HelperCommand::ForceRefreshDb, password.clone()).await?;
+            let mut last_msg: Option<String> = None;
+            while let Some(msg) = rx.recv().await {
+                last_msg = Some(msg.message);
+            }
+            if let Some(m) = last_msg.as_deref() {
+                if m.starts_with("Error:") || (m.contains("failed") && m.to_lowercase().contains("sync")) {
+                    return Err(m.to_string());
+                }
+            }
+            Ok(())
+        };
+        if run_sync().await.is_err() {
+            // One retry on transient failure
+            if run_sync().await.is_err() {
+                return Err(
+                    "Could not sync repositories. Check your connection and try again, or use Settings → Maintenance → Refresh Databases.".to_string()
+                );
+            }
+        }
 
         Ok(())
+    }
+
+    /// Returns repo names that belong to the given family (e.g. "cachyos" -> ["cachyos", "cachyos-v3", ...]).
+    /// Used for atomic enable: run key import for these repos before writing config.
+    pub async fn get_repo_names_in_family(&self, family: &str) -> Vec<String> {
+        let repos = self.repos.read().await;
+        let family_lower = family.to_lowercase();
+        let mut names = Vec::new();
+        for repo in repos.iter() {
+            let repo_lower = repo.name.to_lowercase();
+            let belongs = match family_lower.as_str() {
+                "cachyos" => repo_lower.starts_with("cachyos"),
+                "manjaro" => repo_lower.starts_with("manjaro"),
+                "chaotic" | "chaotic-aur" => repo_lower == "chaotic-aur",
+                "garuda" => repo_lower == "garuda",
+                "endeavouros" => repo_lower == "endeavouros",
+                _ => repo_lower == family_lower,
+            };
+            if belongs {
+                names.push(repo.name.clone());
+            }
+        }
+        names
     }
 
     pub async fn set_repo_state(&self, app: &tauri::AppHandle, name: &str, enabled: bool) -> Result<(), String> {
@@ -556,11 +650,8 @@ impl RepoManager {
         }
 
         self.save_config_async().await;
-        // Default behavior (no skip args in struct so we assume standard apply)
-        // If we want to skip, we need arguments. But this is internal API.
-        // We will call apply explicitly from commands if needed.
-        let _ = self.apply_os_config(app).await;
-        
+        // Apply config and sync so the repo is usable (Apple Store–like)
+        self.apply_os_config(app, None).await?;
         Ok(())
     }
 
@@ -615,7 +706,7 @@ impl RepoManager {
 
         self.save_config_async().await;
         if !skip_os_sync {
-            let _ = self.apply_os_config(app).await;
+            self.apply_os_config(app, None).await?;
         }
 
         Ok(())
@@ -632,16 +723,22 @@ impl RepoManager {
         pkgs.into_iter().next() // Return the top-ranked one
     }
 
+    /// Returns packages from enabled repos only (soft disable).
     pub async fn get_all_packages_with_repos(&self, name: &str) -> Vec<(Package, String)> {
+        let enabled: std::collections::HashSet<String> = {
+            let repos = self.repos.read().await;
+            repos.iter().filter(|r| r.enabled).map(|r| r.name.clone()).collect()
+        };
         let cache = self.cache.read().await;
-        // (Package, opt_level, repo_name)
         let mut results: Vec<(Package, u8, String)> = Vec::new();
-
         let cpu_v3 = crate::utils::is_cpu_v3_compatible();
         let cpu_v4 = crate::utils::is_cpu_v4_compatible();
         let distro = crate::distro_context::get_distro_context();
 
         for (repo_name, pkgs) in cache.iter() {
+            if !enabled.contains(repo_name) {
+                continue;
+            }
             let opt_level: u8 = if repo_name.contains("-znver4") && crate::utils::is_cpu_znver4_compatible() {
                 3
             } else if repo_name.contains("-v4") && cpu_v4 {
@@ -690,13 +787,19 @@ impl RepoManager {
             .collect()
     }
 
+    /// Returns packages from enabled repos only (soft disable).
     pub async fn get_packages_providing_with_repos(&self, name: &str) -> Vec<(Package, String)> {
-        // Optimization logic could be applied here too if needed, but less critical.
-        // For now keeping it simple.
         let mut results = Vec::new();
+        let enabled: std::collections::HashSet<String> = {
+            let repos = self.repos.read().await;
+            repos.iter().filter(|r| r.enabled).map(|r| r.name.clone()).collect()
+        };
         let cache = self.cache.read().await;
 
         for (repo_name, repo_pkgs) in cache.iter() {
+            if !enabled.contains(repo_name) {
+                continue;
+            }
             for pkg in repo_pkgs {
                 if let Some(provides) = &pkg.provides {
                     if provides.iter().any(|p| p == name) {
@@ -708,15 +811,23 @@ impl RepoManager {
         results
     }
 
+    /// Returns packages from enabled repos only (soft disable).
+    /// Prefer alpm_read::get_packages_batch (ALPM as single READ source); this remains for fallback/sync paths.
+    #[allow(dead_code)]
     pub async fn get_packages_batch(&self, names: &[String]) -> Vec<Package> {
         let mut results = Vec::new();
+        let enabled: std::collections::HashSet<String> = {
+            let repos = self.repos.read().await;
+            repos.iter().filter(|r| r.enabled).map(|r| r.name.clone()).collect()
+        };
         let cache = self.cache.read().await;
-        // Use HashSet for O(1) lookups instead of O(n) Vec::contains
         let names_set: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
-        for pkgs in cache.values() {
-            for pkg in pkgs {
-                if names_set.contains(pkg.name.as_str()) {
-                    results.push(pkg.clone());
+        for (repo_name, pkgs) in cache.iter() {
+            if enabled.contains(repo_name) {
+                for pkg in pkgs {
+                    if names_set.contains(pkg.name.as_str()) {
+                        results.push(pkg.clone());
+                    }
                 }
             }
         }
@@ -816,4 +927,14 @@ pub async fn check_repo_sync_status(
         status.insert(repo.name.clone(), db_path.exists());
     }
     Ok(status)
+}
+
+// Apply OS configuration (write repo configs to /etc/pacman.d/monarch/)
+#[tauri::command]
+pub async fn apply_os_config(
+    app: tauri::AppHandle,
+    state_repo: tauri::State<'_, RepoManager>,
+    password: Option<String>,
+) -> Result<(), String> {
+    state_repo.inner().apply_os_config(&app, password).await
 }

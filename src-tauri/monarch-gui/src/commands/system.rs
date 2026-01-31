@@ -1,9 +1,9 @@
 use crate::{chaotic_api, repo_manager, utils};
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 /// Embedded Polkit rules for passwordless package-manage (wheel → YES) and script (AUTH_ADMIN_KEEP).
-const MONARCH_POLKIT_RULES: &str = include_str!("../../../../rules/10-monarch-store.rules");
+const MONARCH_POLKIT_RULES: &str = include_str!("../../../rules/10-monarch-store.rules");
 
 #[derive(Serialize)]
 pub struct SystemInfo {
@@ -12,6 +12,21 @@ pub struct SystemInfo {
     pub pacman_version: String,
     pub chaotic_enabled: bool,
     pub cpu_optimization: String,
+}
+
+/// Typed response for get_cache_size (replaces raw serde_json::json!).
+#[derive(Serialize)]
+pub struct CacheSizeResult {
+    pub size_bytes: u64,
+    pub human_readable: String,
+}
+
+/// Typed response for get_orphans_with_size (replaces raw serde_json::json!).
+#[derive(Serialize)]
+pub struct OrphansWithSizeResult {
+    pub orphans: Vec<String>,
+    pub total_size_bytes: u64,
+    pub human_readable: String,
 }
 
 #[tauri::command]
@@ -113,7 +128,12 @@ pub async fn toggle_repo(
     state: State<'_, repo_manager::RepoManager>,
     name: String,
     enabled: bool,
+    password: Option<String>,
 ) -> Result<(), String> {
+    // Atomic toggle: when enabling, import keys first so next update doesn't hit Unknown Trust
+    if enabled {
+        let _ = crate::repo_setup::enable_repo(app.clone(), &name, password).await;
+    }
     state.inner().set_repo_state(&app, &name, enabled).await?;
     Ok(())
 }
@@ -125,7 +145,15 @@ pub async fn toggle_repo_family(
     family: String,
     enabled: bool,
     skip_os_sync: Option<bool>,
+    password: Option<String>,
 ) -> Result<(), String> {
+    // Atomic toggle: when enabling, import keys for all family repos first
+    if enabled {
+        let names = state.inner().get_repo_names_in_family(&family).await;
+        if !names.is_empty() {
+            let _ = crate::repo_setup::enable_repos_batch(app.clone(), names, password).await;
+        }
+    }
     let skip = skip_os_sync.unwrap_or(false);
     state
         .inner()
@@ -290,7 +318,7 @@ pub async fn update_and_install_package(
     app: tauri::AppHandle,
     state_repo: State<'_, repo_manager::RepoManager>,
     name: String,
-    _repo_name: Option<String>,
+    repo_name: Option<String>,
     password: Option<String>,
 ) -> Result<String, String> {
     use tauri::Emitter;
@@ -350,6 +378,7 @@ pub async fn update_and_install_package(
             sync_first: false,
             enabled_repos,
             cpu_optimization,
+            target_repo: repo_name,
         },
         password.clone(),
     )
@@ -408,7 +437,7 @@ pub async fn set_telemetry_enabled(
     state: State<'_, repo_manager::RepoManager>,
     enabled: bool,
 ) -> Result<(), String> {
-    println!("[Backend] Setting telemetry enabled to: {}", enabled);
+    log::info!("Setting telemetry enabled to: {}", enabled);
     state.inner().set_telemetry_enabled(enabled).await;
     Ok(())
 }
@@ -467,4 +496,350 @@ pub fn check_and_clear_refresh_requested() -> Result<bool, String> {
         return Ok(true);
     }
     Ok(false)
+}
+
+#[tauri::command]
+pub async fn get_cache_size() -> Result<CacheSizeResult, String> {
+    tokio::task::spawn_blocking(|| {
+        let cache_dir = std::path::Path::new("/var/cache/pacman/pkg");
+        let mut total_bytes: u64 = 0;
+
+        fn calculate_dir_size(path: &std::path::Path, total: &mut u64) -> std::io::Result<()> {
+            if path.is_file() {
+                if let Ok(metadata) = path.metadata() {
+                    *total += metadata.len();
+                }
+            } else if path.is_dir() {
+                let entries = std::fs::read_dir(path)?;
+                for entry in entries {
+                    let entry = entry?;
+                    let path = entry.path();
+                    let _ = calculate_dir_size(&path, total);
+                }
+            }
+            Ok(())
+        }
+
+        if cache_dir.exists() {
+            let _ = calculate_dir_size(cache_dir, &mut total_bytes);
+        }
+
+        let human_readable = if total_bytes < 1024 {
+            format!("{} B", total_bytes)
+        } else if total_bytes < 1024 * 1024 {
+            format!("{:.1} KB", total_bytes as f64 / 1024.0)
+        } else if total_bytes < 1024 * 1024 * 1024 {
+            format!("{:.1} MB", total_bytes as f64 / (1024.0 * 1024.0))
+        } else {
+            format!("{:.2} GB", total_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        };
+        Ok(CacheSizeResult {
+            size_bytes: total_bytes,
+            human_readable,
+        })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn get_orphans_with_size() -> Result<OrphansWithSizeResult, String> {
+    tokio::task::spawn_blocking(|| {
+        let output = std::process::Command::new("pacman")
+            .args(["-Qtdq"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let orphans: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+
+        if orphans.is_empty() {
+            return Ok(OrphansWithSizeResult {
+                orphans: vec![],
+                total_size_bytes: 0,
+                human_readable: "0 B".to_string(),
+            });
+        }
+
+        let mut total_bytes: u64 = 0;
+        for pkg in &orphans {
+            let output = std::process::Command::new("pacman")
+                .args(["-Qi", pkg])
+                .output()
+                .ok();
+            if let Some(ok_output) = output {
+                let info = String::from_utf8_lossy(&ok_output.stdout);
+                for line in info.lines() {
+                    if line.starts_with("Installed Size") {
+                        if let Some(size_str) = line.split(':').nth(1) {
+                            let parts: Vec<&str> = size_str.trim().split_whitespace().collect();
+                            if parts.len() >= 2 {
+                                if let Ok(num) = parts[0].parse::<f64>() {
+                                    let multiplier = match parts[1] {
+                                        "KiB" => 1024,
+                                        "MiB" => 1024 * 1024,
+                                        "GiB" => 1024 * 1024 * 1024,
+                                        _ => 1,
+                                    };
+                                    total_bytes += (num * multiplier as f64) as u64;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        let human_readable = if total_bytes < 1024 {
+            format!("{} B", total_bytes)
+        } else if total_bytes < 1024 * 1024 {
+            format!("{:.1} KB", total_bytes as f64 / 1024.0)
+        } else if total_bytes < 1024 * 1024 * 1024 {
+            format!("{:.1} MB", total_bytes as f64 / (1024.0 * 1024.0))
+        } else {
+            format!("{:.2} GB", total_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        };
+
+        Ok(OrphansWithSizeResult {
+            orphans,
+            total_size_bytes: total_bytes,
+            human_readable,
+        })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn set_parallel_downloads(
+    count: u32,
+    password: Option<String>,
+) -> Result<String, String> {
+    let script = format!(
+        r#"
+        echo 'Updating ParallelDownloads in /etc/pacman.conf...'
+        cp /etc/pacman.conf /etc/pacman.conf.bak.parallel.$(date +%s) || true
+        if grep -q "^ParallelDownloads" /etc/pacman.conf; then
+            sed -i "s/^ParallelDownloads.*/ParallelDownloads = {}/" /etc/pacman.conf
+        else
+            sed -i '/^\[options\]/a ParallelDownloads = {}' /etc/pacman.conf
+        fi
+        echo '✓ ParallelDownloads set to {}. Restart MonARCH for full effect.'
+    "#,
+        count, count, count
+    );
+    utils::run_privileged_script(&script, password, false).await
+}
+
+/// Result of testing one mirror: URL and optional latency in ms.
+#[derive(serde::Serialize)]
+pub struct MirrorTestResult {
+    pub url: String,
+    pub latency_ms: Option<u32>,
+}
+
+/// Test mirrors for a repo without changing system config. Returns top 3 with latency (ms).
+/// repo_key: "arch" | "Arch" | "cachyos" | "chaotic-aur" (others fall back to arch or N/A).
+#[tauri::command]
+pub async fn test_mirrors(repo_key: String) -> Result<Vec<MirrorTestResult>, String> {
+    let key = repo_key.to_lowercase();
+    let (distro, mirrorlist_path): (&str, Option<std::path::PathBuf>) =
+        if key == "arch" || key == "official arch linux" || key.is_empty() {
+            ("arch", None)
+        } else if key.contains("cachyos") {
+            (
+                "cachyos",
+                Some(std::path::PathBuf::from("/etc/pacman.d/cachyos-mirrorlist")),
+            )
+        } else if key.contains("chaotic") {
+            (
+                "chaotic",
+                Some(std::path::PathBuf::from("/etc/pacman.d/chaotic-mirrorlist")),
+            )
+        } else {
+            ("arch", None)
+        };
+
+    let out = tokio::task::spawn_blocking(move || {
+        if distro == "arch" {
+            // rate-mirrors prints mirrorlist to stdout (no root needed to test)
+            let output = std::process::Command::new("rate-mirrors")
+                .args(["arch"])
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    parse_mirrorlist_latency(&stdout, 3)
+                }
+                Ok(_) => {
+                    // Fallback: reflector --list (no latency, just URLs)
+                    let o = std::process::Command::new("reflector")
+                        .args(["--list"])
+                        .output();
+                    match o {
+                        Ok(reflector_out) if reflector_out.status.success() => {
+                            let s = String::from_utf8_lossy(&reflector_out.stdout);
+                            let list = parse_mirrorlist_latency(&s, 3)?;
+                            Ok(list
+                                .into_iter()
+                                .map(|m| MirrorTestResult {
+                                    url: m.url,
+                                    latency_ms: None,
+                                })
+                                .collect())
+                        }
+                        _ => Err("Install rate-mirrors or reflector to test mirrors (e.g. pacman -S rate-mirrors)".to_string()),
+                    }
+                }
+                Err(_) => Err("rate-mirrors not found. Install it: pacman -S rate-mirrors (or reflector)".to_string()),
+            }
+        } else if let Some(path) = mirrorlist_path {
+            // Read existing mirrorlist; optionally run rate-mirrors for cachyos if available
+            match std::fs::read_to_string(path) {
+                Ok(contents) => {
+                    let mut results = parse_mirrorlist_latency(&contents, 5).unwrap_or_else(|_| vec![]);
+                    if results.iter().all(|r| r.latency_ms.is_none()) && distro == "cachyos" {
+                        if let Ok(o) = std::process::Command::new("rate-mirrors")
+                            .args(["cachyos"])
+                            .output()
+                        {
+                            if o.status.success() {
+                                let stdout = String::from_utf8_lossy(&o.stdout);
+                                if let Ok(rated) = parse_mirrorlist_latency(&stdout, 3) {
+                                    results = rated;
+                                }
+                            }
+                        }
+                    }
+                    results.truncate(3);
+                    Ok(results)
+                }
+                Err(_) => Ok(vec![
+                    MirrorTestResult {
+                        url: "Mirrorlist file not found".to_string(),
+                        latency_ms: None,
+                    },
+                ]),
+            }
+        } else {
+            Ok(vec![])
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    out
+}
+
+/// Parse mirrorlist lines: "Server = https://... # 45ms" or "Server = https://..."
+fn parse_mirrorlist_latency(text: &str, take: usize) -> Result<Vec<MirrorTestResult>, String> {
+    let re = regex::Regex::new(r"(?m)^\s*Server\s*=\s*(\S+)(?:\s*#\s*(\d+)\s*ms)?")
+        .map_err(|e| e.to_string())?;
+    let mut list: Vec<(String, Option<u32>)> = re
+        .captures_iter(text)
+        .filter_map(|c| {
+            let url = c.get(1).map(|m| m.as_str().to_string())?;
+            let ms = c.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
+            Some((url, ms))
+        })
+        .collect();
+    // If no latency, still include URLs (e.g. from reflector or static mirrorlist)
+    if list.is_empty() {
+        let re_url = regex::Regex::new(r"(?m)^\s*Server\s*=\s*(\S+)").map_err(|e| e.to_string())?;
+        list = re_url
+            .captures_iter(text)
+            .filter_map(|c| c.get(1).map(|m| (m.as_str().to_string(), None)))
+            .collect();
+    }
+    list.truncate(take);
+    Ok(list
+        .into_iter()
+        .map(|(url, latency_ms)| MirrorTestResult { url, latency_ms })
+        .collect())
+}
+
+/// Returns which mirror-ranking tool will be used (distro-aware). Used by Settings UI to show correct label.
+/// Never runs reflector on Manjaro — rank_mirrors script uses pacman-mirrors there.
+#[tauri::command]
+pub fn get_mirror_rank_tool() -> Option<String> {
+    if std::path::Path::new("/usr/bin/pacman-mirrors").exists()
+        && std::path::Path::new("/etc/manjaro-release").exists()
+    {
+        return Some("pacman-mirrors".to_string());
+    }
+    if which::which("reflector").is_ok() {
+        return Some("reflector".to_string());
+    }
+    if which::which("rate-mirrors").is_ok() {
+        return Some("rate-mirrors".to_string());
+    }
+    None
+}
+
+#[tauri::command]
+pub async fn rank_mirrors(password: Option<String>) -> Result<String, String> {
+    let script = r#"
+        echo 'Ranking mirrors by download speed (this may take ~30 seconds)...'
+        if [ -f /etc/manjaro-release ] && command -v pacman-mirrors >/dev/null 2>&1; then
+            pacman-mirrors -f 5
+            echo '✓ Manjaro mirrors ranked successfully.'
+        elif command -v reflector >/dev/null 2>&1; then
+            reflector --latest 5 --sort rate --save /etc/pacman.d/mirrorlist
+            echo '✓ Mirrors ranked successfully. Fastest mirrors are now prioritized.'
+        elif command -v rate-mirrors >/dev/null 2>&1; then
+            rate-mirrors arch | sudo tee /etc/pacman.d/mirrorlist >/dev/null
+            echo '✓ Mirrors ranked successfully using rate-mirrors.'
+        else
+            echo 'ERROR: Neither reflector nor rate-mirrors is installed (or pacman-mirrors on Manjaro).'
+            echo 'Install one: sudo pacman -S reflector'
+            exit 1
+        fi
+    "#;
+    utils::run_privileged_script(&script, password, false).await
+}
+
+#[tauri::command]
+pub async fn emit_sync_progress(app: AppHandle, status: String) -> Result<(), String> {
+    let _ = app.emit("sync-progress", status);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn force_refresh_databases(
+    app: AppHandle,
+    password: Option<String>,
+) -> Result<(), String> {
+    let _ = app.emit("install-output", "Force refreshing sync databases...");
+    let mut rx = crate::helper_client::invoke_helper(
+        &app,
+        crate::helper_client::HelperCommand::ForceRefreshDb,
+        password,
+    )
+    .await?;
+    while let Some(msg) = rx.recv().await {
+        let _ = app.emit("install-output", &msg.message);
+    }
+    crate::repair::write_last_sync_timestamp();
+    Ok(())
+}
+
+/// Updates system pacman sync DBs (/var/lib/pacman/sync/). At launch we only run when DBs are stale (>6h) so we don't sync every open.
+/// Emits to "sync-progress" so the UI can show status.
+#[tauri::command]
+pub async fn sync_system_databases(app: AppHandle, password: Option<String>) -> Result<(), String> {
+    let _ = app.emit("sync-progress", "Updating package databases...");
+    let mut rx = crate::helper_client::invoke_helper(
+        &app,
+        crate::helper_client::HelperCommand::Refresh,
+        password,
+    )
+    .await?;
+    while let Some(msg) = rx.recv().await {
+        let _ = app.emit("sync-progress", &msg.message);
+    }
+    let _ = app.emit("sync-progress", "Package databases up to date.");
+    crate::repair::write_last_sync_timestamp();
+    Ok(())
 }

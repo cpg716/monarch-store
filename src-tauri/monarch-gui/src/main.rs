@@ -8,7 +8,7 @@ fn main() {
     }
 
     std::panic::set_hook(Box::new(|info| {
-        eprintln!("Panic: {:?}", info);
+        log::error!("Panic: {:?}", info);
     }));
     monarch_store_lib::run()
 }

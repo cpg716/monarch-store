@@ -1,7 +1,7 @@
 # Maintainer: cpg716 (developer and creator; built with the help of AI coding tools)
 # https://github.com/cpg716/monarch-store
 pkgname=monarch-store
-pkgver=0.3.5_alpha.1
+pkgver=0.3.5_alpha
 pkgrel=1
 # pkgdesc kept under 80 chars for terminal clarity
 pkgdesc="Distro-aware software store for Arch, Manjaro, CachyOS (Tauri)"
@@ -9,6 +9,9 @@ arch=('x86_64')
 url="https://github.com/cpg716/monarch-store"
 license=('MIT')
 depends=('webkit2gtk-4.1' 'gtk3' 'openssl' 'polkit' 'pacman-contrib' 'git')
+# checkupdates is in pacman-contrib; rate-mirrors/reflector optional for Test Mirrors
+optdepends=('rate-mirrors: Test Mirrors with latency (Settings → Repositories)'
+            'reflector: alternative for Test Mirrors / mirror ranking')
 makedepends=('cargo' 'nodejs' 'npm')
 # For -git: SKIP. After pushing tag v${pkgver}, run: ./scripts/release-finalize-pkgbuild.sh
 source=("git+https://github.com/cpg716/monarch-store.git")
@@ -18,7 +21,8 @@ prepare() {
   cd "$pkgname"
   # Contain npm cache in $srcdir (Arch: no $HOME pollution)
   export npm_config_cache="$srcdir/.npm"
-  npm install
+  # Reproducible install when package-lock.json exists
+  npm ci
 }
 
 build() {
@@ -26,8 +30,10 @@ build() {
   # Contain Cargo home in $srcdir (Arch: no $HOME pollution)
   export CARGO_HOME="$srcdir/.cargo"
   export npm_config_cache="$srcdir/.npm"
-  # PIE for release binaries (RELRO/noexecstack from src-tauri/.cargo/config.toml)
-  export RUSTFLAGS="${RUSTFLAGS:-} -C relocation-model=pie"
+  # RELRO + noexecstack + PIE (workspace Cargo.toml already has release: lto=true, strip=true, panic=abort)
+  export RUSTFLAGS="-C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack -C relocation-model=pie"
+  # Helper built first to same target dir as tauri build (so package() finds it). Do not rely on .cargo/config target-dir.
+  (cd src-tauri && CARGO_TARGET_DIR="$srcdir/$pkgname/src-tauri/target" cargo build --release -p monarch-helper)
   npm run tauri build
 }
 
@@ -42,26 +48,12 @@ package() {
   # 2. Install AppStream metainfo (required for software center integration)
   install -Dm644 "src-tauri/monarch-store.metainfo.xml" "$pkgdir/usr/share/metainfo/monarch-store.metainfo.xml"
 
-  # 3. Install Desktop Entry
-  # Assuming standard location, if not present we create one or copy from src-tauri
-  # Since we don't have a source .desktop file verified yet, I'll write one here if it doesn't exist in source, 
-  # but standard Tauri setup usually bundles it. 
-  # For now, let's assume we need to install the bundled one or create it.
-  # Let's check if src-tauri/target/release/bundle/deb/... has it or if we should manually create.
-  # Better to manually create to be safe and compliant.
-  
-  install -dm755 "$pkgdir/usr/share/applications"
-  cat <<EOF > "$pkgdir/usr/share/applications/monarch-store.desktop"
-[Desktop Entry]
-Type=Application
-Name=MonARCH Store
-Comment=Universal Arch Linux App Manager
-Exec=monarch-store
-Icon=monarch-store
-Categories=System;PackageManager;
-Terminal=false
-StartupNotify=true
-EOF
+  # 3. Install Desktop Entry (from source; Categories set for software center)
+  install -Dm644 "src-tauri/monarch-store.desktop" "$pkgdir/usr/share/applications/monarch-store.desktop"
+  sed -i 's/^Categories=.*/Categories=System;PackageManager;/' "$pkgdir/usr/share/applications/monarch-store.desktop"
+  sed -i 's/^Comment=.*/Comment=Universal Arch Linux App Manager/' "$pkgdir/usr/share/applications/monarch-store.desktop"
+  sed -i '/^StartupNotify=/d' "$pkgdir/usr/share/applications/monarch-store.desktop"
+  echo 'StartupNotify=true' >> "$pkgdir/usr/share/applications/monarch-store.desktop"
 
   # 4. Install Icons (Tauri app icons live in src-tauri/monarch-gui/icons)
   install -Dm644 "src-tauri/monarch-gui/icons/128x128.png" "$pkgdir/usr/share/icons/hicolor/128x128/apps/monarch-store.png"
@@ -73,25 +65,18 @@ EOF
   install -Dm644 "src-tauri/monarch-gui/com.monarch.store.policy" "$pkgdir/usr/share/polkit-1/actions/com.monarch.store.policy"
   install -Dm644 "src-tauri/rules/10-monarch-store.rules" "$pkgdir/usr/share/polkit-1/rules.d/10-monarch-store.rules"
 
-  # 6. Install Privileged Helper & Identity Wrapper Proxy
+  # 6. Install Privileged Helper & Identity Wrapper Proxy (helper built explicitly in build() so it supports AlpmInstall)
   install -dm755 "$pkgdir/usr/lib/monarch-store"
-  install -m755 "src-tauri/target/release/monarch-helper" "$pkgdir/usr/lib/monarch-store/monarch-helper"
+  _helper=src-tauri/target/release/monarch-helper
+  [ ! -f "$_helper" ] && _helper=src-tauri/monarch-gui/target/release/monarch-helper
+  install -m755 "$_helper" "$pkgdir/usr/lib/monarch-store/monarch-helper"
   install -m755 "src-tauri/scripts/monarch-wrapper" "$pkgdir/usr/lib/monarch-store/monarch-wrapper"
 
   # 6.5 Optional: Pacman hook to notify MonARCH to refresh index after terminal pacman -Syu
   install -Dm644 "src-tauri/pacman-hooks/monarch-store-refresh.hook" "$pkgdir/usr/share/libalpm/hooks/monarch-store-refresh.hook"
   install -Dm755 "src-tauri/scripts/monarch-store-refresh-cache" "$pkgdir/usr/bin/monarch-store-refresh-cache"
   install -dm755 "$pkgdir/var/lib/monarch-store"
-  
-  # Helper script note (MonARCH uses a helper script for polkit checks sometimes, verified in repair.rs)
-  # repair.rs generates it dynamically, but for a package it should ideally be static.
-  # The repair.rs script overrides it. 
-  # compliance requirement said: "Your custom policy MUST be installed".
-  # We will install the policy. The helper script is currently generated by the app (repair.rs), 
-  # so we might not need to package the helper script itself if the app self-heals, 
-  # BUT strict packaging prefers the helper to be owned by the package.
-  # Let's install the policy as requested.
-  
+
   # 7. License
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

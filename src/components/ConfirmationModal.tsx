@@ -54,7 +54,7 @@ export default function ConfirmationModal({
 
     return (
         <AnimatePresence>
-            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
                 <motion.div
                     ref={focusTrapRef}
                     initial={{ opacity: 0, scale: 0.9 }}

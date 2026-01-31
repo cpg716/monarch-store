@@ -8,6 +8,7 @@ import PackageCardSkeleton from '../components/PackageCardSkeleton';
 import EmptyState from '../components/EmptyState';
 import { CATEGORIES } from '../components/CategoryGrid';
 import { useErrorService } from '../context/ErrorContext';
+import { friendlyError } from '../utils/friendlyError';
 
 // Multi-Select Dropdown Component
 
@@ -164,8 +165,8 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                 if (!uniqueSources.has(repo.source)) uniqueSources.set(repo.source, repo);
             }
             setEnabledRepos(Array.from(uniqueSources.values()));
-        }).catch(console.error);
-    }, []);
+        }).catch((e) => errorService.reportError(e as Error | string));
+    }, [errorService]);
 
     // Fetch Logic
     const fetchApps = useCallback(async (reset: boolean = false) => {
@@ -211,9 +212,10 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
             }
             setHasMore(res.packages.length === LIMIT);
             setError(null);
-        } catch (e: any) {
+        } catch (e: unknown) {
+            const raw = e instanceof Error ? e.message : String(e);
             errorService.reportError(e as Error | string);
-            setError(e.toString() || "Unknown error occurred");
+            setError(friendlyError(raw).description);
         } finally {
             setLoading(false);
             setInitialLoad(false);
@@ -275,7 +277,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                     Object.entries(infoMap).forEach(([name, info]) => next.set(name, info as ChaoticPackage));
                     return next;
                 });
-            } catch (e) { console.error(e); }
+            } catch (e) { errorService.reportError(e as Error | string); }
         };
         const timeout = setTimeout(fetchBatchInfo, 500); // 500ms debounce to let scrolling settle
         return () => clearTimeout(timeout);
@@ -354,7 +356,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
             <div className="flex-1 overflow-y-auto p-8">
                 <div className="max-w-7xl mx-auto w-full">
                 {initialLoad && packages.length === 0 ? (
-                    <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                         {[...Array(10)].map((_, i) => (
                             <PackageCardSkeleton key={i} />
                         ))}
@@ -391,7 +393,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                                             <h2 className="text-lg font-bold text-app-fg mb-4 flex items-center gap-2">
                                                 <span className="text-yellow-500">★</span> Featured Applications
                                             </h2>
-                                            <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
+                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                                                 {featured.map((pkg) => (
                                                     <PackageCard
                                                         key={`feat-${pkg.name}`}
@@ -406,7 +408,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                                         </div>
                                     )}
 
-                                    <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                                         {others.map((pkg, index) => {
                                             const isLast = index === others.length - 1;
                                             return (

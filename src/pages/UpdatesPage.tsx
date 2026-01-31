@@ -7,6 +7,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../store/internal_store';
 import { useErrorService } from '../context/ErrorContext';
+import { useSessionPassword } from '../context/useSessionPassword';
+import { friendlyError } from '../utils/friendlyError';
 
 interface PendingUpdate {
     name: string;
@@ -46,6 +48,8 @@ const AppIcon = ({ pkgId }: { pkgId: string }) => {
 
 export default function UpdatesPage() {
     const errorService = useErrorService();
+    const { requestSessionPassword } = useSessionPassword();
+    const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
     const {
         isUpdating,
         updateProgress: progress,
@@ -54,6 +58,7 @@ export default function UpdatesPage() {
         rebootRequired,
         pacnewWarnings,
         setUpdating,
+        setPacnewWarnings,
         clearUpdateLogs
     } = useAppStore();
 
@@ -65,10 +70,12 @@ export default function UpdatesPage() {
     const [currentStep, setCurrentStep] = useState(0);
     const [fixingLock, setFixingLock] = useState(false);
     const [showAuthHint, setShowAuthHint] = useState(false);
+    const [orphansAfterUpdate, setOrphansAfterUpdate] = useState<string[]>([]);
+    const [removingOrphans, setRemovingOrphans] = useState(false);
 
     const isLockOrBusyError = updateResult != null && /lock|busy|database.*(locked|busy)/i.test(updateResult);
 
-    // If update is "stuck" on auth/connectivity for 12s, show hint (password dialog may be hidden).
+    // If update is "stuck" on auth/connectivity for 5s, show hint (password dialog may be hidden).
     useEffect(() => {
         if (!isUpdating) {
             setShowAuthHint(false);
@@ -76,7 +83,7 @@ export default function UpdatesPage() {
         }
         const t = window.setTimeout(() => {
             setShowAuthHint(true);
-        }, 12000);
+        }, 5000);
         return () => window.clearTimeout(t);
     }, [isUpdating]);
 
@@ -118,29 +125,46 @@ export default function UpdatesPage() {
 
     // Listen for update-complete so we don't block the UI waiting for the backend.
     useEffect(() => {
-        const unlisten = listen<{ success: boolean; message: string }>('update-complete', (event) => {
+        const unlisten = listen<{ success: boolean; message: string }>('update-complete', async (event) => {
             setUpdating(false);
             setUpdateResult(event.payload.message);
             checkForUpdates();
+            try {
+                const warnings = await invoke<string[]>('get_pacnew_warnings');
+                setPacnewWarnings(warnings);
+            } catch {
+                // ignore
+            }
+            if (event.payload.success) {
+                try {
+                    const orphans = await invoke<string[]>('get_orphans');
+                    setOrphansAfterUpdate(orphans || []);
+                } catch {
+                    setOrphansAfterUpdate([]);
+                }
+            } else {
+                setOrphansAfterUpdate([]);
+            }
         });
         return () => {
             unlisten.then((fn) => fn()).catch(() => {});
         };
-    }, [setUpdating]);
+    }, [setUpdating, setPacnewWarnings]);
 
     const handleUpdateAll = () => {
         setShowConfirm(true);
     };
 
-    const performUpdate = () => {
+    const performUpdate = async () => {
         setShowConfirm(false);
         setUpdating(true);
         setUpdateResult(null);
         clearUpdateLogs();
         setCurrentStep(0);
 
+        // Always use Polkit for privilege (no in-app password). Avoids double prompt (app + system).
         // Fire-and-forget: never await so the UI never blocks. Backend returns "started" and runs update in background.
-        invoke<string>('perform_system_update', { password: password || null }).catch((e) => {
+        invoke<string>('perform_system_update', { password: null }).catch((e) => {
             errorService.reportError(e as Error | string);
             setUpdateResult(`Update failed: ${e}`);
             setUpdating(false);
@@ -307,11 +331,13 @@ export default function UpdatesPage() {
                                 onClick={async () => {
                                     setFixingLock(true);
                                     try {
-                                        await invoke('repair_unlock_pacman', { password: null });
+                                        const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+                                        await invoke('repair_unlock_pacman', { password: pwd });
                                         setUpdateResult(null);
                                         await checkForUpdates();
                                     } catch (e) {
-                                        setUpdateResult(String(e));
+                                        const raw = e instanceof Error ? (e as Error).message : String(e);
+                                        setUpdateResult(friendlyError(raw).description);
                                     } finally {
                                         setFixingLock(false);
                                     }
@@ -321,6 +347,47 @@ export default function UpdatesPage() {
                             >
                                 {fixingLock ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />}
                                 {fixingLock ? 'Fixing...' : 'Fix It'}
+                            </button>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
+                {/* Orphan cleanup after successful update */}
+                <AnimatePresence>
+                    {orphansAfterUpdate.length > 0 && !isUpdating && (
+                        <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            className="mt-6 p-4 rounded-xl bg-slate-500/10 dark:bg-white/5 border border-slate-500/20 dark:border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+                        >
+                            <div className="flex items-center gap-3">
+                                <CheckCircle2 size={20} className="text-green-500 shrink-0" />
+                                <div>
+                                    <span className="font-bold text-sm block">Update complete</span>
+                                    <span className="text-xs text-app-muted">
+                                        {orphansAfterUpdate.length} orphan package{orphansAfterUpdate.length !== 1 ? 's' : ''} found. Remove them to save space?
+                                    </span>
+                                </div>
+                            </div>
+                            <button
+                                onClick={async () => {
+                                    setRemovingOrphans(true);
+                                    try {
+                                        await invoke('remove_orphans', { orphans: orphansAfterUpdate });
+                                        setOrphansAfterUpdate([]);
+                                        await checkForUpdates();
+                                    } catch (e) {
+                                        errorService.reportError(e as Error | string);
+                                    } finally {
+                                        setRemovingOrphans(false);
+                                    }
+                                }}
+                                disabled={removingOrphans}
+                                className="px-4 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-white text-sm font-bold flex items-center gap-2 disabled:opacity-50 shrink-0"
+                            >
+                                {removingOrphans ? <Loader2 size={16} className="animate-spin" /> : null}
+                                {removingOrphans ? 'Removing…' : 'Remove orphans'}
                             </button>
                         </motion.div>
                     )}

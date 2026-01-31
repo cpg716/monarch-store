@@ -25,9 +25,15 @@ impl RealRepoClient {
             .pool_idle_timeout(Some(std::time::Duration::from_secs(60)))
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8".parse().unwrap());
-                headers.insert(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.5".parse().unwrap());
-                headers.insert(reqwest::header::CONNECTION, "keep-alive".parse().unwrap());
+                if let Ok(v) = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8".parse() {
+                    headers.insert(reqwest::header::ACCEPT, v);
+                }
+                if let Ok(v) = "en-US,en;q=0.5".parse() {
+                    headers.insert(reqwest::header::ACCEPT_LANGUAGE, v);
+                }
+                if let Ok(v) = "keep-alive".parse() {
+                    headers.insert(reqwest::header::CONNECTION, v);
+                }
                 headers
             })
             .build()
@@ -156,7 +162,6 @@ pub async fn fetch_repo_packages<C: RepoClient>(
 
         for (i, url) in mirrors_to_try.iter().enumerate() {
             if i > 0 {
-                // println!("Retrying with mirror: {}", url);
             }
 
             match client.fetch_bytes(url).await {
@@ -180,8 +185,8 @@ pub async fn fetch_repo_packages<C: RepoClient>(
             Option::None => {
                 // FALLBACK: Try to use stale cache if download failed
                 if cache_path.exists() {
-                    println!(
-                        "WARN: Network sync failed for {}. Using stale cache.",
+                    log::warn!(
+                        "Network sync failed for {}. Using stale cache.",
                         repo_name
                     );
                     std::fs::read(&cache_path).map_err(|e| e.to_string())?
@@ -340,17 +345,15 @@ impl MockRepoClient {
     }
 
     pub fn mock_response(&self, url: &str, data: Vec<u8>) {
-        self.responses
-            .lock()
-            .unwrap()
-            .insert(url.to_string(), Ok(data));
+        if let Ok(mut guard) = self.responses.lock() {
+            guard.insert(url.to_string(), Ok(data));
+        }
     }
 
     pub fn mock_error(&self, url: &str, error: &str) {
-        self.responses
-            .lock()
-            .unwrap()
-            .insert(url.to_string(), Err(error.to_string()));
+        if let Ok(mut guard) = self.responses.lock() {
+            guard.insert(url.to_string(), Err(error.to_string()));
+        }
     }
 }
 
@@ -358,8 +361,8 @@ impl MockRepoClient {
 #[async_trait::async_trait]
 impl RepoClient for MockRepoClient {
     async fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
-        let responses = self.responses.lock().unwrap();
-        if let Some(res) = responses.get(url) {
+        let guard = self.responses.lock().map_err(|_| "MockRepoClient lock poisoned".to_string())?;
+        if let Some(res) = guard.get(url) {
             res.clone()
         } else {
             Err(format!("Mock 404: {}", url))

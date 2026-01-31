@@ -1,6 +1,6 @@
 # MonARCH Store — Full App Audit
 
-**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+**Last updated:** 2025-01-31 (v0.3.5-alpha)
 
 Exhaustive review of UI/UX, frontend, backend, and every feature area. Reference for understanding the app to the smallest details.
 
@@ -62,7 +62,7 @@ Exhaustive review of UI/UX, frontend, backend, and every feature area. Reference
 **Key effects:**
 
 1. **Update listeners:** `update-progress`, `install-output`, `update-status` → store progress/phase/logs; on `phase === 'complete'` runs delayed post-update checks (`check_reboot_required`, `get_pacnew_warnings`).
-2. **Startup:** `initializeStartup()` — parallel: `fetchInfraStats`, `checkTelemetry`, `get_repo_states`; then `check_initialization_status`. Onboarding vs normal: if unhealthy or first run → onboarding; else pre-warm (ESSENTIAL_IDS, get_trending, prewarmRatings).
+2. **Startup:** `initializeStartup()` — (0) `needs_startup_unlock()`; if true and **Reduce password prompts** is on, request session password then `unlock_pacman_if_stale({ password })`, else `unlock_pacman_if_stale()`. (1) Parallel: `fetchInfraStats`, `checkTelemetry`, `get_repo_states`. (2) `check_initialization_status`. Onboarding vs normal: if unhealthy or first run → onboarding; else optional sync at launch (when "Sync on startup" and DB stale or refresh requested: `apply_os_config`, `sync_system_databases`, `trigger_repo_sync`), then pre-warm (ESSENTIAL_IDS, get_trending, prewarmRatings).
 3. **Search:** Debounced 300ms; `invoke('search_packages', { query })`; request ID used to ignore stale responses; results → `setPackages`, `addSearch`, optional `track_event`.
 4. **Tab change:** "search" → focus input, clear selection; "settings" → scroll to `#system-health` after 100ms.
 
@@ -84,7 +84,7 @@ Exhaustive review of UI/UX, frontend, backend, and every feature area. Reference
 | **SearchPage** | Pre-search UI (history, quick filters, favorites chips) or results grid | `searchQuery`/`packages` from App; sort (best_match/name/updated), filter by source, "Load More" +50 |
 | **InstalledPage** | List of installed apps with filter, Launch, Uninstall, open details | `get_installed_packages`, `get_package_icon`/`get_metadata`, `uninstall_package`, `launch_app`, `get_packages_by_names`/`search_packages` for details |
 | **UpdatesPage** | Pending updates list, "Update All", progress stepper, logs, reboot/pacnew | `check_for_updates`, `perform_system_update`, store: updateProgress/phase/logs, `repair_unlock_pacman`, `listen('update-complete')` |
-| **SettingsPage** | Health dashboard, repos, AUR, sync, theme, accent, one-click, repair, privacy, advanced, about | Many: `get_repo_states`, `toggle_repo`, `reorderRepos`, `triggerManualSync`, `updateOneClick`, `install_monarch_policy`, repair commands, `set_telemetry_enabled`, etc. |
+| **SettingsPage** | Health dashboard, repos, AUR, sync, theme, accent, **Reduce password prompts** (Workflow & Interface), **One-Click Authentication** (Security), repair, privacy, advanced, about | Many: `get_repo_states`, `toggle_repo`/`toggle_repo_family` (errors reported via getErrorService), `triggerManualSync`, `set_one_click_enabled`, `install_monarch_policy`, repair commands (`repair_unlock_pacman`, `fix_keyring_issues`, etc. accept optional password), `set_telemetry_enabled`, etc. |
 | **PackageDetailsFresh** | Single package: variants, install/uninstall, reviews, screenshots, PKGBUILD | `get_package_variants`, `check_installed_status`, `install_package`/`uninstall_package` (via parent), reviews, metadata, icons |
 | **CategoryView** | Category apps with repo filter, sort, pagination, infinite scroll | `get_category_packages_paginated`, `get_chaotic_packages_batch`, `get_repo_states` |
 
@@ -136,7 +136,7 @@ Exhaustive review of UI/UX, frontend, backend, and every feature area. Reference
 - **system.rs:** `get_system_info`, `get_all_installed_names`, `get_infra_stats`, `get_repo_counts`, `get_repo_states`, `is_aur_enabled`, `toggle_repo`, `set_aur_enabled`, `is_one_click_enabled`, `set_one_click_enabled`, `check_security_policy`, `install_monarch_policy`, `optimize_system`, `trigger_repo_sync`, `update_and_install_package`, `is_advanced_mode`, `set_advanced_mode`, `check_app_update`, `is_telemetry_enabled`, `set_telemetry_enabled`, `get_install_mode_command`.
 - **package.rs:** `copy_paths_to_monarch_install`, `abort_installation`, `install_package`, `uninstall_package`, `build_aur_package`, `fetch_pkgbuild`, `get_installed_packages`, `check_for_updates`, `get_orphans`, `remove_orphans`, `check_installed_status`, `get_essentials_list`, `check_reboot_required`, `get_pacnew_warnings`.
 - **update.rs:** `perform_system_update`.
-- **search.rs:** `search_packages`, `search_aur`, `get_packages_by_names`, `get_trending`, `get_package_variants`, `get_category_packages_paginated`.
+- **search.rs:** `search_packages`, `search_aur`, `get_packages_by_names`, `get_chaotic_package_info`, `get_chaotic_packages_batch`, `get_trending`, `get_package_variants`, `get_category_packages_paginated`.
 - **utils.rs:** `get_package_icon`, `clear_cache`, `launch_app`, `track_event`.
 - **reviews.rs:** `submit_review`, `get_local_reviews`.
 
@@ -198,8 +198,8 @@ Helper path: production `/usr/lib/monarch-store/monarch-helper` preferred; dev f
 ### 5.8 Updates
 
 - **List:** `check_for_updates` → PendingUpdate (name, old_version, new_version, repo). Reboot hint if linux/nvidia in list.
-- **Update All:** ConfirmationModal; optional password for AUR; `perform_system_update` fire-and-forget; progress from store/events; "Fix It" for lock/busy (repair_unlock_pacman). Reboot/pacnew banners after completion.
-- **Steps:** Synchronizing Databases → Upgrading System → Updating Community Apps (derived from statusMessage).
+- **Update All:** ConfirmationModal; optional password for AUR; `perform_system_update` fire-and-forget; progress from store/events; "Fix It" for lock/busy (repair_unlock_pacman). Reboot/pacnew banners after completion. Repo packages updated via Helper `Sysupgrade`; AUR updates only for packages not in any sync repo (Chaotic/CachyOS etc.), then build + AlpmInstallFiles.
+- **Steps:** Synchronizing Databases → Upgrading System → Checking for AUR updates (AUR-only) → Building/installing AUR packages (derived from statusMessage).
 
 ### 5.9 Favorites
 

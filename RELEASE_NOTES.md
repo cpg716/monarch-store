@@ -1,16 +1,24 @@
 # Release Notes
 
-**Current version:** v0.3.5-alpha.1
+**Current version:** v0.3.5-alpha
 
 ---
 
-# Release Notes v0.3.5-alpha.1 (Ready for Push)
+# Release Notes v0.3.5-alpha (Ready for Push)
 
+## Latest (2025-01-31)
+- **Security (Fort Knox):** Helper restricts `WriteFile`/`WriteFiles` to `/etc/pacman.d/monarch/` only; command file must be owned by invoking user when using pkexec; 800 ms debounce on helper invokes. See [SECURITY_AUDIT_FORT_KNOX](docs/SECURITY_AUDIT_FORT_KNOX.md).
+- **Telemetry:** Aptabase tracking verified; `onboarding_completed` and `uninstall_package` events added; privacy toggle correct in onboarding and settings; store `checkTelemetry` uses error service.
+- **Error reporting:** Error service used app-wide (App, Settings, Onboarding, InstallMonitor, store, hooks, RepoStatusContext, main); no `console.error` in critical paths.
+- **APIs & clean-up:** Typed `get_cache_size`/`get_orphans_with_size`; Rust logging and unwrap hardening; frontend `AppState` typing; docs cleaned and Fort Knox linked.
+
+## v0.3.5-alpha (base)
 - **AppStream:** `monarch-store.metainfo.xml` (com.monarch.store, developer cpg716, OARS 1.1).
 - **Accessibility:** Escape key and focus trap on all modals (Onboarding, Confirmation, InstallMonitor, RepoSetup, Error, Auth, PKGBUILD, lightbox).
-- **Atomic sync:** No naked `pacman -Sy`; all paths use `-Syu` / `-Syu --needed` (see [ATOMIC_SYNC_AUDIT_v0.3.5](docs/ATOMIC_SYNC_AUDIT_v0.3.5.md)).
+- **Atomic sync:** No naked `pacman -Sy`; all paths use `-Syu` / `-Syu --needed` (see [INSTALL_UPDATE_AUDIT](docs/INSTALL_UPDATE_AUDIT.md)).
 - **Author:** cpg716 as developer/creator (with AI coding tools) in metainfo, package.json, README, PKGBUILD.
 - **Distribution:** PKGBUILD pkgdesc &lt; 80 chars; release tarball + checksums via `scripts/release-finalize-pkgbuild.sh` after tag push (see [RELEASE_PUSH_STEPS](docs/RELEASE_PUSH_STEPS.md)).
+- **Omni-User (v0.3.5):** Self-healing (silent DB repair and auto-unlock during install; no error pop-up for corrupt DB or locked DB). **Startup unlock:** At launch the app calls `needs_startup_unlock()`; if a stale lock exists it runs `unlock_pacman_if_stale` (via Helper RemoveLock). When **Reduce password prompts** is on, the in-app password is used so the system prompt does not appear at launch. **Install cancel:** InstallMonitor Cancel button and close-with-warning; `cancel_install` stops the helper and clears the lock. Glass Cockpit: **Show Detailed Transaction Logs** (Settings → General), **Advanced Repair** (Unlock DB, Fix Keys, Refresh DBs, Clear Cache, Clean Orphans) and **Test Mirrors** per repo (Settings → Repositories; top 3 mirrors with latency via rate-mirrors/reflector). Helper `force_refresh_sync_dbs` reads `/etc/pacman.conf` directly; bootstrap `pacman -Syy` at end of repo_setup. Friendly errors (ALPM_ERR_DB_WRITE → "Auto-unlocking…" with expert view); session password passed to repair invokes. `.gitignore`: added `target` for Cargo build output.
 
 ---
 

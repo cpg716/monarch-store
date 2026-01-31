@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import {
     CheckCircle2, Globe, Palette,
-    Trash2, ShieldCheck, Package, ArrowUp, ArrowDown, RefreshCw, Lock, Clock, ChevronDown, Sparkles, AlertTriangle, Rocket, Activity, Eye, EyeOff, HelpCircle
+    Trash2, ShieldCheck, Package, RefreshCw, Lock, Sparkles, AlertTriangle, Rocket, Activity, ChevronDown, Terminal
 } from 'lucide-react';
 import ConfirmationModal from '../components/ConfirmationModal';
 import SystemHealthSection from '../components/SystemHealthSection';
+import RepositoriesTab from '../components/settings/RepositoriesTab';
+import HardwareOptimization from '../components/settings/HardwareOptimization';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
@@ -13,19 +15,35 @@ import { clsx } from 'clsx';
 import { useTheme } from '../hooks/useTheme';
 import { useToast } from '../context/ToastContext';
 import { useErrorService } from '../context/ErrorContext';
+import { useSessionPassword } from '../context/useSessionPassword';
 import { useSettings } from '../hooks/useSettings';
 import { useDistro } from '../hooks/useDistro';
-import { useAppStore } from '../store/internal_store';
+import { useAppStore, type AppState } from '../store/internal_store';
 
 
 interface SettingsPageProps {
     onRestartOnboarding?: () => void;
+    onRepairComplete?: () => void | Promise<void>;
 }
 
-export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps) {
+/** Matches backend CacheSizeResult */
+interface CacheSizeResult {
+    size_bytes: number;
+    human_readable: string;
+}
+
+/** Matches backend OrphansWithSizeResult */
+interface OrphansWithSizeResult {
+    orphans: string[];
+    total_size_bytes: number;
+    human_readable: string;
+}
+
+export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: SettingsPageProps) {
     const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
     const { success } = useToast();
     const errorService = useErrorService();
+    const { requestSessionPassword } = useSessionPassword();
     const { distro } = useDistro(); // <-- Identity Matrix
 
     // Centralized Logic
@@ -43,8 +61,12 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
     } = useSettings();
 
     // Use store directly for critical reactivity
-    const telemetryEnabled = useAppStore((state: any) => state.telemetryEnabled);
-    const setTelemetry = useAppStore((state: any) => state.setTelemetry);
+    const telemetryEnabled = useAppStore((state: AppState) => state.telemetryEnabled);
+    const setTelemetry = useAppStore((state: AppState) => state.setTelemetry);
+    const verboseLogsEnabled = useAppStore((state: AppState) => state.verboseLogsEnabled);
+    const setVerboseLogsEnabled = useAppStore((state: AppState) => state.setVerboseLogsEnabled);
+    const reducePasswordPrompts = useAppStore((state: AppState) => state.reducePasswordPrompts);
+    const setReducePasswordPrompts = useAppStore((state: AppState) => state.setReducePasswordPrompts);
 
     // Atomic local state for ZERO LANCY UI
     const [localToggle, setLocalToggle] = useState(telemetryEnabled);
@@ -65,11 +87,16 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
 
     const [isOptimizing, setIsOptimizing] = useState(false);
     const [isRepairing, setIsRepairing] = useState<string | null>(null);
+    const [advancedRepairOpen, setAdvancedRepairOpen] = useState(false);
     const [pkgVersion, setPkgVersion] = useState<string>('');
     const [installMode, setInstallMode] = useState<'system' | 'portable'>('portable');
     const [systemInfo, setSystemInfo] = useState<{ kernel: string, distro: string, cpu_optimization: string, pacman_version: string } | null>(null);
     const [repoSyncStatus, setRepoSyncStatus] = useState<Record<string, boolean> | null>(null);
     const [syncProgressMessage, setSyncProgressMessage] = useState<string | null>(null);
+    const [prioritizeOptimized, setPrioritizeOptimized] = useState(false);
+    const [parallelDownloads, setParallelDownloads] = useState(5);
+    const [isRankingMirrors, setIsRankingMirrors] = useState(false);
+    const [mirrorRankTool, setMirrorRankTool] = useState<string | null>(null);
 
     const [modalConfig, setModalConfig] = useState<{
         isOpen: boolean;
@@ -82,10 +109,17 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
     // Initial Load & Scroll Reset
     useEffect(() => {
         window.scrollTo(0, 0);
-        getVersion().then(setPkgVersion).catch(console.error);
-        invoke<string>('get_install_mode_command').then(mode => setInstallMode(mode as any)).catch(console.error);
-        invoke<any>('get_system_info').then(setSystemInfo).catch(console.error);
-        invoke<Record<string, boolean>>('check_repo_sync_status').then(setRepoSyncStatus).catch(console.error);
+        getVersion().then(setPkgVersion).catch((e) => errorService.reportError(e as Error | string));
+        invoke<string>('get_install_mode_command').then(mode => setInstallMode(mode as 'system' | 'portable')).catch((e) => errorService.reportError(e as Error | string));
+        invoke<{ kernel: string; distro: string; cpu_optimization: string; pacman_version: string }>('get_system_info').then(setSystemInfo).catch((e) => errorService.reportError(e as Error | string));
+        invoke<Record<string, boolean>>('check_repo_sync_status').then(setRepoSyncStatus).catch((e) => errorService.reportError(e as Error | string));
+        invoke<string | null>('get_mirror_rank_tool').then(setMirrorRankTool).catch(() => setMirrorRankTool(null));
+        // Load hardware optimization preference
+        const saved = localStorage.getItem('prioritize-optimized-binaries');
+        if (saved !== null) setPrioritizeOptimized(saved === 'true');
+        // Load parallel downloads (default 5, as set in helper)
+        const savedParallel = localStorage.getItem('parallel-downloads');
+        if (savedParallel) setParallelDownloads(parseInt(savedParallel, 10));
     }, []);
 
     // Detailed sync progress (GPG/db steps) for Repository Control
@@ -113,16 +147,6 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
         return false;
     };
 
-    const moveRepo = (index: number, direction: 'up' | 'down') => {
-        const newRepos = [...repos];
-        if (direction === 'up' && index > 0) {
-            [newRepos[index], newRepos[index - 1]] = [newRepos[index - 1], newRepos[index]];
-        } else if (direction === 'down' && index < newRepos.length - 1) {
-            [newRepos[index], newRepos[index + 1]] = [newRepos[index + 1], newRepos[index]];
-        }
-        reorderRepos(newRepos);
-    };
-
     const handleOptimize = async () => {
         setIsOptimizing(true);
         try {
@@ -135,17 +159,27 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
         }
     };
 
-    const handleClearCache = () => {
+    const handleClearCache = async () => {
+        // Query cache size before showing confirmation
+        let cacheInfo = "all cached data";
+        try {
+            const size = await invoke<CacheSizeResult>('get_cache_size');
+            cacheInfo = size.human_readable || "all cached data";
+        } catch (e) {
+            // Fallback if command doesn't exist yet
+            console.warn("get_cache_size not available:", e);
+        }
         setModalConfig({
             isOpen: true,
-            title: "Clear Application Cache",
-            message: "Are you sure you want to wipe all application caches? This will resolve metadata issues but may require re-downloading some data.",
+            title: "Clear Application & Package Cache",
+            message: `Clear ${cacheInfo} of cached packages? This will clear in-app caches and the pacman package cache on disk, freeing space. You may need to re-download packages on next install.`,
             variant: 'danger',
             onConfirm: async () => {
                 setIsOptimizing(true);
                 try {
-                    const result = await invoke<string>('clear_cache');
-                    success(result);
+                    await invoke('clear_cache');
+                    await invoke('clear_pacman_package_cache', { keep: 0 });
+                    success('Application and package cache cleared.');
                     refresh();
                 } catch (e) {
                     errorService.reportError(e as Error | string);
@@ -156,7 +190,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
         });
     };
 
-    const handleOrphans = () => {
+    const handleOrphans = async () => {
         setModalConfig({
             isOpen: true,
             title: "Scan for Orphans",
@@ -168,16 +202,26 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                     const orphans = await invoke<string[]>('get_orphans');
                     if (orphans.length === 0) {
                         success("No orphan packages found.");
+                        setIsRepairing(null);
                     } else {
+                        // Query total size of orphans
+                        let sizeInfo = "";
+                        try {
+                            const size = await invoke<OrphansWithSizeResult>('get_orphans_with_size');
+                            sizeInfo = size.human_readable ? ` (~${size.human_readable})` : "";
+                        } catch (e) {
+                            // Fallback if command doesn't exist yet
+                            console.warn("get_orphans_with_size not available:", e);
+                        }
                         setModalConfig({
                             isOpen: true,
                             title: "Remove Orphans",
-                            message: `Found ${orphans.length} orphans. Remove them?`,
+                            message: `Found ${orphans.length} orphan package${orphans.length > 1 ? 's' : ''}${sizeInfo}. Remove them?`,
                             variant: 'danger',
                             onConfirm: async () => {
                                 setIsRepairing("orphans");
                                 await invoke('remove_orphans', { orphans });
-                                success(`Successfully removed ${orphans.length} packages.`);
+                                success(`Successfully removed ${orphans.length} package${orphans.length > 1 ? 's' : ''}.`);
                                 setIsRepairing(null);
                             }
                         });
@@ -185,7 +229,6 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                     }
                 } catch (e) {
                     errorService.reportError(e as Error | string);
-                } finally {
                     setIsRepairing(null);
                 }
             }
@@ -200,13 +243,60 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
             if (task === 'keyring') { cmd = 'repair_reset_keyring'; label = 'Keyring Repair'; }
             if (task === 'unlock') { cmd = 'repair_unlock_pacman'; label = 'Database Unlock'; }
 
-            await invoke(cmd, { password: null });
+            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+            await invoke(cmd, { password: pwd });
             success(`${label} completed successfully.`);
+            await onRepairComplete?.();
             refresh();
         } catch (e) {
             errorService.reportError(e as Error | string);
         } finally {
             setIsRepairing(null);
+        }
+    };
+
+    const handleForceRefreshDatabases = async () => {
+        setIsRepairing("refresh_db");
+        try {
+            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+            await invoke("force_refresh_databases", { password: pwd });
+            success("Databases refreshed successfully.");
+            await onRepairComplete?.();
+        } catch (e) {
+            errorService.reportError(e as Error | string);
+        } finally {
+            setIsRepairing(null);
+        }
+    };
+
+    const handlePrioritizeOptimized = async (enabled: boolean) => {
+        setPrioritizeOptimized(enabled);
+        localStorage.setItem('prioritize-optimized-binaries', String(enabled));
+        // Backend will use this preference when building priority order in transactions.rs
+        success(enabled ? "Optimized binaries prioritized" : "Using standard repository priority");
+    };
+
+    const handleParallelDownloads = async (value: number) => {
+        setParallelDownloads(value);
+        localStorage.setItem('parallel-downloads', value.toString());
+        try {
+            // Backend command to update /etc/pacman.conf
+            await invoke('set_parallel_downloads', { count: value });
+            success(`Parallel downloads set to ${value}. Restart MonARCH for full effect.`);
+        } catch (e) {
+            errorService.reportError(e as Error | string);
+        }
+    };
+
+    const handleMirrorRanking = async () => {
+        setIsRankingMirrors(true);
+        try {
+            await invoke('rank_mirrors');
+            success("Mirrors ranked successfully. Fastest mirrors are now prioritized.");
+        } catch (e) {
+            errorService.reportError(e as Error | string);
+        } finally {
+            setIsRankingMirrors(false);
         }
     };
 
@@ -222,19 +312,19 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                 {/* Light Mode Gradient: Subtle fade */}
                 <div className="absolute inset-0 bg-gradient-to-b from-white/0 to-slate-200/50 z-0 dark:hidden" />
 
-                <div className="relative z-20 px-8 pb-8 w-full flex justify-between items-end">
-                    <div>
-                        <h1 className="text-4xl lg:text-6xl font-black text-slate-900 dark:text-white tracking-tight leading-none mb-3 drop-shadow-sm dark:drop-shadow-2xl flex items-center gap-4 transition-colors">
-                            <ShieldCheck className="text-blue-600 dark:text-blue-400" size={56} />
+                <div className="relative z-20 px-6 sm:px-8 pb-8 w-full max-w-4xl mx-auto flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4">
+                    <div className="min-w-0">
+                        <h1 className="text-4xl lg:text-5xl font-black text-slate-900 dark:text-white tracking-tight leading-none mb-3 drop-shadow-sm dark:drop-shadow-2xl flex items-center gap-4 transition-colors">
+                            <ShieldCheck className="text-blue-600 dark:text-blue-400 shrink-0" size={56} />
                             Settings
                         </h1>
-                        <p className="text-lg text-slate-600 dark:text-white/70 font-medium max-w-2xl transition-colors">
+                        <p className="text-lg text-slate-600 dark:text-white/70 font-medium max-w-prose break-words transition-colors">
                             Configure repositories, personalize your experience, and monitor system health.
                         </p>
                     </div>
 
                     {systemInfo && (
-                        <div className="bg-white/50 dark:bg-white/10 backdrop-blur-md px-4 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-right shadow-sm dark:shadow-none">
+                        <div className="bg-white/50 dark:bg-white/10 backdrop-blur-md px-4 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-right shadow-sm dark:shadow-none shrink-0">
                             <div className="text-sm font-bold text-slate-900 dark:text-white">{systemInfo.distro}</div>
                             <div className="text-xs text-slate-500 dark:text-white/50 font-mono mt-0.5">
                                 {systemInfo.kernel} • {systemInfo.cpu_optimization}
@@ -244,15 +334,15 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-8 space-y-12">
+            <div className="flex-1 overflow-y-auto p-6 space-y-8 max-w-4xl mx-auto w-full">
                 {/* System Health Dashboard */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
                     {/* 1. Global Connectivity */}
                     <div className="relative group">
                         <div className="absolute inset-0 bg-green-500/20 blur-3xl opacity-20 group-hover:opacity-40 transition-opacity duration-500" />
-                        <div className="relative bg-white dark:bg-white/5 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-3xl p-6 h-full flex flex-col justify-between hover:bg-slate-50 dark:hover:bg-white/10 transition-colors shadow-sm dark:shadow-none">
+                        <div className="relative bg-app-card/50 dark:bg-white/5 backdrop-blur-md border border-app-border rounded-xl p-6 h-full flex flex-col justify-between hover:bg-app-card/80 dark:hover:bg-white/10 transition-colors shadow-sm dark:shadow-none">
                             <div className="flex justify-between items-start mb-4">
-                                <div className="p-3 bg-green-500/10 rounded-2xl text-green-600 dark:text-green-400">
+                                <div className="p-3 bg-green-500/10 rounded-lg text-green-600 dark:text-green-400 w-10 h-10 flex items-center justify-center shrink-0">
                                     <Globe size={24} />
                                 </div>
                                 <div className="text-right">
@@ -278,9 +368,9 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                     {/* 2. Sync Pipeline */}
                     <div className="relative group">
                         <div className="absolute inset-0 bg-blue-500/20 blur-3xl opacity-20 group-hover:opacity-40 transition-opacity duration-500" />
-                        <div className="relative bg-white dark:bg-white/5 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-3xl p-6 h-full flex flex-col justify-between hover:bg-slate-50 dark:hover:bg-white/10 transition-colors shadow-sm dark:shadow-none">
+                        <div className="relative bg-app-card/50 dark:bg-white/5 backdrop-blur-md border border-app-border rounded-xl p-6 h-full flex flex-col justify-between hover:bg-app-card/80 dark:hover:bg-white/10 transition-colors shadow-sm dark:shadow-none">
                             <div className="flex justify-between items-start mb-4">
-                                <div className="p-3 bg-blue-500/10 rounded-2xl text-blue-600 dark:text-blue-400">
+                                <div className="p-3 bg-blue-500/10 rounded-lg text-blue-600 dark:text-blue-400 w-10 h-10 flex items-center justify-center shrink-0">
                                     <RefreshCw size={24} className={clsx(isSyncing && "animate-spin")} />
                                 </div>
                                 <div className="text-right">
@@ -308,9 +398,9 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                     {/* 3. Integrity */}
                     <div className="relative group">
                         <div className="absolute inset-0 bg-purple-500/20 blur-3xl opacity-20 group-hover:opacity-40 transition-opacity duration-500" />
-                        <div className="relative bg-white dark:bg-white/5 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-3xl p-6 h-full flex flex-col justify-between hover:bg-slate-50 dark:hover:bg-white/10 transition-colors shadow-sm dark:shadow-none">
+                        <div className="relative bg-app-card/50 dark:bg-white/5 backdrop-blur-md border border-app-border rounded-xl p-6 h-full flex flex-col justify-between hover:bg-app-card/80 dark:hover:bg-white/10 transition-colors shadow-sm dark:shadow-none">
                             <div className="flex justify-between items-start mb-4">
-                                <div className="p-3 bg-purple-500/10 rounded-2xl text-purple-600 dark:text-purple-400">
+                                <div className="p-3 bg-purple-500/10 rounded-lg text-purple-600 dark:text-purple-400 w-10 h-10 flex items-center justify-center shrink-0">
                                     <ShieldCheck size={24} className={clsx(isOptimizing && "animate-bounce")} />
                                 </div>
                                 <div className="text-right">
@@ -323,7 +413,8 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                     <span className="text-2xl font-black text-slate-900 dark:text-white">100%</span>
                                     <button
                                         onClick={handleOptimize}
-                                        className="text-xs text-purple-600 dark:text-purple-400 font-bold bg-purple-500/10 dark:bg-purple-500/20 px-2 py-1 rounded-lg hover:bg-purple-500/20 dark:hover:bg-purple-500/30 transition-colors"
+                                        aria-label={isOptimizing ? "Running system health check" : "Run system health check"}
+                                        className="text-xs text-purple-600 dark:text-purple-400 font-bold bg-purple-500/10 dark:bg-purple-500/20 px-2 py-1 rounded-lg hover:bg-purple-500/20 dark:hover:bg-purple-500/30 transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500/50"
                                     >
                                         {isOptimizing ? "Running..." : "Run Check"}
                                     </button>
@@ -337,309 +428,119 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                 </div>
 
 
-                {/* Main Content Sections */}
-                <div className="space-y-12">
-                    {/* Sync Control */}
-                    <section>
-                        <h2 className="text-2xl font-black text-slate-800 dark:text-white mb-6 flex items-center gap-3">
-                            Repository Control
-                        </h2>
-                        <div className="bg-white dark:bg-white/5 backdrop-blur-xl rounded-3xl p-8 border border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/10 transition-colors shadow-sm dark:shadow-none">
-                            <div className="flex flex-col md:flex-row items-center justify-between mb-8 gap-6">
-                                <div>
-                                    <h3 className="font-bold text-slate-800 dark:text-white text-xl mb-2 flex items-center gap-2">
-                                        <RefreshCw size={24} className={clsx(isSyncing ? "animate-spin text-blue-500" : "text-slate-400 dark:text-white/50")} />
-                                        Force Database Synchronization
-                                    </h3>
-                                    <p className="text-slate-500 dark:text-white/60 text-base max-w-xl leading-relaxed">
-                                        Refresh local package catalogs. This updates Store listings while keeping your system configuration intact.
-                                    </p>
-                                </div>
-                                <button
-                                    onClick={triggerManualSync}
-                                    disabled={isSyncing}
-                                    aria-label="Sync repositories now"
-                                    aria-busy={isSyncing}
-                                    className={clsx(
-                                        "px-8 py-4 rounded-2xl font-bold transition-all flex items-center gap-3 text-lg shadow-xl min-w-[200px] justify-center",
-                                        isSyncing
-                                            ? "bg-slate-100 dark:bg-white/5 text-slate-400 dark:text-white/50 cursor-not-allowed border border-slate-200 dark:border-white/5"
-                                            : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20 active:scale-95 border border-white/10"
-                                    )}
-                                >
-                                    <RefreshCw size={20} className={isSyncing ? "animate-spin" : ""} />
-                                    {isSyncing ? 'Syncing...' : 'Sync Now'}
-                                </button>
-                            </div>
-                            {isSyncing && syncProgressMessage && (
-                                <p className="text-sm text-slate-600 dark:text-white/70 font-medium mt-2" aria-live="polite">
-                                    {syncProgressMessage}
-                                </p>
-                            )}
+                {/* Single-column layout at all sizes (medium-window look) */}
+                <div className="flex flex-col gap-10">
+                    <div className="space-y-10">
+                        <RepositoriesTab
+                            isSyncing={isSyncing}
+                            syncProgressMessage={syncProgressMessage}
+                            triggerManualSync={triggerManualSync}
+                            repoCounts={repoCounts}
+                            isAurEnabled={isAurEnabled}
+                            toggleAur={toggleAur}
+                            syncOnStartupEnabled={syncOnStartupEnabled}
+                            setSyncOnStartup={setSyncOnStartup}
+                            syncIntervalHours={syncIntervalHours}
+                            updateSyncInterval={updateSyncInterval}
+                            repos={repos}
+                            toggleRepo={toggleRepo}
+                            reorderRepos={reorderRepos}
+                            repoSyncStatus={repoSyncStatus}
+                            distro={distro}
+                            isRepoLocked={isRepoLocked}
+                            reportWarning={(msg) => errorService.reportWarning(msg)}
+                            reportError={(msg) => errorService.reportError(msg)}
+                        />
+                        <HardwareOptimization
+                            systemInfo={systemInfo}
+                            repos={repos}
+                            prioritizeOptimized={prioritizeOptimized}
+                            onPrioritizeOptimized={handlePrioritizeOptimized}
+                            parallelDownloads={parallelDownloads}
+                            onParallelDownloads={handleParallelDownloads}
+                            isRankingMirrors={isRankingMirrors}
+                            onRankMirrors={handleMirrorRanking}
+                            mirrorRankTool={mirrorRankTool}
+                        />
+                    </div>
+                    <div className="space-y-10">
+                        <SystemHealthSection />
 
-                            {/* Stats Grid */}
-                            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 pt-8 border-t border-slate-200 dark:border-white/5">
-                                {Object.entries(repoCounts).sort((a, b) => b[1] - a[1]).map(([name, count]) => (
-                                    <div key={name} className="flex flex-col items-center justify-center bg-slate-100 dark:bg-black/20 p-4 rounded-2xl border border-slate-200 dark:border-white/5 h-24">
-                                        <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-white/40 mb-1 tracking-widest">{name}</span>
-                                        <span className="text-xl font-black text-slate-800 dark:text-white">{count.toLocaleString()}</span>
-                                    </div>
-                                ))}
-                                {isAurEnabled && (
-                                    <div className="flex flex-col items-center justify-center bg-amber-500/10 p-4 rounded-2xl border border-amber-500/20 h-24">
-                                        <span className="text-[10px] uppercase font-bold text-amber-600 dark:text-amber-500 mb-1 tracking-widest">AUR</span>
-                                        <span className="text-xl font-black text-amber-600 dark:text-amber-500">Active</span>
-                                    </div>
-                                )}
-                                {Object.keys(repoCounts).length === 0 && !isAurEnabled && (
-                                    <div className="col-span-full text-center text-sm text-slate-400 dark:text-white/30 italic py-4">
-                                        Waiting for synchronization...
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Sync on startup */}
-                            <div className="pt-6 border-t border-slate-200 dark:border-white/5 mt-6">
-                                <div className="flex items-center justify-between gap-4">
-                                    <div className="flex items-center gap-4">
-                                        <div className="p-3 bg-slate-100 dark:bg-white/10 rounded-xl text-slate-600 dark:text-white/70">
-                                            <RefreshCw size={24} />
-                                        </div>
-                                        <div>
-                                            <h4 className="font-bold text-slate-800 dark:text-white text-lg">Sync repositories when app starts</h4>
-                                            <p className="text-sm text-slate-500 dark:text-white/50">
-                                                Refresh package databases on launch (or use Sync Now manually)
-                                            </p>
-                                        </div>
+                        {/* Workflow & Appearance: single column */}
+                        <div className="space-y-10">
+                        {/* Integration */}
+                        <section className="flex flex-col h-full">
+                            <h2 className="text-lg font-semibold tracking-tight text-app-fg mb-4 flex items-center gap-2">
+                                <Palette size={20} className="text-app-muted" /> Workflow & Interface
+                            </h2>
+                            <div className="bg-app-card/50 dark:bg-white/5 backdrop-blur-md border border-app-border rounded-xl p-6 space-y-6 flex-1 shadow-sm dark:shadow-none">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                    <div className="min-w-0 flex-1 max-w-prose">
+                                        <h3 className="text-lg font-semibold tracking-tight text-app-fg flex items-center gap-2">
+                                            <Terminal size={16} className="text-app-muted shrink-0" /> Show Detailed Transaction Logs
+                                        </h3>
+                                        <p className="text-sm text-app-muted leading-relaxed mt-1 break-words">Expand the install modal to show real-time pacman/makepkg output (Glass Cockpit).</p>
                                     </div>
                                     <button
                                         type="button"
                                         role="switch"
-                                        aria-checked={syncOnStartupEnabled}
-                                        aria-label={syncOnStartupEnabled ? 'Sync on startup is on' : 'Sync on startup is off'}
-                                        onClick={() => setSyncOnStartup(!syncOnStartupEnabled)}
+                                        aria-checked={verboseLogsEnabled}
+                                        aria-label="Toggle detailed transaction logs"
+                                        onClick={() => setVerboseLogsEnabled(!verboseLogsEnabled)}
                                         className={clsx(
-                                            'relative inline-flex h-8 w-14 shrink-0 rounded-full border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50',
-                                            syncOnStartupEnabled ? 'border-blue-500 bg-blue-500' : 'border-slate-300 dark:border-white/20 bg-slate-200 dark:bg-white/10'
+                                            "w-14 h-8 rounded-full p-1 transition-all shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500/50 shrink-0",
+                                            verboseLogsEnabled ? "bg-blue-600" : "bg-slate-200 dark:bg-white/10"
                                         )}
                                     >
-                                        <span
-                                            className={clsx(
-                                                'pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition',
-                                                syncOnStartupEnabled ? 'translate-x-6' : 'translate-x-1'
-                                            )}
-                                        />
+                                        <div className={clsx(
+                                            "w-6 h-6 bg-white rounded-full transition-transform duration-300 shadow-md",
+                                            verboseLogsEnabled ? "translate-x-6" : "translate-x-0"
+                                        )} />
                                     </button>
                                 </div>
-                            </div>
 
-                            {/* Auto Sync Interval */}
-                            <div className="pt-8 border-t border-slate-200 dark:border-white/5 mt-8">
-                                <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-4">
-                                        <div className="p-3 bg-blue-500/10 dark:bg-blue-500/20 rounded-xl text-blue-600 dark:text-blue-400">
-                                            <Clock size={24} />
-                                        </div>
-                                        <div>
-                                            <h4 className="font-bold text-slate-800 dark:text-white text-lg">Auto Sync Interval</h4>
-                                            <p className="text-sm text-slate-500 dark:text-white/50">
-                                                Automatically refresh package databases
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <div className="relative">
-                                        <select
-                                            value={syncIntervalHours}
-                                            onChange={(e) => {
-                                                const val = parseInt(e.target.value, 10);
-                                                updateSyncInterval(val);
-                                            }}
-                                            className="appearance-none bg-slate-100 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-xl px-6 py-3 pr-12 text-slate-800 dark:text-white font-bold focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer min-w-[200px]"
-                                        >
-                                            <option value={1}>Every 1 hour</option>
-                                            <option value={3}>Every 3 hours</option>
-                                            <option value={6}>Every 6 hours</option>
-                                            <option value={12}>Every 12 hours</option>
-                                            <option value={24}>Every 24 hours</option>
-                                        </select>
-                                        <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 dark:text-white/50 pointer-events-none" />
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </section>
+                                <div className="h-px bg-slate-100 dark:bg-white/5 w-full" />
 
-                    {/* Repository Management */}
-                    <section>
-                        <h2 className="text-2xl font-black text-slate-800 dark:text-white mb-6 flex items-center gap-3">
-                            <Package size={24} className="text-slate-400 dark:text-white/50" /> Software Sources
-                        </h2>
-
-                        <div className="bg-white dark:bg-white/5 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-3xl p-8 shadow-sm dark:shadow-none">
-                            <p className="text-sm text-slate-500 dark:text-white/50 mb-8 px-2 max-w-3xl leading-relaxed">
-                                Toggling a source here <strong className="text-slate-800 dark:text-white">hides it from the Store</strong> but keeps it active in the system. Your installed apps <strong className="text-green-600 dark:text-green-400">continue to update safely</strong>.
-                            </p>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {repos.map((repo, idx) => {
-                                    const locked = isRepoLocked(repo.name);
-                                    return (
-                                    <div key={repo.name} className={clsx(
-                                        "relative flex flex-col p-6 rounded-2xl border transition-all duration-300 group overflow-hidden",
-                                        repo.enabled ? "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 hover:shadow-xl hover:-translate-y-1" : "bg-slate-100 dark:bg-black/20 border-slate-200 dark:border-white/5 opacity-80 hover:opacity-100"
-                                    )}>
-                                        <div className="flex items-center justify-between w-full relative z-10">
-                                            <div className="flex items-center gap-4">
-                                                <div className="flex flex-col gap-1 text-slate-300 dark:text-white/20 group-hover:text-slate-500 dark:group-hover:text-white/60 transition-colors" role="group" aria-label={`Reorder ${repo.name}`}>
-                                                    <button type="button" onClick={() => moveRepo(idx, 'up')} disabled={idx === 0} aria-label={`Move ${repo.name} up`} className="hover:text-slate-800 dark:hover:text-white disabled:opacity-0 transition-colors"><ArrowUp size={16} /></button>
-                                                    <button type="button" onClick={() => moveRepo(idx, 'down')} disabled={idx === repos.length - 1} aria-label={`Move ${repo.name} down`} className="hover:text-slate-800 dark:hover:text-white disabled:opacity-0 transition-colors"><ArrowDown size={16} /></button>
-                                                </div>
-                                                <div>
-                                                    <h4 className={clsx("font-bold text-lg", repo.enabled ? "text-slate-800 dark:text-white" : "text-slate-500 dark:text-white/50")}>
-                                                        {repo.name}
-                                                        {idx === 0 && repo.enabled && <span className="ml-3 text-[10px] bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-300 border border-blue-500/20 dark:border-blue-500/30 px-2 py-0.5 rounded-full uppercase tracking-wider font-bold">Primary</span>}
-                                                        {locked && (
-                                                            <span className="ml-3 text-[10px] bg-red-500/10 dark:bg-red-500/20 text-red-600 dark:text-red-300 border border-red-500/20 dark:border-red-500/30 px-2 py-0.5 rounded-full uppercase tracking-wider font-bold flex items-center gap-1 inline-flex">
-                                                                <Lock size={8} /> Blocked by {distro.pretty_name}
-                                                            </span>
-                                                        )}
-                                                    </h4>
-                                                    <p className="text-xs text-slate-500 dark:text-white/40 mt-1 line-clamp-1">{repo.description}</p>
-                                                    {/* Identity: Visible vs Hidden vs Blocked */}
-                                                    <p className="text-[10px] font-medium mt-2 flex items-center gap-1.5 text-slate-500 dark:text-white/45">
-                                                        {locked ? (
-                                                            <><Lock size={10} className="shrink-0" /> Incompatible with your system</>
-                                                        ) : repo.enabled ? (
-                                                            <><Eye size={10} className="shrink-0 text-blue-500 dark:text-blue-400" /> Visible in Store</>
-                                                        ) : (
-                                                            <><EyeOff size={10} className="shrink-0" /> Hidden from Store · Still receives updates</>
-                                                        )}
-                                                    </p>
-                                                    {/* Why is this blocked? (Chaotic-AUR on Manjaro etc.) */}
-                                                    {locked && (repo.id === 'chaotic-aur' || repo.name === 'Chaotic-AUR') && (
-                                                        <details className="mt-3 group/why">
-                                                            <summary className="text-[10px] font-bold text-slate-500 dark:text-white/45 cursor-pointer hover:text-slate-700 dark:hover:text-white/70 inline-flex items-center gap-1.5 list-none [&::-webkit-details-marker]:hidden">
-                                                                <HelpCircle size={10} className="shrink-0" /> Why is this blocked?
-                                                            </summary>
-                                                            <p className="mt-2 text-[10px] text-slate-600 dark:text-white/50 leading-relaxed pl-4 border-l-2 border-red-500/30">
-                                                                Chaotic-AUR builds are tied to Arch’s glibc and kernel ABI. On {distro.pretty_name} those differ, so packages from this repo can cause library conflicts and partial upgrades. Keeping it disabled avoids breakage.
-                                                            </p>
-                                                        </details>
-                                                    )}
-                                                </div>
-                                            </div>
-
-                                            <button
-                                                type="button"
-                                                role="switch"
-                                                aria-checked={repo.enabled}
-                                                aria-disabled={locked}
-                                                aria-label={locked ? `${repo.name} is blocked by ${distro.pretty_name}` : repo.enabled ? `Hide ${repo.name} from Store` : `Show ${repo.name} in Store`}
-                                                onClick={() => {
-                                                    if (locked) {
-                                                        errorService.reportWarning(`This repository is incompatible with ${distro.pretty_name}.`);
-                                                        return;
-                                                    }
-                                                    toggleRepo(repo.id);
-                                                }}
-                                                disabled={locked}
-                                                className={clsx(
-                                                    "w-12 h-7 rounded-full p-1 transition-all",
-                                                    locked ? "bg-red-500/10 cursor-not-allowed border border-red-500/20" :
-                                                        repo.enabled ? "bg-blue-600 shadow-lg shadow-blue-500/30" : "bg-slate-300 dark:bg-white/10"
-                                                )}
-                                            >
-                                                <div className={clsx(
-                                                    "w-5 h-5 shadow-xl rounded-full transition-transform duration-300",
-                                                    locked ? "bg-red-500/50 translate-x-0" :
-                                                        repo.enabled ? "translate-x-5 bg-white" : "translate-x-0 bg-white"
-                                                )} />
-                                            </button>
-                                        </div>
-
-                                        {/* Background Decor */}
-                                        {repo.enabled && (
-                                            <div className="absolute -bottom-10 -right-10 w-32 h-32 bg-blue-500/5 dark:bg-blue-500/10 blur-3xl rounded-full pointer-events-none group-hover:bg-blue-500/10 dark:group-hover:bg-blue-500/20 transition-colors" />
-                                        )}
-
-                                        {/* Sync Warning */}
-                                        {repo.enabled && repoSyncStatus && repoSyncStatus[repo.name] === false && (
-                                            <div className="mt-4 pt-4 border-t border-slate-200 dark:border-white/5 flex items-start gap-3 animate-in slide-in-from-top-2">
-                                                <AlertTriangle size={16} className="text-amber-500 shrink-0 mt-0.5" />
-                                                <div>
-                                                    <p className="text-xs font-bold text-amber-500">Sync Required</p>
-                                                    <p className="text-[10px] text-slate-400 dark:text-white/40 mt-0.5">Database missing. Will auto-fix on next install.</p>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                    );
-                                })}
-                            </div>
-
-                            {/* AUR Section */}
-                            <div className="mt-8 pt-8 border-t border-slate-200 dark:border-white/5">
-                                <div className="relative overflow-hidden flex flex-col md:flex-row items-center justify-between p-6 rounded-3xl border border-amber-500/20 bg-amber-500/5 group">
-                                    <div className="absolute inset-0 bg-amber-500/10 blur-3xl opacity-0 group-hover:opacity-20 transition-opacity duration-500" />
-
-                                    <div className="flex items-center gap-5 relative z-10">
-                                        <div className="p-4 bg-amber-500/20 rounded-2xl text-amber-600 dark:text-amber-500 shadow-lg shadow-amber-900/10 dark:shadow-amber-900/20">
-                                            <Lock size={24} />
-                                        </div>
-                                        <div>
-                                            <h4 className="font-bold text-amber-700 dark:text-amber-500 text-lg flex items-center gap-3">
-                                                Enable AUR <span className="text-[10px] bg-amber-500 text-white dark:text-black px-2 py-0.5 rounded font-black tracking-widest">EXPERIMENTAL</span>
-                                            </h4>
-                                            <p className="text-sm text-amber-800/60 dark:text-amber-200/60 mt-1 max-w-md">
-                                                Access millions of community-maintained packages.
-                                                <br />⚠ Use at your own risk. Not officially supported.
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    <div className="mt-4 md:mt-0 relative z-10">
-                                        <button
-                                            type="button"
-                                            role="switch"
-                                            aria-checked={isAurEnabled}
-                                            aria-label={isAurEnabled ? 'Disable AUR' : 'Enable AUR'}
-                                            onClick={() => toggleAur(!isAurEnabled)}
-                                            className={clsx(
-                                                "w-14 h-8 rounded-full p-1 transition-all shadow-xl",
-                                                isAurEnabled ? "bg-amber-500 shadow-amber-500/20" : "bg-slate-200 dark:bg-white/10"
-                                            )}
-                                        >
-                                            <div className={clsx(
-                                                "w-6 h-6 bg-white shadow-xl rounded-full transition-transform duration-300",
-                                                isAurEnabled ? "translate-x-6" : "translate-x-0"
-                                            )} />
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </section>
-
-                    {/* Smart Repair: health-check–driven alerts (DB/keyring) */}
-                    <SystemHealthSection />
-
-                    {/* Customization & Workflow Grid */}
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-                        {/* Integration */}
-                        <section className="flex flex-col h-full">
-                            <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-6 flex items-center gap-3">
-                                <Palette size={22} className="text-slate-400 dark:text-white/50" /> Workflow & Interface
-                            </h2>
-                            <div className="bg-white dark:bg-white/5 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-3xl p-8 space-y-8 flex-1 shadow-sm dark:shadow-none">
-                                <div className="flex items-center justify-between">
-                                    <div className="max-w-[70%]">
-                                        <h3 className="font-bold text-slate-800 dark:text-white text-lg">Native Notifications</h3>
-                                        <p className="text-sm text-slate-500 dark:text-white/50 mt-1">Broadcast install completions to your desktop.</p>
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                    <div className="min-w-0 flex-1 max-w-prose">
+                                        <h3 className="font-bold text-slate-800 dark:text-white text-lg flex items-center gap-2">
+                                            <Lock size={16} className="text-slate-500 dark:text-white/50 shrink-0" /> Reduce password prompts
+                                        </h3>
+                                        <p className="text-sm text-slate-500 dark:text-white/50 mt-1 break-words leading-relaxed">Use one password in MonARCH for this session (about 15 min). Not stored. Less secure than using the system prompt each time.</p>
                                     </div>
                                     <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={reducePasswordPrompts}
+                                        aria-label={reducePasswordPrompts ? "Use system prompt each time" : "Reduce password prompts"}
+                                        onClick={() => setReducePasswordPrompts(!reducePasswordPrompts)}
+                                        className={clsx(
+                                            "w-14 h-8 rounded-full p-1 transition-all shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500/50 shrink-0",
+                                            reducePasswordPrompts ? "bg-amber-500" : "bg-slate-200 dark:bg-white/10"
+                                        )}
+                                    >
+                                        <div className={clsx(
+                                            "w-6 h-6 bg-white rounded-full transition-transform duration-300 shadow-md",
+                                            reducePasswordPrompts ? "translate-x-6" : "translate-x-0"
+                                        )} />
+                                    </button>
+                                </div>
+
+                                <div className="h-px bg-slate-100 dark:bg-white/5 w-full" />
+
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                    <div className="min-w-0 flex-1 max-w-prose">
+                                        <h3 className="text-lg font-semibold tracking-tight text-app-fg">Native Notifications</h3>
+                                        <p className="text-sm text-app-muted leading-relaxed mt-1 break-words">Broadcast install completions to your desktop.</p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={notificationsEnabled}
+                                        aria-label={notificationsEnabled ? "Disable notifications" : "Enable notifications"}
                                         onClick={() => updateNotifications(!notificationsEnabled)}
                                         className={clsx(
-                                            "w-14 h-8 rounded-full p-1 transition-all shadow-lg",
+                                            "w-14 h-8 rounded-full p-1 transition-all shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500/50 shrink-0",
                                             notificationsEnabled ? "bg-blue-600" : "bg-slate-200 dark:bg-white/10"
                                         )}
                                     >
@@ -652,16 +553,17 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
 
                                 <div className="h-px bg-slate-100 dark:bg-white/5 w-full" />
 
-                                <div className="flex items-center justify-between">
-                                    <div className="max-w-[70%]">
-                                        <h3 className="font-bold text-slate-800 dark:text-white text-lg flex items-center gap-2">
-                                            <Sparkles size={16} className="text-blue-500 dark:text-blue-400" /> Initial Setup
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                    <div className="min-w-0 flex-1 max-w-prose">
+                                        <h3 className="text-lg font-semibold tracking-tight text-app-fg flex items-center gap-2">
+                                            <Sparkles size={16} className="text-blue-500 dark:text-blue-400 shrink-0" /> Initial Setup
                                         </h3>
-                                        <p className="text-sm text-slate-500 dark:text-white/50 mt-1">Re-run the welcome wizard to configure preferences.</p>
+                                        <p className="text-sm text-app-muted leading-relaxed mt-1 break-words">Re-run the welcome wizard to configure preferences.</p>
                                     </div>
                                     <button
                                         onClick={onRestartOnboarding}
-                                        className="h-10 px-6 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-slate-700 dark:text-white font-bold text-xs transition-all border border-slate-200 dark:border-white/10 active:scale-95"
+                                        aria-label="Re-run onboarding wizard"
+                                        className="h-10 px-6 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-slate-700 dark:text-white font-bold text-xs transition-all border border-slate-200 dark:border-white/10 active:scale-95 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                                     >
                                         Run Wizard
                                     </button>
@@ -669,25 +571,27 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                             </div>
                         </section>
 
-                        {/* Appearance (Moved into Grid) */}
+                        {/* Appearance */}
                         <section className="flex flex-col h-full">
-                            <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-6 flex items-center gap-3">
-                                <Palette size={22} className="text-slate-400 dark:text-white/50" /> Appearance
+                            <h2 className="text-lg font-semibold tracking-tight text-app-fg mb-4 flex items-center gap-2">
+                                <Palette size={20} className="text-app-muted" /> Appearance
                             </h2>
-                            <div className="bg-white dark:bg-white/5 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-3xl p-8 transition-colors hover:bg-slate-50 dark:hover:bg-white/10 space-y-8 flex-1 shadow-sm dark:shadow-none">
+                            <div className="bg-app-card/50 dark:bg-white/5 backdrop-blur-md border border-app-border rounded-xl p-6 transition-colors hover:bg-app-card/80 dark:hover:bg-white/10 space-y-6 flex-1 shadow-sm dark:shadow-none">
                                 {/* Theme Mode */}
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <h3 className="font-bold text-slate-800 dark:text-white text-lg">Interface Theme</h3>
-                                        <p className="text-sm text-slate-500 dark:text-white/50">Select your preferred brightness.</p>
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                    <div className="min-w-0 max-w-prose">
+                                        <h3 className="text-lg font-semibold tracking-tight text-app-fg">Interface Theme</h3>
+                                        <p className="text-sm text-app-muted leading-relaxed break-words">Select your preferred brightness.</p>
                                     </div>
-                                    <div className="flex bg-slate-100 dark:bg-black/40 p-1 rounded-2xl border border-slate-200 dark:border-white/5 shadow-inner">
+                                    <div className="flex bg-app-fg/5 p-1 rounded-lg border border-app-border shadow-inner min-w-[120px]">
                                         {(['system', 'light', 'dark'] as const).map((mode) => (
                                             <button
                                                 key={mode}
                                                 onClick={() => setThemeMode(mode)}
+                                                aria-label={`Set theme to ${mode}`}
+                                                aria-pressed={themeMode === mode}
                                                 className={clsx(
-                                                    "px-4 py-2 rounded-xl text-xs font-black transition-all",
+                                                    "px-4 py-2 rounded-xl text-xs font-black transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/50",
                                                     themeMode === mode
                                                         ? "bg-white text-black shadow-md dark:bg-white dark:text-black"
                                                         : "text-slate-400 hover:text-slate-900 dark:text-white/40 dark:hover:text-white"
@@ -707,8 +611,10 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                         <button
                                             key={color}
                                             onClick={() => setAccentColor(color)}
+                                            aria-label={`Set accent color to ${color}`}
+                                            aria-pressed={accentColor === color}
                                             className={clsx(
-                                                "w-12 h-12 rounded-full border-4 transition-all relative flex-shrink-0 flex items-center justify-center",
+                                                "w-12 h-12 rounded-full border-4 transition-all relative flex-shrink-0 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-blue-500/50",
                                                 accentColor === color ? "border-slate-200 dark:border-white scale-110 shadow-xl shadow-slate-400/20 dark:shadow-white/20" : "border-transparent opacity-40 hover:opacity-100 hover:scale-105"
                                             )}
                                             style={{ backgroundColor: color }}
@@ -729,20 +635,20 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
 
                     {/* System Management (Consolidated) */}
                     <section id="system-health">
-                        <h2 className="text-2xl font-black text-slate-800 dark:text-white mb-6 flex items-center gap-3">
-                            <ShieldCheck size={24} className="text-blue-600 dark:text-blue-400" />
+                        <h2 className="text-lg font-semibold tracking-tight text-app-fg mb-4 flex items-center gap-2">
+                            <ShieldCheck size={20} className="text-app-muted" />
                             System Management
                         </h2>
 
-                        <div className="bg-white dark:bg-white/5 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-3xl p-8 space-y-12 transition-colors hover:bg-slate-50 dark:hover:bg-white/10 shadow-sm dark:shadow-none">
+                        <div className="bg-app-card/50 dark:bg-white/5 backdrop-blur-md border border-app-border rounded-xl p-6 space-y-6 transition-colors hover:bg-app-card/80 dark:hover:bg-white/10 shadow-sm dark:shadow-none">
                             {/* Security Control */}
-                            <div className="flex flex-col md:flex-row items-center justify-between gap-8">
-                                <div className="max-w-xl">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
+                                <div className="min-w-0 flex-1 max-w-prose">
                                     <h3 className="font-bold text-slate-800 dark:text-white text-xl mb-2 flex items-center gap-2">
-                                        <Lock size={20} className="text-emerald-500 dark:text-emerald-400" />
+                                        <Lock size={20} className="text-emerald-500 dark:text-emerald-400 shrink-0" />
                                         One-Click Authentication
                                     </h3>
-                                    <p className="text-slate-500 dark:text-white/60 text-base leading-relaxed">
+                                    <p className="text-slate-500 dark:text-white/60 text-base leading-relaxed break-words">
                                         Allow MonARCH to perform system maintenance and app installs without asking for a password every time. This modifies Polkit security policies.
                                     </p>
                                 </div>
@@ -768,10 +674,30 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
 
                             <div className="h-px bg-slate-200 dark:bg-white/5 w-full" />
 
-                            {/* Repair Actions Grid */}
+                            {/* Fix My System (one-click) + Advanced Repair dropdown */}
                             <div>
-                                <h3 className="text-sm font-black uppercase tracking-widest text-slate-400 dark:text-white/40 mb-6 px-2">Maintenance & Repair Tools</h3>
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                <h3 className="text-sm font-black uppercase tracking-widest text-slate-400 dark:text-white/40 mb-4 px-2">Maintenance & Repair Tools</h3>
+                                <div className="flex flex-col gap-4">
+                                    <div className="flex flex-wrap items-center gap-3">
+                                        <button
+                                            onClick={handleForceRefreshDatabases}
+                                            disabled={isRepairing === 'refresh_db'}
+                                            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-lg disabled:opacity-50 transition-all focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                                        >
+                                            <ShieldCheck size={18} />
+                                            Fix My System
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setAdvancedRepairOpen(!advancedRepairOpen)}
+                                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 dark:border-white/10 bg-white/50 dark:bg-white/5 text-slate-700 dark:text-white font-medium text-sm hover:bg-slate-100 dark:hover:bg-white/10 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                                        >
+                                            Advanced Repair
+                                            <ChevronDown size={16} className={clsx(advancedRepairOpen && "rotate-180 transition-transform")} />
+                                        </button>
+                                    </div>
+                                    {advancedRepairOpen && (
+                                        <div className="relative z-30 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 pt-2 border-t border-app-border">
                                     <RepairButton
                                         icon={<Lock className="text-blue-600 dark:text-blue-400" />}
                                         title="Unlock Database"
@@ -787,9 +713,16 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                         loading={isRepairing === 'keyring'}
                                     />
                                     <RepairButton
+                                        icon={<RefreshCw className="text-sky-600 dark:text-sky-400" />}
+                                        title="Refresh Databases"
+                                        desc="Force re-download of pacman sync databases."
+                                        onClick={handleForceRefreshDatabases}
+                                        loading={isRepairing === 'refresh_db'}
+                                    />
+                                    <RepairButton
                                         icon={<Trash2 className="text-red-600 dark:text-red-400" />}
                                         title="Clear Cache"
-                                        desc="Wipe temporary package downloads."
+                                        desc="Clear app caches and pacman package cache on disk."
                                         onClick={handleClearCache}
                                         loading={isOptimizing}
                                     />
@@ -800,6 +733,8 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                         onClick={handleOrphans}
                                         loading={isRepairing === 'orphans'}
                                     />
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -807,17 +742,17 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
 
 
                     {/* Privacy Control */}
-                    <section className="pt-12 border-t border-slate-200 dark:border-white/5">
-                        <h2 className="text-2xl font-black text-slate-800 dark:text-white mb-6 flex items-center gap-3">
-                            <Activity size={24} className="text-teal-600 dark:text-teal-400" />
+                    <section className="pt-8 border-t border-app-border">
+                        <h2 className="text-lg font-semibold tracking-tight text-app-fg mb-4 flex items-center gap-2">
+                            <Activity size={20} className="text-app-muted" />
                             Privacy & Data
                         </h2>
-                        <div className="bg-white dark:bg-white/5 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-3xl p-8 flex flex-col md:flex-row items-center justify-between gap-8 transition-colors hover:bg-slate-50 dark:hover:bg-white/10 shadow-sm dark:shadow-none">
-                            <div className="max-w-2xl">
-                                <h3 className="font-bold text-slate-800 dark:text-white text-xl mb-2 flex items-center gap-2">
+                        <div className="bg-app-card/50 dark:bg-white/5 backdrop-blur-md border border-app-border rounded-xl p-6 flex flex-col md:flex-row items-center justify-between gap-6 transition-colors hover:bg-app-card/80 dark:hover:bg-white/10 shadow-sm dark:shadow-none">
+                            <div className="min-w-0 flex-1 max-w-prose">
+                                <h3 className="text-lg font-semibold tracking-tight text-app-fg mb-2 flex items-center gap-2">
                                     Anonymous Telemetry
                                 </h3>
-                                <p className="text-slate-500 dark:text-white/60 text-base leading-relaxed">
+                                <p className="text-sm text-app-muted leading-relaxed break-words">
                                     Help us improve MonARCH by sharing anonymous usage statistics (search trends, install success rates).
                                     <br />
                                     <span className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-white/40 mt-1 block">We never collect personal data.</span>
@@ -853,8 +788,8 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
 
 
                     {/* DANGER ZONE: Advanced Configuration */}
-                    <section className="pt-12 border-t border-slate-200 dark:border-white/5">
-                        <div className="bg-red-50 dark:bg-red-500/5 border border-red-500/20 rounded-3xl p-8 relative overflow-hidden">
+                    <section className="pt-8 border-t border-app-border">
+                        <div className="bg-red-50 dark:bg-red-500/5 border border-red-500/20 rounded-xl p-6 relative overflow-hidden">
                             {/* Background Warning Stripes */}
                             <div className="absolute inset-0 bg-[repeating-linear-gradient(45deg,transparent,transparent_10px,rgba(239,68,68,0.05)_10px,rgba(239,68,68,0.05)_20px)] pointer-events-none" />
 
@@ -957,7 +892,7 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                                         // This would normally call tauri-plugin-updater logic
                                     }
                                 }}
-                                className="px-6 py-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-xl font-bold text-sm hover:scale-105 transition-transform flex items-center gap-2 "
+                                className="px-6 py-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-lg font-bold text-sm hover:scale-105 transition-transform flex items-center gap-2 "
                             >
                                 <RefreshCw size={16} />
                                 {installMode === 'system' ? 'Check for System Updates' : 'Check for App Updates'}
@@ -968,8 +903,9 @@ export default function SettingsPage({ onRestartOnboarding }: SettingsPageProps)
                     <div className="text-center text-slate-400 dark:text-white/20 text-[10px] pt-12 pb-8 opacity-50 font-medium">
                         MonARCH Store • Licensed under MIT • Powered by Chaotic-AUR
                     </div>
-                </div >
-            </div >
+                    </div>
+                </div>
+            </div>
 
             <ConfirmationModal
                 isOpen={modalConfig.isOpen}
@@ -988,9 +924,9 @@ function RepairButton({ icon, title, desc, onClick, loading }: { icon: React.Rea
         <button
             onClick={onClick}
             disabled={loading}
-            className="group p-6 bg-white dark:bg-white/5 rounded-3xl border border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 hover:bg-slate-50 dark:hover:bg-white/10 transition-all text-left flex flex-col gap-3 shadow-sm hover:shadow-lg disabled:opacity-50"
+            className="group p-6 bg-app-card/50 dark:bg-white/5 rounded-xl border border-app-border hover:border-app-fg/20 hover:bg-app-card/80 dark:hover:bg-white/10 transition-all text-left flex flex-col gap-3 shadow-sm hover:shadow-lg disabled:opacity-50"
         >
-            <div className="p-3 bg-slate-100 dark:bg-black/20 rounded-2xl w-fit group-hover:scale-110 transition-transform">
+            <div className="p-3 bg-app-fg/5 rounded-lg w-10 h-10 flex items-center justify-center group-hover:scale-110 transition-transform shrink-0 overflow-hidden">
                 {loading ? <RefreshCw className="animate-spin text-slate-500 dark:text-white" size={20} /> : icon}
             </div>
             <div>

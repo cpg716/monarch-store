@@ -6,6 +6,9 @@ import { clsx } from 'clsx';
 import { friendlyError } from '../utils/friendlyError';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { useAppStore } from '../store/internal_store';
+import { useSessionPassword } from '../context/useSessionPassword';
+import { useErrorService } from '../context/ErrorContext';
 
 interface InstallMonitorProps {
     pkg: { name: string; source: string; repoName?: string; } | null;
@@ -27,27 +30,82 @@ interface ClassifiedError {
 }
 
 export default function InstallMonitor({ pkg, onClose, mode = 'install', onSuccess }: InstallMonitorProps) {
+    const { requestSessionPassword } = useSessionPassword();
+    const errorService = useErrorService();
+    const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
+
     const [status, setStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
 
     const [logs, setLogs] = useState<string[]>([]);
     const [visualProgress, setVisualProgress] = useState(0);
     const [targetProgress, setTargetProgress] = useState(0);
     const [minimized, setMinimized] = useState(false);
-    const [showLogs, setShowLogs] = useState(() => localStorage.getItem('monarch_debug_logs') === 'true');
+    // Compact by default; user can open "View log" if they want full output
+    const [showLogs, setShowLogs] = useState(false);
     const logsEndRef = useRef<HTMLDivElement>(null);
     const actionStartedForRef = useRef<string | null>(null);
+    const silentDbRepairAttemptedRef = useRef(false);
+    const logsRef = useRef<string[]>([]);
+    const autoUnlockAttemptedRef = useRef(false);
     const [commandPreview, setCommandPreview] = useState<string>('');
-    
+    // Throttle log updates to prevent freeze when hundreds of progress events arrive
+    const logBufferRef = useRef<string[]>([]);
+    const logFlushScheduledRef = useRef(false);
+    const LOG_CAP = 300;
+    const flushLogBufferRef = useRef<() => void>(() => {});
+    flushLogBufferRef.current = () => {
+        if (logBufferRef.current.length === 0) {
+            logFlushScheduledRef.current = false;
+            return;
+        }
+        const toAdd = logBufferRef.current;
+        logBufferRef.current = [];
+        logFlushScheduledRef.current = false;
+        setLogs((prev) => {
+            const next = [...prev, ...toAdd];
+            return next.length > LOG_CAP ? next.slice(-LOG_CAP) : next;
+        });
+    };
+    const appendLogThrottled = (message: string) => {
+        logBufferRef.current.push(message);
+        if (!logFlushScheduledRef.current) {
+            logFlushScheduledRef.current = true;
+            setTimeout(() => flushLogBufferRef.current(), 180);
+        }
+    };
+
+    // Throttle progress/status updates so we don't re-render hundreds of times per second (prevents freeze)
+    const progressStatusRef = useRef<{ target: number; status: string }>({ target: 0, status: '' });
+    const progressFlushScheduledRef = useRef(false);
+    const PROGRESS_FLUSH_MS = 200;
+    const flushProgressStatusRef = useRef<() => void>(() => {});
+    flushProgressStatusRef.current = () => {
+        progressFlushScheduledRef.current = false;
+        const { target, status } = progressStatusRef.current;
+        setTargetProgress(target);
+        setDetailedStatus(status);
+    };
+    const setProgressStatusThrottled = (target: number, status: string) => {
+        progressStatusRef.current = { target, status };
+        if (!progressFlushScheduledRef.current) {
+            progressFlushScheduledRef.current = true;
+            setTimeout(() => flushProgressStatusRef.current(), PROGRESS_FLUSH_MS);
+        }
+    };
+
     // Structured error from backend classification
     const [classifiedError, setClassifiedError] = useState<ClassifiedError | null>(null);
     const [isRecovering, setIsRecovering] = useState(false);
 
-    // Auto-scroll logs
+    logsRef.current = logs;
+
+    // Sync verbose preference to storage (for Settings "Show Detailed Transaction Logs")
     useEffect(() => {
         if (showLogs) {
-            localStorage.setItem('monarch_debug_logs', 'true');
+            localStorage.setItem('monarch_verbose_logs', 'true');
+            useAppStore.getState().verboseLogsEnabled !== true && useAppStore.getState().setVerboseLogsEnabled?.(true);
         } else {
-            localStorage.removeItem('monarch_debug_logs');
+            localStorage.removeItem('monarch_verbose_logs');
         }
         logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [logs, minimized, showLogs]);
@@ -62,81 +120,84 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         const unlistenAlpmProgress = listen('alpm-progress', (event: { payload: any }) => {
             const evt = event.payload as import('../types/alpm').AlpmProgressEvent;
             
-            // Update logs
-            setLogs((prev: string[]) => [...prev, evt.message]);
+            // Don't flood logs with every download_progress tick (status line already shows %); throttle and cap to prevent freeze
+            if (evt.event_type !== 'download_progress') {
+                appendLogThrottled(evt.message);
+            }
             
-            // Handle different event types
+            // Handle different event types — throttle all progress/status to prevent freeze from hundreds of updates/sec
             switch (evt.event_type) {
                 case 'download_progress':
                     if (evt.percent !== undefined) {
-                        // Download phase: 40-90%
-                        setTargetProgress(40 + Math.floor((evt.percent * 50) / 100));
-                        setDetailedStatus(`Downloading ${evt.package || 'package'}... ${evt.percent}%`);
+                        setProgressStatusThrottled(
+                            40 + Math.floor((evt.percent * 50) / 100),
+                            `Downloading ${evt.package || 'package'}... ${evt.percent}%`
+                        );
                     }
                     break;
                 case 'extract_start':
-                    setTargetProgress(90);
-                    setDetailedStatus(`Extracting ${evt.package || 'package'}...`);
+                    setProgressStatusThrottled(90, `Extracting ${evt.package || 'package'}...`);
                     break;
                 case 'extract_progress':
                     if (evt.percent !== undefined) {
-                        // Extract phase: 90-95%
-                        setTargetProgress(90 + Math.floor((evt.percent * 5) / 100));
-                        setDetailedStatus(`Extracting ${evt.package || 'package'}... ${evt.percent}%`);
+                        setProgressStatusThrottled(
+                            90 + Math.floor((evt.percent * 5) / 100),
+                            `Extracting ${evt.package || 'package'}... ${evt.percent}%`
+                        );
                     }
                     break;
                 case 'install_start':
-                    setTargetProgress(95);
-                    setDetailedStatus(`Installing ${evt.package || 'package'}...`);
+                    setProgressStatusThrottled(95, `Installing ${evt.package || 'package'}...`);
                     break;
                 case 'install_progress':
                     if (evt.percent !== undefined) {
-                        // Install phase: 95-100%
-                        setTargetProgress(95 + Math.floor((evt.percent * 5) / 100));
-                        setDetailedStatus(`Installing ${evt.package || 'package'}... ${evt.percent}%`);
+                        setProgressStatusThrottled(
+                            95 + Math.floor((evt.percent * 5) / 100),
+                            `Installing ${evt.package || 'package'}... ${evt.percent}%`
+                        );
                     }
                     break;
                 case 'install_complete':
-                    setTargetProgress(100);
-                    setDetailedStatus(`Installed ${evt.package || 'package'}`);
+                    setProgressStatusThrottled(99, `Installed ${evt.package || 'package'}`);
                     break;
                 case 'progress':
                     if (evt.percent !== undefined) {
-                        setTargetProgress(evt.percent);
-                        setDetailedStatus(evt.message);
+                        setProgressStatusThrottled(evt.percent, evt.message);
                     }
                     break;
                 default:
-                    setDetailedStatus(evt.message);
+                    setProgressStatusThrottled(progressStatusRef.current.target, evt.message);
             }
         });
 
         const unlistenOutput = listen('install-output', (event: { payload: unknown }) => {
             if (typeof event.payload !== 'string') return;
             const line = event.payload;
-            setLogs((prev: string[]) => [...prev, line]);
+            appendLogThrottled(line);
 
-            // Enhanced Progress Heuristics (fallback for non-ALPM operations like AUR builds)
+            // Enhanced Progress Heuristics (fallback for non-ALPM operations like AUR builds) — throttled
             if (line.includes('%')) {
                 const match = line.match(/(\d+)%/);
-                if (match) setTargetProgress(parseInt(match[1]));
+                if (match) {
+                    const p = parseInt(match[1], 10);
+                    // Don't reset bar to 0 when backend sends "Downloading ... 0%" (alpm-progress drives real %)
+                    if (p > 0 || !line.includes('Downloading')) setProgressStatusThrottled(p, progressStatusRef.current.status || line);
+                }
             } else if (line.includes('Cloning')) {
-                setTargetProgress(10);
-                setDetailedStatus('Downloading Source Code...');
+                setProgressStatusThrottled(10, 'Downloading Source Code...');
             } else if (line.includes('Checking dependencies')) {
-                setTargetProgress(5);
-                setDetailedStatus('Resolving Dependencies...');
+                setProgressStatusThrottled(5, 'Resolving Dependencies...');
             } else if (line.includes('Building') && line.includes('dependencies')) {
-                setDetailedStatus('Building Dependencies...');
+                setProgressStatusThrottled(progressStatusRef.current.target, 'Building Dependencies...');
             } else if (line.includes('makepkg')) {
-                setTargetProgress(20);
-                setDetailedStatus('Compiling Source (This may take a while)...');
+                setProgressStatusThrottled(20, 'Compiling Source (This may take a while)...');
             } else if (line.includes('Auto-importing PGP key')) {
-                setDetailedStatus('Security: Importing Signing Keys...');
+                setProgressStatusThrottled(progressStatusRef.current.target, 'Security: Importing Signing Keys...');
             } else if (line.includes('Retrying build')) {
-                setDetailedStatus('Retrying Build with New Keys...');
+                setProgressStatusThrottled(progressStatusRef.current.target, 'Retrying Build with New Keys...');
             } else if (line.toLowerCase().includes('compiling')) {
-                setTargetProgress((prev: number) => Math.min(prev + 1, 90));
+                const next = Math.min(progressStatusRef.current.target + 1, 90);
+                setProgressStatusThrottled(next, progressStatusRef.current.status);
             }
         });
 
@@ -145,16 +206,61 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             setLogs((prev: string[]) => [...prev, event.payload as string]);
         });
 
-        const unlistenComplete = listen('install-complete', (event: { payload: string }) => {
+        const unlistenComplete = listen('install-complete', async (event: { payload: string }) => {
             if (event.payload === 'success') {
                 setStatus('success');
                 setTargetProgress(100);
                 setVisualProgress(100);
                 setDetailedStatus(`${mode === 'uninstall' ? 'Uninstallation' : 'Installation'} Complete`);
                 if (onSuccess) onSuccess();
-            } else {
-                setStatus('error');
+                return;
             }
+            // Failure: try silent self-heal (no error popup)
+            const currentLogs = logsRef.current;
+            const hasCorruptDb = currentLogs.some((l: string) =>
+                l.includes('Unrecognized archive format') || l.includes('could not open database') || l.includes('Sync databases are corrupt')
+            );
+            const hasDbLocked = currentLogs.some((l: string) =>
+                l.includes('db.lck') || l.includes('Database Locked') || l.includes('ALPM_ERR_DB_WRITE') || l.includes('unable to lock database') || l.includes('could not remove') && l.includes('db.lck')
+            );
+            if (event.payload !== 'success' && hasDbLocked && !autoUnlockAttemptedRef.current) {
+                autoUnlockAttemptedRef.current = true;
+                setDetailedStatus('Waiting for another update...');
+                setLogs(prev => [...prev, '\n--- Auto-unlocking database ---']);
+                try {
+                    const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+                    await invoke('repair_unlock_pacman', { password: pwd });
+                    setLogs(prev => [...prev, '✓ Database unlocked. Retrying...']);
+                    setTargetProgress(5);
+                    setStatus('running');
+                    actionStartedForRef.current = null;
+                    handleAction();
+                } catch (e) {
+                    setLogs(prev => [...prev, `Unlock failed: ${e}`]);
+                    setStatus('error');
+                }
+                return;
+            }
+            if (event.payload !== 'success' && hasCorruptDb && !silentDbRepairAttemptedRef.current) {
+                silentDbRepairAttemptedRef.current = true;
+                setDetailedStatus('Repairing databases...');
+                setLogs(prev => [...prev, '\n--- Self-healing: Refreshing package databases ---']);
+                try {
+                    const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+                    await invoke('force_refresh_databases', { password: pwd });
+                    setLogs(prev => [...prev, '✓ Databases refreshed. Retrying...']);
+                    setTargetProgress(5);
+                    setStatus('running');
+                    actionStartedForRef.current = null;
+                    handleAction();
+                } catch (e) {
+                    errorService.reportError(e as Error | string);
+                    setLogs(prev => [...prev, `Repair failed: ${e}`]);
+                    setStatus('error');
+                }
+                return;
+            }
+            setStatus('error');
         });
 
         // Listen for structured error classification from backend
@@ -170,7 +276,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             unlistenComplete.then((f: () => void) => f()).catch(() => {});
             unlistenClassifiedError.then((f: () => void) => f()).catch(() => {});
         };
-    }, [pkg]);
+    }, [pkg, reducePasswordPrompts, requestSessionPassword]);
 
     // Recovery action handlers
     const handleRecoveryAction = async (action: string) => {
@@ -178,16 +284,17 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         setLogs(prev => [...prev, `\n--- RECOVERY: ${action.toUpperCase()} ---`]);
         
         try {
+            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
             switch (action) {
                 case 'UnlockDatabase':
                     setLogs(prev => [...prev, 'Checking for stale lock file...']);
-                    await invoke('repair_unlock_pacman', { password: null });
+                    await invoke('repair_unlock_pacman', { password: pwd });
                     setLogs(prev => [...prev, '✓ Database unlocked successfully']);
                     break;
                     
                 case 'RepairKeyring':
                     setLogs(prev => [...prev, 'Resetting security keyring...', 'This may take a moment...']);
-                    await invoke('fix_keyring_issues', { password: null });
+                    await invoke('fix_keyring_issues', { password: pwd });
                     setLogs(prev => [...prev, '✓ Keyring repaired successfully']);
                     break;
                     
@@ -289,17 +396,18 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         setVisualProgress(0);
 
         try {
+            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
             if (mode === 'uninstall') {
                 await invoke('uninstall_package', {
                     name: pkg.name,
-                    password: null
+                    password: pwd
                 });
                 setCommandPreview(`$ pacman -Rns --noconfirm ${pkg.name}`);
             } else {
                 await invoke('install_package', {
                     name: pkg.name,
                     source: pkg.source,
-                    password: null,
+                    password: pwd,
                     repoName: pkg.repoName || null
                 });
 
@@ -312,6 +420,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             }
             // The command is async spawned, completion comes via event
         } catch (e) {
+            errorService.reportError(e as Error | string);
             setLogs((prev: string[]) => [...prev, `Error launching: ${e}`]);
             setStatus('error');
         }
@@ -319,6 +428,40 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     useEscapeKey(onClose, !!pkg);
     const focusTrapRef = useFocusTrap(!!pkg && !minimized);
+
+    // Hooks must run unconditionally (before any early return) to avoid "Rendered fewer hooks than expected"
+    const [isRepairing, setIsRepairing] = useState(false);
+    const [repairSuccess, setRepairSuccess] = useState(false);
+    const [autoRetryAttempted, setAutoRetryAttempted] = useState(false);
+    const [updateRequired, setUpdateRequired] = useState(false);
+
+    // Error Interceptor
+    useEffect(() => {
+        if (status === 'error' && logs.some(l => l.includes('SystemUpdateRequired'))) {
+            // handled by handleAction catch block primarily, but checking logs is backup
+        }
+    }, [status, logs]);
+
+    // Listener for specific failed_update_required event
+    useEffect(() => {
+        const unlistenUpdateReq = listen('install-complete', (event: { payload: string }) => {
+            if (event.payload === 'failed_update_required') {
+                setStatus('error');
+                setUpdateRequired(true);
+                setDetailedStatus("System Update Required");
+                setLogs(prev => [...prev, "STOP: Package not found in current database.", "This usually means your system is out of date."]);
+            }
+        });
+        return () => { unlistenUpdateReq.then(f => f()); };
+    }, []);
+
+    // Retry after Repair (must be registered unconditionally; handleAction is defined earlier in this component)
+    useEffect(() => {
+        if (repairSuccess && autoRetryAttempted && status !== 'running' && status !== 'success') {
+            setLogs(prev => [...prev, '✓ System repaired. Retrying operation automatically...']);
+            handleAction();
+        }
+    }, [repairSuccess, autoRetryAttempted]);
 
     if (!pkg) return null;
 
@@ -348,7 +491,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     // RENDER STEPPER
     const renderStepper = () => (
-        <div className="flex items-center justify-between px-8 py-4 bg-app-bg/50 border-b border-app-border">
+        <div className="flex items-center justify-between px-5 py-3 bg-app-bg/50 border-b border-app-border">
             {steps.map((step, idx) => {
                 const isActive = currentStep === step.id;
                 const isCompleted = currentStep > step.id || status === 'success';
@@ -403,9 +546,6 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             </div>
         );
     }
-    const [isRepairing, setIsRepairing] = useState(false);
-    const [repairSuccess, setRepairSuccess] = useState(false);
-    const [autoRetryAttempted, setAutoRetryAttempted] = useState(false);
 
     // Heuristic Scan for Keyring Issues
     const hasKeyringError = logs.some(l =>
@@ -427,19 +567,12 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     }, ...);
     */
 
-    // Retry after Repair
-    useEffect(() => {
-        if (repairSuccess && autoRetryAttempted && status !== 'running' && status !== 'success') {
-            setLogs(prev => [...prev, '✓ System repaired. Retrying operation automatically...']);
-            handleAction();
-        }
-    }, [repairSuccess, autoRetryAttempted]);
-
     const handleUnlock = async () => {
         setIsRepairing(true);
         setAutoRetryAttempted(true); // Enable auto-retry after fix
         try {
-            await invoke('repair_unlock_pacman', { password: null });
+            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+            await invoke('repair_unlock_pacman', { password: pwd });
             setLogs(prev => [...prev, '✓ Database unlocked.', 'Please try installing again.']);
             setRepairSuccess(true);
         } catch (e) {
@@ -454,37 +587,17 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         setAutoRetryAttempted(true); // Enable auto-retry after fix
         setLogs(prev => [...prev, '\n--- AUTO-HEALING: FIXING KEYRING ISSUES ---', 'The app detected a security key error.', 'Attempting to automatically repair trust database...', 'This will take a moment...']);
         try {
-            await invoke('repair_reset_keyring', { password: null });
+            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+            await invoke('repair_reset_keyring', { password: pwd });
             setLogs(prev => [...prev, '✓ Keyring reset successfully.', '--- REPAIR COMPLETE ---']);
             setRepairSuccess(true);
         } catch (e) {
+            errorService.reportError(e as Error | string);
             setLogs(prev => [...prev, `Repair Failed: ${e}`]);
         } finally {
             setIsRepairing(false);
         }
     };
-
-    const [updateRequired, setUpdateRequired] = useState(false);
-
-    // Error Interceptor
-    useEffect(() => {
-        if (status === 'error' && logs.some(l => l.includes('SystemUpdateRequired'))) {
-            // handled by handleAction catch block primarily, but checking logs is backup
-        }
-    }, [status, logs]);
-
-    // Listener for specific failed_update_required event
-    useEffect(() => {
-        const unlistenUpdateReq = listen('install-complete', (event: { payload: string }) => {
-            if (event.payload === 'failed_update_required') {
-                setStatus('error'); // Paused state essentially
-                setUpdateRequired(true);
-                setDetailedStatus("System Update Required");
-                setLogs(prev => [...prev, "STOP: Package not found in current database.", "This usually means your system is out of date."]);
-            }
-        });
-        return () => { unlistenUpdateReq.then(f => f()); };
-    }, []);
 
     const handleUpdateAndInstall = async () => {
         if (!pkg) return;
@@ -495,10 +608,11 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         setLogs(prev => [...prev, '\n--- STARTING SYSTEM UPDATE ---', 'Syncing databases...', 'Performing full system upgrade (-Syu)...', 'This may take a while. Do not turn off your computer.']);
 
         try {
+            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
             await invoke('update_and_install_package', {
                 name: pkg.name,
                 repoName: pkg.repoName || null,
-                password: null // Helper handles auth
+                password: pwd
             });
             // Completion handled by event listener above
         } catch (e) {
@@ -508,10 +622,10 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-app-bg/60 backdrop-blur-sm animate-in fade-in duration-200">
-            <div ref={focusTrapRef} className="w-full max-w-2xl bg-app-card border border-app-border rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh] transition-colors" role="dialog" aria-modal="true" aria-labelledby="install-monitor-title">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-app-bg/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div ref={focusTrapRef} className={clsx("w-full bg-app-card border border-app-border rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-colors", showLogs ? "max-w-2xl max-h-[85vh]" : "max-w-md max-h-[min(70vh,420px)]")} role="dialog" aria-modal="true" aria-labelledby="install-monitor-title">
                 {/* Header */}
-                <div className="p-6 border-b border-app-border flex items-center justify-between bg-app-fg/5">
+                <div className="px-5 py-4 border-b border-app-border flex items-center justify-between bg-app-fg/5">
                     <div className="flex items-center gap-3">
                         <div className={clsx("w-10 h-10 rounded-full flex items-center justify-center",
                             status === 'success' ? "bg-green-500/20 text-green-500" :
@@ -522,12 +636,19 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 (status === 'error' || updateRequired) ? <XCircle size={20} /> :
                                     <Terminal size={20} />}
                         </div>
-                        <div>
-                            <h2 id="install-monitor-title" className="text-xl font-bold text-app-fg">
+                        <div className="min-w-0">
+                            <h2 id="install-monitor-title" className="text-lg font-bold text-app-fg truncate">
                                 {updateRequired ? "System Update Required" : displayStatus}
                             </h2>
                             {status === 'error' && errorDetails && (
-                                <p className="text-red-500 text-sm font-medium mt-1 animate-in fade-in">{errorDetails.description}</p>
+                                <>
+                                    <p className="text-red-500 text-sm font-medium mt-1 animate-in fade-in">{errorDetails.description}</p>
+                                    {errorDetails.expertMessage && showLogs && (
+                                        <p className="text-app-muted text-[10px] font-mono mt-2 opacity-80" title="Expert / raw output">
+                                            [ALPM] {errorDetails.expertMessage.slice(0, 120)}{errorDetails.expertMessage.length > 120 ? '…' : ''}
+                                        </p>
+                                    )}
+                                </>
                             )}
                             {status !== 'error' && (
                                 <p className="text-app-muted text-sm">{pkg.source.toUpperCase()} Source</p>
@@ -540,14 +661,16 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 <button
                                     onClick={async () => {
                                         try {
-                                            await invoke('abort_installation');
-                                            setStatus('idle');
-                                            onClose();
+                                            await invoke('cancel_install');
+                                            setLogs(prev => [...prev, 'Installation cancelled.']);
+                                            setStatus('error');
+                                            setTimeout(() => onClose(), 800);
                                         } catch (e) {
-                                            console.error("Abort failed:", e);
+                                            errorService.reportError(e as Error | string);
                                         }
                                     }}
                                     className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs font-bold rounded-lg transition-colors border border-red-500/20 flex items-center gap-2"
+                                    aria-label="Stop installation"
                                 >
                                     <XCircle size={14} /> Cancel
                                 </button>
@@ -556,7 +679,29 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 </button>
                             </>
                         )}
-                        <button onClick={onClose} className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg text-app-muted transition-colors" aria-label="Close">
+                        <button
+                            onClick={async () => {
+                                if (status === 'running') {
+                                    const stop = window.confirm(
+                                        'Closing this window will not stop the installation—it will continue in the background. Do you want to cancel the installation instead?'
+                                    );
+                                    if (stop) {
+                                        try {
+                                            await invoke('cancel_install');
+                                            setLogs(prev => [...prev, 'Installation cancelled.']);
+                                            setStatus('error');
+                                            setTimeout(() => onClose(), 800);
+                                        } catch (e) {
+                                            errorService.reportError(e as Error | string);
+                                        }
+                                    }
+                                    return;
+                                }
+                                onClose();
+                            }}
+                            className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg text-app-muted transition-colors"
+                            aria-label="Close"
+                        >
                             <XCircle size={20} />
                         </button>
                     </div>
@@ -649,51 +794,51 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     ) : (
                         <div className="flex-1 flex flex-col h-full bg-app-bg transition-colors">
                             {status === 'success' ? (
-                                <div className="p-8 flex flex-col items-center justify-center space-y-6 animate-in zoom-in-95 duration-500">
-                                    <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mb-2 shadow-lg shadow-green-500/10">
-                                        <CheckCircle2 size={40} className="text-green-500" />
+                                <div className="px-5 py-5 flex flex-col items-center justify-center space-y-4 animate-in zoom-in-95 duration-500">
+                                    <div className="w-14 h-14 bg-green-500/20 rounded-full flex items-center justify-center shadow-lg shadow-green-500/10">
+                                        <CheckCircle2 size={28} className="text-green-500" />
                                     </div>
-                                    <div className="text-center space-y-2">
-                                        <h3 className="text-2xl font-bold text-app-fg">Success!</h3>
-                                        <p className="text-app-muted text-sm max-w-sm">
+                                    <div className="text-center space-y-1">
+                                        <h3 className="text-xl font-bold text-app-fg">Success!</h3>
+                                        <p className="text-app-muted text-sm max-w-xs">
                                             {pkg.name} has been successfully {mode === 'uninstall' ? 'removed' : 'installed'}.
                                         </p>
                                     </div>
 
                                     {mode !== 'uninstall' && (
-                                        <div className="bg-blue-500/5 border border-blue-500/10 p-5 rounded-2xl flex gap-4 items-center max-w-sm animate-in slide-in-from-bottom-2 delay-300">
-                                            <div className="p-3 bg-blue-500/10 rounded-xl text-blue-500">
-                                                <Play size={20} fill="currentColor" />
+                                        <div className="bg-blue-500/5 border border-blue-500/10 px-4 py-3 rounded-xl flex gap-3 items-center max-w-xs animate-in slide-in-from-bottom-2 delay-300">
+                                            <div className="p-2 bg-blue-500/10 rounded-lg text-blue-500 shrink-0">
+                                                <Play size={16} fill="currentColor" />
                                             </div>
-                                            <div>
-                                                <h4 className="font-bold text-app-fg text-sm">Where is it?</h4>
-                                                <p className="text-xs text-app-muted">
-                                                    The app is now available in your <b>Application Launcher</b>.
+                                            <div className="min-w-0">
+                                                <h4 className="font-bold text-app-fg text-xs">Where is it?</h4>
+                                                <p className="text-[11px] text-app-muted leading-snug">
+                                                    The app is now in your <b>Application Launcher</b>.
                                                 </p>
                                             </div>
                                         </div>
                                     )}
 
-                                    <div className="w-full max-w-sm pt-4">
-                                        <div className="flex gap-3 w-full max-w-sm">
+                                    <div className="w-full max-w-xs pt-2">
+                                        <div className="flex gap-2 w-full">
                                             {mode !== 'uninstall' && (
                                                 <button
                                                     onClick={() => {
-                                                        invoke('launch_app', { pkgName: pkg.name }).catch(console.error);
+                                                        invoke('launch_app', { pkgName: pkg.name }).catch((e) => errorService.reportError(e as Error | string));
                                                         onClose();
                                                     }}
-                                                    className="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-green-500/20 active:scale-95 transition-all flex items-center justify-center gap-2 text-lg"
+                                                    className="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-green-500/20 active:scale-95 transition-all flex items-center justify-center gap-1.5 text-sm"
                                                 >
-                                                    <Play size={24} fill="currentColor" /> Launch Now
+                                                    <Play size={18} fill="currentColor" /> Launch Now
                                                 </button>
                                             )}
                                             <button
                                                 onClick={onClose}
                                                 className={clsx(
-                                                    "font-bold py-4 rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2",
+                                                    "font-bold py-3 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-1.5 text-sm",
                                                     mode === 'uninstall'
-                                                        ? "flex-1 bg-app-fg text-app-bg hover:brightness-110 shadow-xl"
-                                                        : "px-6 text-app-muted hover:text-app-fg hover:bg-app-subtle"
+                                                        ? "flex-1 bg-app-fg text-app-bg hover:brightness-110 shadow-lg"
+                                                        : "px-5 text-app-muted hover:text-app-fg hover:bg-app-subtle"
                                                 )}
                                             >
                                                 {mode === 'uninstall' ? 'Done' : 'Close'}
@@ -704,7 +849,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                             ) : (
                                 <>
                                     {/* Progress Bar Area */}
-                                    <div className="bg-app-card p-6 border-b border-app-border">
+                                    <div className="bg-app-card px-5 py-4 border-b border-app-border">
                                         {/* ... existing logic for keyrings/locks ... */}
                                         {hasKeyringError && status === 'error' && !repairSuccess && !autoRetryAttempted && (
                                             <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-between animate-in slide-in-from-top-2">
@@ -789,31 +934,45 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                         </div>
                                     </div>
 
-                                    {/* Logs Toggle */}
-                                    <div className="flex justify-center mt-4">
+                                    {/* Logs: compact by default; expand to view full log */}
+                                    <div className="flex justify-center mt-3 px-4">
                                         <button
                                             onClick={() => setShowLogs(!showLogs)}
-                                            className="text-xs text-app-muted hover:text-app-fg flex items-center gap-1 transition-colors"
+                                            className="text-xs text-app-muted hover:text-app-fg flex items-center gap-1.5 transition-colors py-2 px-3 rounded-lg hover:bg-app-fg/5"
+                                            aria-expanded={showLogs}
                                         >
-                                            {showLogs ? <ChevronUp size={14} /> : <div className="flex items-center gap-1"><Terminal size={14} /> Show Build Logs</div>}
+                                            {showLogs ? <><ChevronUp size={14} /> Hide Logs</> : <><Terminal size={14} /> Show Details</>}
                                         </button>
                                     </div>
 
-                                    {/* Logs Terminal */}
+                                    {/* Logs Terminal — only when user expands; scrollable so you can copy full log */}
                                     {showLogs && (
-                                        <div className="flex-1 overflow-auto p-4 font-mono text-xs text-app-muted space-y-1 scrollbar-thin transition-colors bg-black/20 mt-2 rounded-lg border border-white/10 mx-6 mb-4">
-                                            {commandPreview && (
-                                                <div className="mb-2 pb-2 border-b border-white/10 text-blue-400 font-bold">
-                                                    {commandPreview}
-                                                </div>
-                                            )}
-                                            {logs.map((log, i) => (
-                                                <div key={i} className="break-all whitespace-pre-wrap">
-                                                    <span className="text-app-muted opacity-50 mr-2">[{new Date().toLocaleTimeString()}]</span>
-                                                    {log}
-                                                </div>
-                                            ))}
-                                            <div ref={logsEndRef} />
+                                        <div className="flex flex-col min-h-[200px] max-h-[min(50vh,400px)] mt-2 mx-4 mb-4 rounded-lg border border-white/10 bg-black/20 overflow-hidden min-w-0 shrink-0">
+                                            <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 bg-app-fg/5 shrink-0">
+                                                <span className="text-xs font-medium text-app-muted">Transaction log</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowLogs(false)}
+                                                    className="text-app-muted hover:text-app-fg p-1.5 rounded hover:bg-app-fg/10 transition-colors"
+                                                    aria-label="Hide log"
+                                                >
+                                                    <ChevronUp size={16} />
+                                                </button>
+                                            </div>
+                                            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto p-4 font-mono text-xs text-app-muted space-y-1 overscroll-contain">
+                                                {commandPreview && (
+                                                    <div className="mb-2 pb-2 border-b border-white/10 text-blue-400 font-bold">
+                                                        {commandPreview}
+                                                    </div>
+                                                )}
+                                                {logs.map((log, i) => (
+                                                    <div key={i} className="break-all whitespace-pre-wrap">
+                                                        <span className="text-app-muted opacity-50 mr-2">[{new Date().toLocaleTimeString()}]</span>
+                                                        {log}
+                                                    </div>
+                                                ))}
+                                                <div ref={logsEndRef} />
+                                            </div>
                                         </div>
                                     )}
                                 </>

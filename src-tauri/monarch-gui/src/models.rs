@@ -31,6 +31,20 @@ impl PackageSource {
             PackageSource::Aur => 5,
         }
     }
+
+    /// Map sync DB / repo name to the correct source. Use this whenever we get a package from a repo
+    /// so CachyOS, Chaotic, Manjaro, etc. are labeled correctly instead of everything as "official".
+    pub fn from_repo_name(name: &str) -> Self {
+        match name {
+            "chaotic-aur" => PackageSource::Chaotic,
+            n if n.starts_with("cachyos") => PackageSource::CachyOS,
+            n if n.starts_with("manjaro") => PackageSource::Manjaro,
+            n if n.starts_with("garuda") => PackageSource::Garuda,
+            n if n.starts_with("endeavour") => PackageSource::Endeavour,
+            "core" | "extra" | "community" | "multilib" => PackageSource::Official,
+            _ => PackageSource::Official, // custom/user repos and unknown → official (repo, not AUR)
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

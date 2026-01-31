@@ -1,5 +1,7 @@
 # Security Policy
 
+**Last updated:** 2025-01-31 (v0.3.5-alpha)
+
 ## Supported Versions
 
 | Version   | Supported          |
@@ -33,6 +35,8 @@ Examples of vulnerabilities we are interested in:
 - Arbitrary Code Execution during installation (privileged operations go through monarch-helper; command is passed via temp file)
 
 **Current architecture:** Privileged operations use **monarch-helper** (invoked via `pkexec`); the GUI writes the JSON command to a temp file and passes only the file path. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md) and [Architecture](docs/ARCHITECTURE.md).
+
+**Full audit:** For the latest security and Arch compliance audit (makepkg root barrier, helper input sanitization, pacman.conf integrity, command-file race mitigation), see [Fort Knox Security Audit](docs/SECURITY_AUDIT_FORT_KNOX.md).
 
 ### Third-Party Repository Keys (Smart Repair / Bootstrap)
 

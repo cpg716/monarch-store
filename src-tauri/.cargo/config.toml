@@ -1,8 +1,7 @@
-# Use a dedicated target dir so tauri dev never competes for lock with rust-analyzer
-# (rust-analyzer sets CARGO_TARGET_DIR via .vscode settings and overrides this)
-[build]
-target-dir = "../target-tauri-dev"
-
+# Do NOT set target-dir here: npm run tauri dev sets CARGO_TARGET_DIR to src-tauri/target so the
+# pre-step (cargo build -p monarch-helper) and the app use the same dir. If we set target-dir = "../target",
+# the pre-step would build the helper to project_root/target/ while the app looks in src-tauri/target/
+# and can run an old helper (e.g. without AlpmInstall).
 [target.x86_64-unknown-linux-gnu]
 # Use mold (fastest linker) for up to 7x faster linking during development
 # Requires: sudo pacman -S mold clang

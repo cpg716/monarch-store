@@ -9,7 +9,7 @@ codegen-units = 256
 
 [profile.release]
 incremental = false
-lto = "fat"
+lto = true
 codegen-units = 1
 panic = "abort"
 strip = true

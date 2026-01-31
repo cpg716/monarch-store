@@ -103,6 +103,17 @@ pub fn classify_alpm_error(error_msg: &str) -> AlpmClassifiedError {
         };
     }
 
+    // makepkg "An unknown error has occurred" — toolchain, permissions, or stale build dir
+    if msg_lower.contains("unknown error has occurred") || msg_lower.contains("an unknown error has occurred") {
+        return AlpmClassifiedError {
+            kind: "MakepkgUnknownError".to_string(),
+            title: "AUR Build Failed (Unknown Error)".to_string(),
+            description: "makepkg reported an unknown error. Ensure base-devel and git are installed; fix permissions on /tmp/monarch-install and user cache; do not run makepkg as root.".to_string(),
+            recovery_action: Some("RunPermissionSanitizer".to_string()),
+            raw_message: error_msg.to_string(),
+        };
+    }
+
     // Generic error
     AlpmClassifiedError {
         kind: "Unknown".to_string(),

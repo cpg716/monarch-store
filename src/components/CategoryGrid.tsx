@@ -127,7 +127,7 @@ export default function CategoryGrid({ onSelectCategory, selectedCategoryId }: C
                 variants={container}
                 initial="hidden"
                 animate="show"
-                className="grid grid-cols-2 gap-4"
+                className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4"
             >
                 {CATEGORIES.map((cat) => (
                     <motion.div

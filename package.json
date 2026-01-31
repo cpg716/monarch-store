@@ -3,15 +3,16 @@
   "private": false,
   "license": "MIT",
   "author": "cpg716 (https://github.com/cpg716) — developer and creator, with the help of AI coding tools",
-  "version": "0.3.5-alpha.1",
+  "version": "0.3.5-alpha",
   "type": "module",
   "scripts": {
     "dev": "vite --configLoader runner",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "screenshots": "node scripts/capture-screenshots.mjs",
     "tauri": "tauri",
-    "tauri dev": "CARGO_INCREMENTAL=1 tauri dev",
-    "tauri build": "CARGO_TARGET_DIR=\"${PWD}/src-tauri/target\" tauri build"
+    "tauri dev": "export CARGO_TARGET_DIR=\"${PWD}/src-tauri/target\" && export CARGO_INCREMENTAL=1 && export MONARCH_USE_PRODUCTION_HELPER=0 && (cd src-tauri && cargo build -p monarch-helper) && tauri dev",
+    "tauri build": "CARGO_TARGET_DIR=\"${PWD}/src-tauri/target\" (cd src-tauri && cargo build --release -p monarch-helper) && tauri build"
   },
   "dependencies": {
     "@aptabase/tauri": "file:src-tauri/plugins/tauri-plugin-aptabase",
@@ -37,6 +38,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "autoprefixer": "^10.4.23",
+    "playwright": "^1.58.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "~5.8.3",

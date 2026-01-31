@@ -7,8 +7,10 @@ use std::path::Path;
 pub enum DistroId {
     Arch,
     Manjaro,
+    #[serde(rename = "endeavouros")]
     EndeavourOS,
     Garuda,
+    #[serde(rename = "cachyos")]
     CachyOS,
     Unknown(String),
 }

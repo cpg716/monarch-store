@@ -126,6 +126,13 @@
   /* yellow-700 */
 }
 
+/* Z-Index Stratification (Master Architect)
+ * z-0: Backgrounds/Canvas
+ * z-10: Sticky Sidebar/Header
+ * z-30: Dropdown Menus/Tooltips
+ * z-50: Modals/Dialogs/Toasts
+ */
+
 /* GPU layer promotion: reduce layout thrash during fast scroll and glassmorphism */
 .scroll-gpu {
   will-change: transform;

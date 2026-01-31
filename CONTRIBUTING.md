@@ -1,6 +1,6 @@
 # Contributing to MonARCH Store 🦋
 
-**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+**Last updated:** 2025-01-31 (v0.3.5-alpha). Doc and feature updates (Omni-User, self-healing, Test Mirrors, Advanced Repair) reflected in README, DOCUMENTATION, PROGRESS, RELEASE_NOTES, AGENTS, and docs (TROUBLESHOOTING, ARCHITECTURE).
 
 First off, thanks for taking the time to contribute! 🎉
 
@@ -79,7 +79,7 @@ Violating these rules will result in immediate PR closure.
 2.  **Installation**:
 
     ```bash
-    git clone https://github.com/monarch-store/monarch-store.git
+    git clone https://github.com/cpg716/monarch-store.git
     cd monarch-store
     npm install
     ```
@@ -98,6 +98,7 @@ Violating these rules will result in immediate PR closure.
 
 ## Architecture Overview
 
+- [**docs/DEVELOPER.md**](docs/DEVELOPER.md) — **Developer documentation**: setup, project structure, code style, critical rules (single reference for contributors).
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Core philosophy, Soft Disable, Butterfly engine, installer pipeline.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System architecture (Tauri 2, monarch-gui + monarch-helper).
 - [docs/APP_AUDIT.md](docs/APP_AUDIT.md) — Full app audit (UI/UX, frontend, backend, features).

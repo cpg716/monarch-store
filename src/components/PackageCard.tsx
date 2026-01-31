@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { Download, ShieldCheck, Zap, Heart } from 'lucide-react';
+import { Download, Heart, Zap } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useFavorites } from '../hooks/useFavorites';
 import { clsx } from 'clsx';
 import { invoke } from '@tauri-apps/api/core';
 import { resolveIconUrl } from '../utils/iconHelper';
+import RepoBadge from './RepoBadge';
 
 export interface Package {
     name: string;
@@ -99,12 +100,12 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
     return (
         <motion.div
             onClick={() => onClick(displayPkg)}
-            className="group relative bg-white dark:bg-black/20 border border-slate-200 dark:border-white/5 rounded-3xl p-6 hover:bg-slate-50 dark:hover:bg-black/40 transition-all duration-300 hover:border-blue-300/50 dark:hover:border-white/10 hover:-translate-y-1 hover:shadow-xl dark:hover:shadow-2xl shadow-sm dark:shadow-none cursor-pointer overflow-hidden flex flex-col h-full backdrop-blur-md card-gpu"
+            className="group relative bg-app-card dark:bg-black/20 border border-app-border rounded-xl p-6 hover:bg-app-card/80 dark:hover:bg-black/40 transition-all duration-300 hover:border-blue-300/50 dark:hover:border-white/10 hover:-translate-y-1 hover:shadow-xl dark:hover:shadow-2xl shadow-sm dark:shadow-none cursor-pointer overflow-hidden flex flex-col h-full min-w-0 backdrop-blur-md card-gpu"
         >
             <div className="flex justify-between items-start mb-4 gap-4">
                 <div className="flex items-center gap-4 min-w-0 flex-1">
                     <div className={clsx(
-                        "w-14 h-14 rounded-2xl flex items-center justify-center shadow-inner shrink-0 overflow-hidden relative transition-colors",
+                        "w-14 h-14 rounded-xl flex items-center justify-center shadow-inner shrink-0 overflow-hidden relative transition-colors",
                         "text-slate-800 dark:text-white",
                         (!iconUrl || imgError) ? "bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 p-2" : "bg-transparent"
                     )}>
@@ -122,7 +123,7 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="flex flex-col">
-                            <h3 className="font-bold text-lg leading-tight group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors line-clamp-1 text-app-fg break-words max-w-[200px] md:max-w-none" title={displayPkg.display_name || displayPkg.name}>
+                            <h3 className="font-bold text-lg leading-tight text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors line-clamp-1 break-words max-w-[200px] md:max-w-none" title={displayPkg.display_name || displayPkg.name}>
                                 {displayPkg.display_name || displayPkg.name}
                             </h3>
                         </div>
@@ -137,7 +138,7 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
                             {hasVariants ? (
                                 <div className="relative">
                                     <select
-                                        className="text-[10px] font-mono bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded px-2 py-0.5 outline-none focus:border-blue-500 text-slate-700 dark:text-white/70 min-w-[80px] cursor-pointer hover:bg-slate-50 dark:hover:bg-white/10 transition-colors shadow-sm appearance-none pr-6"
+                                        className="text-[10px] font-mono bg-app-card dark:bg-white/5 border border-app-border rounded-lg px-2 py-1 outline-none focus:border-blue-500 text-app-fg min-w-[120px] cursor-pointer hover:bg-app-fg/5 transition-colors shadow-sm appearance-none pr-6"
                                         value={variants.findIndex(v => v.source === displayPkg.source && v.version === displayPkg.version) !== -1 ? variants.findIndex(v => v.source === displayPkg.source && v.version === displayPkg.version) : 0}
                                         onChange={(e) => {
                                             const idx = parseInt(e.target.value);
@@ -148,7 +149,7 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
                                         }}
                                     >
                                         {variants.map((v, i) => (
-                                            <option key={i} value={i} className="bg-white text-slate-900 dark:bg-[#1a1b1e] dark:text-gray-200">
+                                            <option key={`${v.name}-${v.source}-${v.version}`} value={i} className="bg-white text-slate-900 dark:bg-[#1a1b1e] dark:text-gray-200">
                                                 {v.version} ({v.source})
                                             </option>
                                         ))}
@@ -168,29 +169,13 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
                 </div>
             </div>
 
-            <p className="text-slate-600 dark:text-indigo-100/70 text-sm line-clamp-2 mb-6 h-10 font-medium leading-relaxed">
+            <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-2 mb-6 h-10 leading-relaxed">
                 {displayPkg.description}
             </p>
 
             <div className="flex items-center justify-between mt-auto">
                 <div className="flex flex-col gap-2 items-start">
-                    {displayPkg.source === 'chaotic' ? (
-                        <div className="badge-hover px-2.5 py-1 rounded-full bg-violet-100 dark:bg-violet-500/10 border border-violet-200 dark:border-violet-500/20 text-violet-700 dark:text-violet-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 shrink-0 whitespace-nowrap shadow-sm">
-                            <ShieldCheck size={12} /> Chaotic
-                        </div>
-                    ) : displayPkg.source === 'official' ? (
-                        <div className="badge-hover px-2.5 py-1 rounded-full bg-teal-100 dark:bg-teal-500/10 border border-teal-200 dark:border-teal-500/20 text-teal-700 dark:text-teal-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 shrink-0 whitespace-nowrap shadow-sm">
-                            <ShieldCheck size={12} /> Official
-                        </div>
-                    ) : displayPkg.source === 'aur' ? (
-                        <div className="badge-hover px-2.5 py-1 rounded-full bg-amber-100 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 shrink-0 whitespace-nowrap shadow-sm">
-                            <Download size={12} /> AUR
-                        </div>
-                    ) : (
-                        <div className="badge-hover px-2.5 py-1 rounded-full bg-sky-100 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/20 text-sky-700 dark:text-sky-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 shrink-0 whitespace-nowrap shadow-sm">
-                            <Zap size={12} /> {displayPkg.source.toUpperCase()}
-                        </div>
-                    )}
+                    <RepoBadge repo={displayPkg.source} />
 
                     <div className="flex items-center gap-2">
                         {displayPkg.is_optimized && (
@@ -223,7 +208,7 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
                     >
                         <Heart size={16} fill={isFav ? "currentColor" : "none"} />
                     </button>
-                    <button className="p-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-all shadow-lg active:scale-90 shadow-blue-900/20" aria-label="Install">
+                    <button className="p-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-all shadow-lg active:scale-90 shadow-blue-900/20 font-semibold" aria-label="Install">
                         <Download size={16} />
                     </button>
                 </div>

@@ -19,7 +19,11 @@ dist-ssr
 # tauri dev uses this so it never competes for lock with rust-analyzer
 target-tauri-dev
 
-# Editor directories and files
+# Cargo/rust build output (root and src-tauri)
+target
+
+# Editor / IDE
+.cursor
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -48,3 +52,4 @@ src-tauri/icons/*
 *.AppImage
 *.tar.gz
 src-tauri/Cargo.lock
+node_modules

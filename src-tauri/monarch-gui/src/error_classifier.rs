@@ -23,6 +23,8 @@ pub enum PacmanErrorKind {
     CorruptedPackage,
     /// Permission denied
     PermissionDenied,
+    /// makepkg reported "An unknown error has occurred" (often toolchain/permissions)
+    MakepkgBuildFailure,
     /// Generic/unknown error
     Unknown,
 }
@@ -191,6 +193,21 @@ impl ClassifiedError {
                 title: "Permission Denied".to_string(),
                 description: "The operation requires administrator privileges.".to_string(),
                 recovery_action: Some(RecoveryAction::Retry),
+                raw_message: output.to_string(),
+            });
+        }
+
+        // makepkg "An unknown error has occurred" — often toolchain (base-devel), permissions, or stale build dir
+        if output_lower.contains("unknown error has occurred")
+            || output_lower.contains("an unknown error has occurred")
+        {
+            return Some(Self {
+                kind: PacmanErrorKind::MakepkgBuildFailure,
+                title: "AUR Build Failed (Unknown Error)".to_string(),
+                description: "makepkg reported an unknown error. Common causes: missing base-devel or git, wrong permissions in /tmp or cache, or a previous build run as root. Run the Permission Sanitizer script and ensure base-devel and git are installed.".to_string(),
+                recovery_action: Some(RecoveryAction::ShowManualSteps(
+                    "Run: scripts/monarch-permission-sanitizer.sh (or ensure base-devel and git are installed; fix ownership of /tmp/monarch-install and ~/.cache/monarch-store).".to_string()
+                )),
                 raw_message: output.to_string(),
             });
         }

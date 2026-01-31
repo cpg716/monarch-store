@@ -45,8 +45,10 @@ pub fn run() {
                     let _ = client.track_event(
                         "panic",
                         Some(serde_json::json!({
+                            "event_category": "error",
+                            "event_label": "App panic",
                             "message": msg,
-                            "location": location
+                            "location": location,
                         })),
                     );
                 }))
@@ -67,7 +69,7 @@ pub fn run() {
             let required_bins = vec!["git", "checkupdates", "pkexec"];
             for bin in required_bins {
                 if which::which(bin).is_err() {
-                    eprintln!("CRITICAL ERROR: Runtime dependency '{}' is missing!", bin);
+                    log::error!("CRITICAL: Runtime dependency '{}' is missing!", bin);
                     // We can't use toast yet as frontend isn't ready. Polling later handles this.
                 }
             }
@@ -95,6 +97,8 @@ pub fn run() {
             commands::search::search_aur,
             commands::search::search_packages,
             commands::search::get_packages_by_names,
+            commands::search::get_chaotic_package_info,
+            commands::search::get_chaotic_packages_batch,
             commands::search::get_trending,
             commands::search::get_package_variants,
             commands::search::get_category_packages_paginated,
@@ -112,6 +116,13 @@ pub fn run() {
             commands::package::get_pacnew_warnings,
             commands::package::get_orphans,
             commands::package::remove_orphans,
+            commands::system::get_cache_size,
+            commands::system::get_orphans_with_size,
+            commands::system::set_parallel_downloads,
+            commands::system::get_mirror_rank_tool,
+            commands::system::rank_mirrors,
+            commands::system::test_mirrors,
+            commands::system::force_refresh_databases,
             repo_manager::check_repo_sync_status,
             // Package Commands
             // System Commands
@@ -132,7 +143,9 @@ pub fn run() {
             commands::system::optimize_system,
             commands::system::get_all_installed_names, // Smart Curation
             repair::fix_keyring_issues,
+            repair::repair_reset_keyring,
             commands::system::trigger_repo_sync,
+            commands::system::sync_system_databases,
             commands::system::update_and_install_package,
             commands::system::check_app_update,
             commands::system::get_install_mode_command,
@@ -153,15 +166,21 @@ pub fn run() {
             metadata::get_metadata_batch,
             repair::check_system_health,
             repair::check_initialization_status,
+            repair::clear_sync_db_health_cache,
+            repair::get_last_sync_age_seconds,
             commands::reviews::submit_review,
             commands::reviews::get_local_reviews,
             odrs_api::get_app_rating,
             odrs_api::get_app_ratings_batch,
             odrs_api::get_app_reviews,
+            repair::cancel_install,
             repair::repair_unlock_pacman,
             repair::check_keyring_health,
             repair::repair_emergency_sync,
             repair::check_pacman_lock,
+            repair::needs_startup_unlock,
+            repair::unlock_pacman_if_stale,
+            repair::clear_pacman_package_cache,
             repair::initialize_system,
             repo_setup::bootstrap_system,
             repo_setup::enable_repos_batch,
@@ -171,6 +190,8 @@ pub fn run() {
             repo_setup::check_repo_status,
             repo_setup::set_one_click_control,
             repair::fix_keyring_issues_alias,
+            repo_manager::apply_os_config,
+            commands::system::emit_sync_progress,
             // Identity Matrix Command
             distro_context::get_distro_context,
         ])
@@ -207,7 +228,7 @@ pub fn run() {
                         }
                     }
                     RunEvent::Exit => {
-                        println!("App Exiting...");
+                        log::info!("App exiting");
                     }
                     _ => {}
                 }

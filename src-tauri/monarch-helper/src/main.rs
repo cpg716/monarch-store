@@ -1,22 +1,147 @@
-mod transactions;
 mod alpm_errors;
 mod logger;
+mod progress;
 mod self_healer;
+mod transactions;
 
-use alpm::{Alpm, SigLevel};
+#[cfg(test)]
+mod command_tests {
+    use super::HelperCommand;
+    use serde_json;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_command_serialization_alpm_install() {
+        let cmd = HelperCommand::AlpmInstall {
+            packages: vec!["firefox".to_string(), "vlc".to_string()],
+            sync_first: true,
+            enabled_repos: vec![
+                "core".to_string(),
+                "extra".to_string(),
+                "chaotic-aur".to_string(),
+            ],
+            cpu_optimization: Some("v3".to_string()),
+            target_repo: None,
+        };
+
+        let json = serde_json::to_string(&cmd).expect("Should serialize");
+        assert!(json.contains("AlpmInstall"));
+        assert!(json.contains("firefox"));
+        assert!(json.contains("chaotic-aur"));
+        assert!(json.starts_with('{'));
+        assert!(json.ends_with('}'));
+
+        let parsed: HelperCommand = serde_json::from_str(&json).expect("Should deserialize");
+        match parsed {
+            HelperCommand::AlpmInstall {
+                packages,
+                sync_first,
+                enabled_repos,
+                cpu_optimization,
+                target_repo,
+            } => {
+                assert_eq!(packages.len(), 2);
+                assert!(sync_first);
+                assert_eq!(enabled_repos.len(), 3);
+                assert_eq!(cpu_optimization, Some("v3".to_string()));
+                assert_eq!(target_repo, None);
+            }
+            _ => panic!("Wrong command variant"),
+        }
+    }
+
+    #[test]
+    fn test_command_serialization_with_cachyos_repo() {
+        let cmd = HelperCommand::AlpmInstall {
+            packages: vec!["anydesk-bin".to_string()],
+            sync_first: true,
+            enabled_repos: vec![
+                "cachyos".to_string(),
+                "cachyos-v3".to_string(),
+                "chaotic-aur".to_string(),
+            ],
+            cpu_optimization: Some("v3".to_string()),
+            target_repo: None,
+        };
+
+        let json = serde_json::to_string(&cmd).expect("Should serialize");
+        assert!(json.contains("cachyos"));
+        assert!(json.starts_with('{'));
+        assert!(json.ends_with('}'));
+        assert!(!json.trim().eq("\"cachyos\""));
+
+        let parsed: HelperCommand = serde_json::from_str(&json).expect("Should deserialize");
+        match parsed {
+            HelperCommand::AlpmInstall { enabled_repos, .. } => {
+                assert!(enabled_repos.contains(&"cachyos".to_string()));
+            }
+            _ => panic!("Wrong command variant"),
+        }
+    }
+
+    #[test]
+    fn test_reject_raw_string_as_command() {
+        let raw_string = "cachyos";
+        let result: Result<HelperCommand, _> = serde_json::from_str(raw_string);
+        assert!(
+            result.is_err(),
+            "Raw string should not parse as HelperCommand"
+        );
+
+        let quoted = "\"cachyos\"";
+        let result2: Result<HelperCommand, _> = serde_json::from_str(quoted);
+        assert!(
+            result2.is_err(),
+            "Quoted string should not parse as HelperCommand"
+        );
+    }
+
+    #[test]
+    fn test_command_file_format() {
+        let cmd = HelperCommand::AlpmInstall {
+            packages: vec!["test-pkg".to_string()],
+            sync_first: false,
+            enabled_repos: vec!["core".to_string()],
+            cpu_optimization: None,
+            target_repo: None,
+        };
+
+        let json = serde_json::to_string(&cmd).expect("Should serialize");
+        let mut file = NamedTempFile::new().expect("Should create temp file");
+        file.write_all(json.as_bytes()).expect("Should write");
+        file.flush().expect("Should flush");
+
+        let contents = std::fs::read_to_string(file.path()).expect("Should read");
+        assert_eq!(contents.trim(), json);
+
+        let parsed: HelperCommand = serde_json::from_str(&contents.trim()).expect("Should parse");
+        match parsed {
+            HelperCommand::AlpmInstall { packages, .. } => {
+                assert_eq!(packages[0], "test-pkg");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+}
+
 use alpm::Question;
+use alpm::{Alpm, SigLevel};
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "command", content = "payload")]
-enum HelperCommand {
+pub enum HelperCommand {
     // ✅ NEW: Full ALPM Transactions
     AlpmInstall {
         packages: Vec<String>,
         sync_first: bool,
         enabled_repos: Vec<String>,
         cpu_optimization: Option<String>,
+        target_repo: Option<String>,
     },
     AlpmUninstall {
         packages: Vec<String>,
@@ -32,6 +157,7 @@ enum HelperCommand {
     AlpmInstallFiles {
         paths: Vec<String>,
     },
+    ForceRefreshDb,
     // Legacy commands (deprecated but kept for compatibility)
     InstallTargets {
         packages: Vec<String>,
@@ -81,44 +207,103 @@ struct ProgressMessage {
 }
 
 fn emit_progress(progress: u32, message: &str) {
-    use std::io::Write;
-    let progress = ProgressMessage {
+    let msg = ProgressMessage {
         progress: progress as u8,
         message: message.to_string(),
     };
-    if let Ok(json) = serde_json::to_string(&progress) {
-        let _ = writeln!(std::io::stdout(), "{}", json);
-        let _ = std::io::stdout().flush();
+    if let Ok(json) = serde_json::to_string(&msg) {
+        progress::send_progress_line(json);
     }
 }
 
 // Top-level callbacks to ensure 'static lifetime
 // ALPM helpers remain for read-only queries if needed.
 
+/// Real user ID when run via pkexec (pkexec strips env; Polkit sets this).
+/// Use for audit logs or GPG keyring path when not relying on $HOME/$USER.
+fn calling_uid() -> Option<u32> {
+    std::env::var("PKEXEC_UID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+}
+
+/// Paths for App Store–style cancel: GUI creates CANCEL_FILE, helper watches and exits.
+const HELPER_PID_FILE: &str = "/var/tmp/monarch-helper.pid";
+const CANCEL_FILE: &str = "/var/tmp/monarch-cancel";
+
+/// Remove PID file and cancel file on exit so next run is clean.
+struct PidFileGuard;
+impl Drop for PidFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(HELPER_PID_FILE);
+        let _ = std::fs::remove_file(CANCEL_FILE);
+    }
+}
+
+/// Spawn a thread that watches for CANCEL_FILE. When the GUI creates it (user clicked Cancel),
+/// we remove it and exit so the install stops and the lock is released.
+fn spawn_cancel_watcher() {
+    std::thread::spawn(|| {
+        let cancel_path = std::path::Path::new(CANCEL_FILE);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if cancel_path.exists() {
+                let _ = std::fs::remove_file(cancel_path);
+                let _ = std::fs::remove_file(HELPER_PID_FILE);
+                logger::info("Cancel requested by user; exiting.");
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    logger::info("monarch-helper starting");
+    // Effective UID check: helper must run as root. Exit before touching ALPM.
+    #[cfg(unix)]
+    {
+        let euid = unsafe { libc::geteuid() };
+        if euid != 0 {
+            let msg = format!(
+                "monarch-helper must run as root (euid={}). Use pkexec or Polkit.",
+                euid
+            );
+            logger::error(&msg);
+            std::process::exit(125);
+        }
+    }
+
+    if let Some(uid) = calling_uid() {
+        logger::info(&format!("monarch-helper starting (invoker UID={})", uid));
+    } else {
+        logger::info("monarch-helper starting");
+    }
+
+    // App Store–style cancel: write PID so GUI can request cancel; watch for cancel file.
+    let _pid_guard = PidFileGuard;
+    if std::fs::write(HELPER_PID_FILE, std::process::id().to_string()).is_err() {
+        logger::trace("Could not write PID file (non-fatal)");
+    }
+    spawn_cancel_watcher();
     let mut alpm = Alpm::new("/", "/var/lib/pacman")?;
 
     // Phase 4: Performance - Set Parallel Downloads
     let _ = alpm.set_parallel_downloads(5);
 
     // App Store grade: auto-answer questions (NOCONFIRM behavior) so GUI never hangs
-    alpm.set_question_cb((), |question, _: &mut ()| {
-        match question.question() {
-            Question::SelectProvider(mut q) => {
-                q.set_index(0);
-                logger::trace("Auto-resolved provider conflict: chose option 1 (repository default)");
-            }
-            Question::Replace(q) => {
-                q.set_replace(true);
-                logger::trace("Auto-resolved replace: chose to replace");
-            }
-            Question::ImportKey(mut q) => q.set_import(true),
-            Question::InstallIgnorepkg(mut q) => q.set_install(true),
-            Question::RemovePkgs(mut q) => q.set_skip(false),
-            Question::Conflict(mut q) => q.set_remove(false),
-            Question::Corrupted(mut q) => q.set_remove(true),
+    alpm.set_question_cb((), |question, _: &mut ()| match question.question() {
+        Question::SelectProvider(mut q) => {
+            q.set_index(0);
+            logger::trace("Auto-resolved provider conflict: chose option 1 (repository default)");
         }
+        Question::Replace(q) => {
+            q.set_replace(true);
+            logger::trace("Auto-resolved replace: chose to replace");
+        }
+        Question::ImportKey(mut q) => q.set_import(true),
+        Question::InstallIgnorepkg(mut q) => q.set_install(true),
+        Question::RemovePkgs(mut q) => q.set_skip(false),
+        Question::Conflict(mut q) => q.set_remove(false),
+        Question::Corrupted(mut q) => q.set_remove(true),
     });
 
     // Set log callback to suppress noise (set_log_cb(data, FnMut(LogLevel, &str, &mut T))
@@ -137,70 +322,350 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 e
             ),
         );
-        // Fallback to basic registration if pacman-conf fails
+        // Fallback: re-parse pacman.conf with server lines (avoids "no servers configured")
         if let Ok(conf) = std::fs::read_to_string("/etc/pacman.conf") {
-            for line in conf.lines() {
-                let line = line.trim();
-                if line.starts_with('[') && line.ends_with(']') {
-                    let section = &line[1..line.len() - 1];
-                    if section != "options" {
-                        let _ = alpm.register_syncdb(section.as_bytes().to_vec(), SigLevel::PACKAGE_OPTIONAL);
+            let _ = parse_and_register_conf(
+                &mut alpm,
+                &conf,
+                None,
+                Some(std::path::Path::new("/etc/pacman.conf")),
+            );
+        }
+    }
+    // Remove any syncdb that has no servers (avoids "no servers configured for repository" during sync)
+    remove_syncdbs_with_no_servers(&mut alpm);
+
+    let args: Vec<String> = std::env::args().collect();
+    logger::info(&format!(
+        "Helper started with {} args: {:?}",
+        args.len(),
+        args
+    ));
+
+    // Check for command in environment variable first (used when password is provided via sudo -S)
+    if let Ok(env_json) = std::env::var("MONARCH_CMD_JSON") {
+        logger::info(&format!(
+            "Found command in MONARCH_CMD_JSON environment variable (length: {})",
+            env_json.len()
+        ));
+        if !env_json.trim().is_empty() {
+            match serde_json::from_str::<HelperCommand>(&env_json) {
+                Ok(cmd) => {
+                    logger::info("Successfully parsed command from env var");
+                    execute_command(cmd, &mut alpm);
+                    logger::info("monarch-helper exiting normally");
+                    return Ok(());
+                }
+                Err(e) => {
+                    logger::error(&format!("Failed to parse command from env var: {}", e));
+                    let preview: String = env_json.chars().take(100).collect();
+                    emit_progress(0, &format!("Error: Invalid JSON command in environment variable: {}. Preview: {:?}", e, preview));
+                    // Fall through to try file path backup
+                }
+            }
+        } else {
+            logger::warn("MONARCH_CMD_JSON is set but empty, falling back to file path");
+        }
+    } else {
+        logger::info("MONARCH_CMD_JSON not found in environment");
+    }
+
+    // Fallback: Check for file path in environment variable (backup when env var JSON fails)
+    if let Ok(file_path) = std::env::var("MONARCH_CMD_FILE") {
+        logger::info(&format!(
+            "Found command file path in MONARCH_CMD_FILE: {}",
+            file_path
+        ));
+        if let Ok(json_str) = std::fs::read_to_string(&file_path) {
+            let trimmed = json_str.trim();
+            if !trimmed.is_empty() {
+                logger::info(&format!("Read {} bytes from command file", trimmed.len()));
+                match serde_json::from_str::<HelperCommand>(trimmed) {
+                    Ok(cmd) => {
+                        logger::info("Successfully parsed command from file");
+                        let _ = std::fs::remove_file(&file_path);
+                        execute_command(cmd, &mut alpm);
+                        logger::info("monarch-helper exiting normally");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        logger::error(&format!("Failed to parse command from file: {}", e));
+                        emit_progress(
+                            0,
+                            &format!("Error: Invalid JSON command in file {}: {}", file_path, e),
+                        );
+                        let _ = std::fs::remove_file(&file_path);
+                        return Ok(());
                     }
                 }
             }
         }
     }
 
-    let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
-        // Handle command: args[1] may be path to JSON file (preferred) or inline JSON
-        let arg1 = &args[1];
-        let json_str: String = if std::path::Path::new(arg1).is_file() {
-            match std::fs::read_to_string(arg1) {
+        // Handle command: args[1] may be path to temp JSON file (GUI/Update flow) or inline JSON (repair/AUR PACMAN wrapper).
+        // Try reading as file first for any path-like arg (handles /tmp and /var/tmp).
+        let arg1 = args[1].trim();
+        logger::info(&format!("Processing argument: {}", arg1));
+        let path_to_try = std::path::Path::new(arg1);
+        let path_with_json = if arg1.ends_with(".json") {
+            path_to_try.to_path_buf()
+        } else if arg1.contains("monarch-cmd") {
+            std::path::Path::new(arg1).with_extension("json")
+        } else {
+            path_to_try.to_path_buf()
+        };
+        let path_to_try_var_tmp = if arg1.starts_with("/tmp/") {
+            std::path::Path::new("/var/tmp").join(path_to_try.file_name().unwrap_or_default())
+        } else {
+            path_to_try.to_path_buf()
+        };
+        // Detect if this looks like a command file path (very lenient - any absolute path is considered a file path)
+        let looks_like_cmd_file =
+            arg1.starts_with("/") || arg1.contains("/") || arg1.contains("\\");
+
+        let read_from_path = |p: &std::path::Path| -> Option<String> {
+            logger::info(&format!("Attempting to read from path: {}", p.display()));
+            if !p.exists() {
+                logger::info(&format!("Path does not exist: {}", p.display()));
+                return None;
+            }
+            if !p.is_file() {
+                logger::info(&format!("Path is not a file: {}", p.display()));
+                return None;
+            }
+            // SECURITY: When invoked via pkexec, command file must be owned by the invoking user (prevents TOCTOU/race).
+            #[cfg(unix)]
+            if let Some(expect_uid) = calling_uid() {
+                if let Ok(meta) = std::fs::metadata(p) {
+                    let file_uid = meta.uid();
+                    if file_uid != expect_uid {
+                        logger::error(&format!(
+                            "Command file ownership violation: file uid={}, expected {}",
+                            file_uid, expect_uid
+                        ));
+                        emit_progress(0, "Error: Command file must be owned by the invoking user (security check).");
+                        return None;
+                    }
+                }
+            }
+            if let Ok(metadata) = std::fs::metadata(p) {
+                logger::info(&format!(
+                    "File metadata: permissions={:?}, size={}",
+                    metadata.permissions(),
+                    metadata.len()
+                ));
+            }
+            match std::fs::read_to_string(p) {
                 Ok(s) => {
-                    let _ = std::fs::remove_file(arg1);
-                    s
+                    let trimmed = s.trim();
+                    logger::info(&format!(
+                        "Successfully read {} bytes from file",
+                        trimmed.len()
+                    ));
+                    if trimmed.is_empty() {
+                        emit_progress(0, &format!("Error: Command file {} is empty", p.display()));
+                        let _ = std::fs::remove_file(p);
+                        return None;
+                    }
+                    let _ = std::fs::remove_file(p);
+                    Some(trimmed.to_string())
                 }
                 Err(e) => {
+                    logger::error(&format!("Failed to read file {}: {}", p.display(), e));
                     emit_progress(
                         0,
-                        &format!("Error: Failed to read command file: {}", e),
+                        &format!("Error: Failed to read command file {}: {}", p.display(), e),
+                    );
+                    None
+                }
+            }
+        };
+
+        let json_str: String = match read_from_path(path_to_try)
+            .or_else(|| read_from_path(&path_with_json))
+            .or_else(|| read_from_path(&path_to_try_var_tmp))
+        {
+            Some(s) => {
+                if s.trim().is_empty() {
+                    emit_progress(0, &format!("Error: Command file {} is empty", arg1));
+                    return Ok(());
+                }
+                s
+            }
+            None if looks_like_cmd_file => {
+                emit_progress(
+                    0,
+                    &format!(
+                        "Error: Command file not found: {}. Tried: {:?}, {:?}, {:?}. Reinstall monarch-store so helper and GUI both use /var/tmp.",
+                        arg1, path_to_try, path_with_json, path_to_try_var_tmp
+                    ),
+                );
+                return Ok(());
+            }
+            None if arg1.is_empty() => {
+                emit_progress(
+                    0,
+                    "Error: No command argument. Expected path to JSON file or inline JSON.",
+                );
+                return Ok(());
+            }
+            None => {
+                // If it looks like a file path (contains / or starts with /), don't try to parse as JSON
+                if arg1.starts_with('/') || arg1.contains("/") || arg1.contains("\\") {
+                    // Definitely a file path that we couldn't read
+                    logger::error(&format!("File path provided but could not read: {}", arg1));
+                    emit_progress(
+                        0,
+                        &format!(
+                            "Error: Command file not found or not readable: {}. Tried paths: {:?}, {:?}, {:?}. Check permissions and ensure file exists.",
+                            arg1, path_to_try, path_with_json, path_to_try_var_tmp
+                        ),
+                    );
+                    return Ok(());
+                }
+                // Try to parse arg1 as inline JSON (fallback for repair commands that pass JSON directly)
+                // CRITICAL: Only accept if it's valid JSON structure (starts with { and ends with })
+                if arg1.starts_with('{') && arg1.ends_with('}') {
+                    // Validate it's actually JSON by attempting to parse
+                    if serde_json::from_str::<serde_json::Value>(arg1).is_ok() {
+                        logger::info("Treating argument as inline JSON");
+                        arg1.to_string()
+                    } else {
+                        logger::error(&format!(
+                            "Argument looks like JSON but failed to parse: {}",
+                            arg1
+                        ));
+                        emit_progress(
+                            0,
+                            &format!(
+                                "Error: Invalid JSON in argument: {}. Expected valid JSON command.",
+                                arg1
+                            ),
+                        );
+                        return Ok(());
+                    }
+                } else {
+                    // Reject any non-JSON, non-file-path argument (e.g., raw repo names like "cachyos")
+                    logger::error(&format!(
+                        "Argument doesn't look like a file path or JSON: {}",
+                        arg1
+                    ));
+                    emit_progress(
+                        0,
+                        &format!(
+                            "Error: Invalid command argument: {}. Expected file path or JSON command. Got raw string (possibly a repo name).",
+                            arg1
+                        ),
                     );
                     return Ok(());
                 }
             }
-        } else {
-            arg1.clone()
         };
 
+        logger::info(&format!(
+            "Parsing JSON command (length: {})",
+            json_str.len()
+        ));
         match serde_json::from_str::<HelperCommand>(&json_str) {
-            Ok(cmd) => execute_command(cmd, &mut alpm),
+            Ok(cmd) => {
+                logger::info("Successfully parsed command");
+                execute_command(cmd, &mut alpm)
+            }
             Err(e) => {
-                emit_progress(
-                    0,
-                    &format!(
-                        "Error: Invalid JSON command: {}. Input length: {}",
-                        e,
-                        json_str.len()
-                    ),
-                );
+                let err_str = e.to_string();
+                logger::error(&format!("JSON parse error: {}", err_str));
+                let is_outdated_helper = err_str.contains("unknown variant")
+                    && (json_str.contains("AlpmInstall")
+                        || json_str.contains("AlpmUpgrade")
+                        || json_str.contains("AlpmUninstall"));
+                if is_outdated_helper {
+                    emit_progress(
+                        0,
+                        "Error: The installed monarch-helper is outdated and does not support ALPM install/update. Please update monarch-store: run 'pacman -Syu monarch-store' or reinstall the package so the helper matches this app version.",
+                    );
+                } else {
+                    let preview: String = json_str
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                        .replace('\n', " ");
+                    emit_progress(
+                        0,
+                        &format!(
+                            "Error: Invalid JSON command: {}. Input length: {}. Preview: {:?}. Full input starts with: {:?}",
+                            err_str,
+                            json_str.len(),
+                            if preview.is_empty() { "(empty)" } else { &preview },
+                            json_str.chars().take(200).collect::<String>()
+                        ),
+                    );
+                }
             }
         }
     } else {
-        // Handle commands from stdin (e.g. from invoke_helper)
+        // Primary path for GUI (pkexec with no args): command is sent as a single JSON line on stdin.
+        // BUT: If MONARCH_CMD_FILE is set, we're in password mode (sudo -S) and stdin contains the password, not the command.
+        // In that case, we should have already read from the file above. If we get here, something went wrong.
+        if std::env::var("MONARCH_CMD_FILE").is_ok() {
+            logger::error(
+                "MONARCH_CMD_FILE is set but command file read failed. This should not happen.",
+            );
+            emit_progress(
+                0,
+                "Error: Command file was specified but could not be read. Check permissions and ensure the file exists.",
+            );
+            return Ok(());
+        }
+
+        // No file path set, so we're in pkexec mode: command is on stdin (not password)
+        logger::info("Reading command from stdin (pkexec mode, no password)");
         let stdin = io::stdin();
         for line in stdin.lock().lines() {
             if let Ok(line) = line {
-                match serde_json::from_str::<HelperCommand>(&line) {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue; // Skip empty lines
+                }
+                // CRITICAL: Validate that input looks like JSON before attempting to parse
+                // Reject raw strings (e.g., repo names like "cachyos") that aren't JSON
+                if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+                    logger::error(&format!(
+                        "Received non-JSON input on stdin: {:?}",
+                        trimmed.chars().take(80).collect::<String>()
+                    ));
+                    emit_progress(
+                        0,
+                        &format!(
+                            "Error: Invalid input on stdin. Expected JSON command, got raw string: {:?}. This may indicate a serialization bug in the GUI.",
+                            trimmed.chars().take(80).collect::<String>()
+                        ),
+                    );
+                    continue; // Skip this line and try next
+                }
+                match serde_json::from_str::<HelperCommand>(trimmed) {
                     Ok(cmd) => execute_command(cmd, &mut alpm),
                     Err(e) => {
-                        emit_progress(
-                            0,
-                            &format!(
-                                "Error: Failed to parse command JSON: {}. Payload: {}",
-                                e, line
-                            ),
-                        );
+                        let err_str = e.to_string();
+                        let is_outdated_helper = err_str.contains("unknown variant")
+                            && (trimmed.contains("AlpmInstall")
+                                || trimmed.contains("AlpmUpgrade")
+                                || trimmed.contains("AlpmUninstall"));
+                        if is_outdated_helper {
+                            emit_progress(
+                                0,
+                                "Error: The installed monarch-helper is outdated and does not support ALPM install/update. Please update monarch-store: run 'pacman -Syu monarch-store' or reinstall the package so the helper matches this app version.",
+                            );
+                        } else {
+                            let preview: String = trimmed.chars().take(80).collect();
+                            emit_progress(
+                                0,
+                                &format!(
+                                    "Error: Failed to parse command JSON: {}. Payload preview: {:?}",
+                                    err_str, preview
+                                ),
+                            );
+                        }
                     }
                 }
             }
@@ -233,11 +698,15 @@ fn main() {
             };
             logger::panic_msg(&msg);
             emit_progress(0, &format!("Error: {}", msg));
+            // Release ALPM lock on panic so a zombie lockfile doesn't break the system.
+            if std::path::Path::new(self_healer::DB_LOCK_PATH).exists() {
+                let _ = std::fs::remove_file(self_healer::DB_LOCK_PATH);
+            }
         }
     }
 }
 
-/// Ensures db.lck is not held (or removes stale lock). Call before any modifying transaction.
+/// Ensure we can lock the DB.
 fn ensure_db_ready() -> Result<(), String> {
     if !std::path::Path::new(self_healer::DB_LOCK_PATH).exists() {
         return Ok(());
@@ -249,6 +718,63 @@ fn ensure_db_ready() -> Result<(), String> {
     Err(self_healer::db_lock_busy_message().to_string())
 }
 
+// --- SELF-HEALING RETRY LOOP ---
+fn execute_with_healing<F>(mut action: F)
+where
+    F: FnMut() -> Result<(), String>,
+{
+    // Attempt 1
+    if let Err(e) = action() {
+        // Check for signature/keyring errors
+        let err_lower = e.to_lowercase();
+        let is_sig_error = err_lower.contains("invalid or corrupted package")
+            || err_lower.contains("invalid signature")
+            || err_lower.contains("unknown trust")
+            || err_lower.contains("signature from")
+            || err_lower.contains("corrupted package");
+
+        if is_sig_error {
+            emit_progress(
+                0,
+                "Identified signature error. Attempting self-repair (resetting keys)...",
+            );
+            logger::warn(&format!("Self-Heal Triggered: {}", e));
+
+            // Repair Action: pacman-key --init && pacman-key --populate
+            let heal_res = (|| -> Result<(), String> {
+                std::process::Command::new("pacman-key")
+                    .arg("--init")
+                    .output()
+                    .map_err(|e| format!("Init failed: {}", e))?;
+
+                std::process::Command::new("pacman-key")
+                    .arg("--populate")
+                    .output()
+                    .map_err(|e| format!("Populate failed: {}", e))?;
+                Ok(())
+            })();
+
+            if let Err(heal_err) = heal_res {
+                emit_progress(0, &format!("Self-repair failed: {}", heal_err));
+                // Verify if we should still return the original error?
+                // Yes, fall through to emit the original failure or a new one.
+            } else {
+                emit_progress(10, "Keys reset. Retrying operation...");
+                // Attempt 2
+                if let Err(retry_e) = action() {
+                    emit_progress(0, &format!("Error (Persistent): {}", retry_e));
+                } else {
+                    emit_progress(100, "Recovered successfully!");
+                }
+                return; // already handled
+            }
+        }
+
+        // If not sig error or repair failed/didn't help
+        emit_progress(0, &format!("Error: {}", e));
+    }
+}
+
 fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
     match cmd {
         // ✅ NEW: Full ALPM Transactions
@@ -257,25 +783,29 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             sync_first,
             enabled_repos,
             cpu_optimization,
+            target_repo,
         } => {
-            if let Err(e) = ensure_db_ready() {
-                emit_progress(0, &e);
-                return;
-            }
-            if let Err(e) = transactions::execute_alpm_install(
-                packages,
-                sync_first,
-                enabled_repos,
-                cpu_optimization,
-                alpm,
-            ) {
-                emit_progress(0, &format!("Error: {}", e));
-            }
+            execute_with_healing(|| {
+                if let Err(e) = ensure_db_ready() {
+                    return Err(e);
+                }
+                transactions::execute_alpm_install(
+                    packages.clone(),
+                    sync_first,
+                    enabled_repos.clone(),
+                    cpu_optimization.clone(),
+                    target_repo.clone(),
+                    alpm,
+                )
+            });
         }
         HelperCommand::AlpmUninstall {
             packages,
             remove_deps,
         } => {
+            // Uninstall usually doesn't involve signatures, but db lock might need check.
+            // We can use simple execution or healing if we suspect DB lock issues?
+            // Prompt only requested self-healing for "Invalid Signature". Uninstall won't verify sigs.
             if let Err(e) = ensure_db_ready() {
                 emit_progress(0, &e);
                 return;
@@ -288,60 +818,69 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             packages,
             enabled_repos,
         } => {
-            if let Err(e) = ensure_db_ready() {
-                emit_progress(0, &e);
-                return;
-            }
-            if let Err(e) = transactions::execute_alpm_upgrade(packages, enabled_repos, alpm) {
-                emit_progress(0, &format!("Error: {}", e));
-            }
+            execute_with_healing(|| {
+                if let Err(e) = ensure_db_ready() {
+                    return Err(e);
+                }
+                transactions::execute_alpm_upgrade(packages.clone(), enabled_repos.clone(), alpm)
+            });
         }
         HelperCommand::AlpmSync { enabled_repos } => {
-            if let Err(e) = transactions::execute_alpm_sync(enabled_repos, alpm) {
-                emit_progress(0, &format!("Error: {}", e));
-            }
+            // Sync verifies DB signatures!
+            execute_with_healing(|| transactions::execute_alpm_sync(enabled_repos.clone(), alpm));
         }
         HelperCommand::AlpmInstallFiles { paths } => {
+            execute_with_healing(|| {
+                if let Err(e) = ensure_db_ready() {
+                    return Err(e);
+                }
+                // SECURITY: Only allow paths under /tmp/monarch-install/
+                const ALLOWED_INSTALL_PREFIX: &str = "/tmp/monarch-install";
+                let prefix = std::fs::canonicalize(ALLOWED_INSTALL_PREFIX)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(ALLOWED_INSTALL_PREFIX));
+                let mut allowed_paths = Vec::new();
+                for p in &paths {
+                    match std::fs::canonicalize(p) {
+                        Ok(canon) => {
+                            if canon.starts_with(&prefix) {
+                                allowed_paths.push(canon.to_string_lossy().to_string());
+                            } else {
+                                return Err("Error: Unauthorized path for AlpmInstallFiles (only /tmp/monarch-install/ allowed)".to_string());
+                            }
+                        }
+                        Err(_) => {
+                            return Err(format!("Error: Path not found or invalid: {}", p));
+                        }
+                    }
+                }
+                if allowed_paths.is_empty() {
+                    return Err("Error: No valid paths for AlpmInstallFiles".to_string());
+                }
+                transactions::execute_alpm_install_files(allowed_paths, alpm)
+            });
+        }
+        // Legacy commands (deprecated but kept for compatibility — must still work for old GUI or fallback path)
+        HelperCommand::InstallTargets { packages } => {
             if let Err(e) = ensure_db_ready() {
                 emit_progress(0, &e);
                 return;
             }
-            // SECURITY: Only allow paths under /tmp/monarch-install/ (canonicalized) to prevent
-            // a compromised GUI from installing arbitrary package files from other locations.
-            const ALLOWED_INSTALL_PREFIX: &str = "/tmp/monarch-install";
-            let prefix = std::fs::canonicalize(ALLOWED_INSTALL_PREFIX)
-                .unwrap_or_else(|_| std::path::PathBuf::from(ALLOWED_INSTALL_PREFIX));
-            let mut allowed_paths = Vec::new();
-            for p in &paths {
-                match std::fs::canonicalize(p) {
-                    Ok(canon) => {
-                        if canon.starts_with(&prefix) {
-                            allowed_paths.push(canon.to_string_lossy().to_string());
-                        } else {
-                            emit_progress(0, "Error: Unauthorized path for AlpmInstallFiles (only /tmp/monarch-install/ allowed)");
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        emit_progress(0, &format!("Error: Path not found or invalid: {}", p));
-                        return;
-                    }
-                }
-            }
-            if allowed_paths.is_empty() {
-                emit_progress(0, "Error: No valid paths for AlpmInstallFiles");
+            // Same resilience as AlpmInstall: repos from config (works when DBs are corrupt), sync_first, corruption detection + retry inside execute_alpm_install
+            let enabled_repos = transactions::get_enabled_repos_from_config();
+            if enabled_repos.is_empty() {
+                emit_progress(0, "Error: No repositories found in pacman.conf. Run onboarding or add repos first.");
                 return;
             }
-            if let Err(e) = transactions::execute_alpm_install_files(allowed_paths, alpm) {
+            if let Err(e) = transactions::execute_alpm_install(
+                packages,
+                true, // sync_first — same as AlpmInstall
+                enabled_repos,
+                None, // cpu_optimization not passed from legacy path
+                None, // target_repo
+                alpm,
+            ) {
                 emit_progress(0, &format!("Error: {}", e));
             }
-        }
-        // Legacy commands (deprecated but kept for compatibility)
-        HelperCommand::InstallTargets { .. } => {
-            emit_progress(
-                0,
-                "Error: InstallTargets is deprecated. Use AlpmInstall instead.",
-            );
         }
         HelperCommand::InstallFiles { .. } => {
             emit_progress(
@@ -354,16 +893,29 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 emit_progress(0, &e);
                 return;
             }
-            let enabled_repos: Vec<String> = alpm.syncdbs().iter().map(|db| db.name().to_string()).collect();
+            let enabled_repos: Vec<String> = alpm
+                .syncdbs()
+                .iter()
+                .map(|db| db.name().to_string())
+                .collect();
             if let Err(e) = transactions::execute_alpm_upgrade(None, enabled_repos, alpm) {
                 emit_progress(0, &format!("Error: {}", e));
             }
         }
         HelperCommand::Refresh => {
-            emit_progress(
-                0,
-                "Error: Refresh is deprecated. Use AlpmSync instead.",
-            );
+            let enabled_repos: Vec<String> = alpm
+                .syncdbs()
+                .iter()
+                .map(|db| db.name().to_string())
+                .collect();
+            if let Err(e) = transactions::execute_alpm_sync(enabled_repos, alpm) {
+                emit_progress(0, &format!("Error: {}", e));
+            }
+        }
+        HelperCommand::ForceRefreshDb => {
+            if let Err(e) = transactions::force_refresh_sync_dbs(alpm) {
+                emit_progress(0, &format!("Error: {}", e));
+            }
         }
         HelperCommand::UninstallTargets { .. } => {
             emit_progress(
@@ -393,15 +945,19 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             }
         }
         HelperCommand::WriteFile { path, content } => {
-            // SECURITY: Only allow writing to /etc/pacman.d/monarch for now
-            if path.starts_with("/etc/pacman.d/monarch/") || path == "/etc/pacman.conf" {
+            // SECURITY: Only allow writing under /etc/pacman.d/monarch/. Never allow overwriting /etc/pacman.conf
+            // (Initialize adds Include line via read-modify-write; direct WriteFile would allow full replacement).
+            if path.starts_with("/etc/pacman.d/monarch/") {
                 if let Err(e) = std::fs::write(&path, content) {
                     emit_progress(0, &format!("Error: {}", e.to_string()));
                 } else {
                     emit_progress(100, &format!("Wrote {}", path));
                 }
             } else {
-                emit_progress(0, "Error: Unauthorized path");
+                emit_progress(
+                    0,
+                    "Error: Unauthorized path (only /etc/pacman.d/monarch/ allowed)",
+                );
             }
         }
         HelperCommand::RemoveFile { path } => {
@@ -418,7 +974,7 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
         }
         HelperCommand::WriteFiles { files } => {
             for (path, content) in files {
-                if path.starts_with("/etc/pacman.d/monarch/") || path == "/etc/pacman.conf" {
+                if path.starts_with("/etc/pacman.d/monarch/") {
                     if let Err(e) = std::fs::write(&path, content) {
                         emit_progress(0, &format!("Error writing {}: {}", path, e));
                     }
@@ -445,7 +1001,13 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
             if !allowed_binaries.contains(&bin_name) {
-                emit_progress(0, &format!("Error: RunCommand only allows pacman and pacman-key, got: {}", binary));
+                emit_progress(
+                    0,
+                    &format!(
+                        "Error: RunCommand only allows pacman and pacman-key, got: {}",
+                        binary
+                    ),
+                );
                 return;
             }
             // Only allow absolute path to the actual binary (avoid PATH abuse)
@@ -504,13 +1066,14 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
 
     // 1. Register base pacman.conf
     let conf = std::fs::read_to_string(conf_path)?;
-    parse_and_register_conf(alpm, &conf, None)?;
+    parse_and_register_conf(alpm, &conf, None, Some(std::path::Path::new(conf_path)))?;
 
     // 2. Register MonARCH modular configs (Hardcoded sync dir)
     if let Ok(entries) = std::fs::read_dir("/etc/pacman.d/monarch") {
         for entry in entries.flatten() {
-            if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                parse_and_register_conf(alpm, &content, None)?;
+            let path = entry.path();
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                parse_and_register_conf(alpm, &content, None, Some(&path))?;
             }
         }
     }
@@ -518,10 +1081,63 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Remove any registered syncdb that has no Server URLs. Such dbs cause "no servers configured for repository" during sync.
+fn remove_syncdbs_with_no_servers(alpm: &mut Alpm) {
+    loop {
+        let empty_name = alpm
+            .syncdbs()
+            .iter()
+            .find(|db| db.servers().iter().next().is_none())
+            .map(|db| db.name().to_string());
+        let name = match empty_name {
+            Some(n) => n,
+            None => break,
+        };
+        for db in alpm.syncdbs_mut() {
+            if db.name() == name.as_str() {
+                db.unregister();
+                logger::warn(&format!(
+                    "Unregistered repo '{}' (no Server URLs); skipping to avoid sync failure.",
+                    name
+                ));
+                break;
+            }
+        }
+    }
+}
+
+/// Resolve Include path: if relative, try config dir, then /etc/pacman.d, then /etc/pacman.d/monarch.
+fn resolve_include_path(
+    path: &str,
+    config_file: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Vec::new();
+    }
+    if path.contains('*') {
+        return Vec::new(); // Caller handles glob
+    }
+    let mut candidates = Vec::new();
+    if path.starts_with('/') {
+        candidates.push(std::path::PathBuf::from(path));
+        return candidates;
+    }
+    if let Some(cfg) = config_file {
+        if let Some(parent) = cfg.parent() {
+            candidates.push(parent.join(path));
+        }
+    }
+    candidates.push(std::path::Path::new("/etc/pacman.d").join(path));
+    candidates.push(std::path::Path::new("/etc/pacman.d/monarch").join(path));
+    candidates
+}
+
 fn parse_and_register_conf(
     alpm: &mut Alpm,
     content: &str,
     current_repo_name: Option<String>,
+    config_file: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_repo_name = current_repo_name;
     for line in content.lines() {
@@ -534,24 +1150,97 @@ fn parse_and_register_conf(
             let section = &line[1..line.len() - 1];
             if section != "options" {
                 current_repo_name = Some(section.to_string());
-                let _ = alpm.register_syncdb(section.as_bytes().to_vec(), SigLevel::PACKAGE_OPTIONAL);
+                // Do NOT register_syncdb here: sections without Server cause "no servers configured" during sync.
+                // We register only when we see "Server = " below.
             } else {
                 current_repo_name = None;
             }
-        } else if let Some(repo_name) = &current_repo_name {
-            if line.contains("Server =") {
-                if let Some(server) = line.split('=').nth(1) {
-                    for db in alpm.syncdbs_mut() {
-                        if db.name() == repo_name {
-                            let _ = db.add_server(server.trim());
+        } else if line.contains("Include =") {
+            if let Some(path) = line.split('=').nth(1) {
+                let path = path.trim();
+                let read_ok = if path.contains('*') {
+                    // Glob include (e.g. /etc/pacman.d/monarch/*.conf): process even when current_repo_name is None
+                    // so monarch repos are loaded when Include appears before [core] in pacman.conf.
+                    let (dir, pattern) = path
+                        .split_once('*')
+                        .map(|(d, p)| (d, p))
+                        .unwrap_or((path, ""));
+                    let dir = dir.trim_end_matches('/');
+                    let mut ok = false;
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p.is_file() {
+                                let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                if pattern.is_empty()
+                                    || s.ends_with(pattern.trim_start_matches('*'))
+                                {
+                                    if let Ok(include_content) = std::fs::read_to_string(&p) {
+                                        let _ = parse_and_register_conf(
+                                            alpm,
+                                            &include_content,
+                                            None,
+                                            Some(&p),
+                                        );
+                                        ok = true;
+                                    }
+                                }
+                            }
                         }
                     }
+                    ok
+                } else if let Some(repo_name) = &current_repo_name {
+                    let mut read_ok = false;
+                    for full in resolve_include_path(path, config_file) {
+                        if let Ok(include_content) = std::fs::read_to_string(&full) {
+                            let _ = parse_and_register_conf(
+                                alpm,
+                                &include_content,
+                                Some(repo_name.clone()),
+                                Some(&full),
+                            );
+                            read_ok = true;
+                            break;
+                        }
+                    }
+                    if !read_ok {
+                        logger::warn(&format!("Could not read Include file {} (tried relative to config, /etc/pacman.d, /etc/pacman.d/monarch); repo {} may have no servers", path, repo_name));
+                    }
+                    read_ok
+                } else {
+                    false
+                };
+                if !read_ok && !path.contains('*') {
+                    logger::warn(&format!(
+                        "Include file {} failed; repo may have no servers",
+                        path
+                    ));
                 }
-            } else if line.contains("Include =") {
-                if let Some(path) = line.split('=').nth(1) {
-                    let path = path.trim();
-                    if let Ok(include_content) = std::fs::read_to_string(path) {
-                        parse_and_register_conf(alpm, &include_content, Some(repo_name.clone()))?;
+            }
+        } else if let Some(repo_name) = &current_repo_name {
+            // Accept "Server = url" or "Server=url" (pacman format)
+            let is_server_line = line.trim_start().starts_with("Server") && line.contains('=');
+            if is_server_line {
+                if let Some(server) = line.split('=').nth(1) {
+                    let server = server.split('#').next().unwrap_or(server).trim();
+                    if !server.is_empty() {
+                        // Register syncdb only when we have at least one Server (avoids "no servers configured")
+                        let already_registered = alpm
+                            .syncdbs()
+                            .iter()
+                            .any(|db| db.name() == repo_name.as_str());
+                        if !already_registered {
+                            let _ = alpm.register_syncdb(
+                                repo_name.as_bytes().to_vec(),
+                                SigLevel::PACKAGE_OPTIONAL,
+                            );
+                        }
+                        for db in alpm.syncdbs_mut() {
+                            if db.name() == repo_name.as_str() {
+                                let _ = db.add_server(server);
+                                break;
+                            }
+                        }
                     }
                 }
             }

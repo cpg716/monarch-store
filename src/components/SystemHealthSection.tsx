@@ -19,6 +19,7 @@ import {
 import { clsx } from 'clsx';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { useErrorService } from '../context/ErrorContext';
 
 interface HealthIssue {
     category: string;
@@ -29,6 +30,7 @@ interface HealthIssue {
 }
 
 export default function SystemHealthSection() {
+    const errorService = useErrorService();
     const [logs, setLogs] = useState<string[]>([]);
     const [isLocked, setIsLocked] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -38,13 +40,19 @@ export default function SystemHealthSection() {
     const [password, setPassword] = useState("");
     const [showPassword, setShowPassword] = useState(false);
     const [classifiedError, setClassifiedError] = useState<any | null>(null);
+    const [isCheckingHealth, setIsCheckingHealth] = useState(true);
 
     useEscapeKey(() => setShowPasswordInput(false), showPasswordInput);
     const authModalRef = useFocusTrap(showPasswordInput);
 
     useEffect(() => {
-        checkLock();
-        checkHealth();
+        const runHealthCheck = async () => {
+            setIsCheckingHealth(true);
+            await Promise.all([checkLock(), checkHealth()]);
+            // Small delay to show loading state (ensures user sees the check is happening)
+            setTimeout(() => setIsCheckingHealth(false), 500);
+        };
+        runHealthCheck();
         const unlisten = listen("repair-log", (event) => {
             setLogs((prev) => [...prev, event.payload as string]);
         });
@@ -55,14 +63,14 @@ export default function SystemHealthSection() {
             unlisten.then((f) => f());
             unlistenErr.then((f) => f());
         };
-    }, []);
+    }, [errorService]);
 
     const checkLock = async () => {
         try {
             const locked = await invoke("check_pacman_lock");
             setIsLocked(locked as boolean);
         } catch (e) {
-            console.error(e);
+            errorService.reportError(e as Error | string);
         }
     };
 
@@ -71,7 +79,7 @@ export default function SystemHealthSection() {
             const issues = await invoke<HealthIssue[]>("check_system_health");
             setHealthIssues(issues);
         } catch (e) {
-            console.error(e);
+            errorService.reportError(e as Error | string);
         }
     };
 
@@ -136,6 +144,7 @@ export default function SystemHealthSection() {
                 checkLock();
             }
         } catch (e) {
+            errorService.reportError(e as Error | string);
             setLogs((p) => [...p, `>>> ERROR: ${e}`]);
         } finally {
             setLoading(false);
@@ -149,6 +158,14 @@ export default function SystemHealthSection() {
                 <Activity size={22} className="text-app-muted" />
                 System Health & Maintenance
             </h2>
+
+            {/* Proactive Health Check Loading State */}
+            {isCheckingHealth && (
+                <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-2xl flex items-center gap-3 animate-in slide-in-from-top-2 duration-300 mb-4">
+                    <RefreshCw className="animate-spin text-blue-500" size={20} />
+                    <span className="text-sm font-medium text-app-fg">Checking system health...</span>
+                </div>
+            )}
 
             {/* Grandma-Proof Alerts */}
             {healthIssues.filter(i => i.severity === 'Critical' || i.severity === 'Warning').length > 0 && (
@@ -290,7 +307,7 @@ export default function SystemHealthSection() {
 
             {/* Auth Modal */}
             {showPasswordInput && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-6 z-[100] animate-in fade-in duration-200" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-6 z-40 animate-in fade-in duration-200" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
                     <div ref={authModalRef} className="bg-app-card rounded-[32px] p-10 w-full max-w-lg border border-app-border shadow-2xl space-y-8 animate-in zoom-in-95 duration-300">
                         <div className="flex items-center gap-5">
                             <div className="p-4 rounded-[20px] bg-blue-600/20 text-blue-500">

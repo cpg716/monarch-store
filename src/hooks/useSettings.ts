@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useAppStore } from '../store/internal_store';
+import { useAppStore, type AppState } from '../store/internal_store';
+import { useSessionPassword } from '../context/useSessionPassword';
+import { getErrorService } from '../context/getErrorService';
 
 export interface Repository {
     id: string;
@@ -10,6 +12,9 @@ export interface Repository {
 }
 
 export function useSettings() {
+    const { requestSessionPassword } = useSessionPassword();
+    const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
+
     // 1. UI Preferences
     const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
         return localStorage.getItem('notifications-enabled') !== 'false';
@@ -45,9 +50,9 @@ export function useSettings() {
 
     // 4. Central Telemetry Sync
     // 4. Central Telemetry Sync
-    const telemetryEnabled = useAppStore((state: any) => state.telemetryEnabled);
-    const setTelemetry = useAppStore((state: any) => state.setTelemetry);
-    const checkTelemetry = useAppStore((state: any) => state.checkTelemetry);
+    const telemetryEnabled = useAppStore((state: AppState) => state.telemetryEnabled);
+    const setTelemetry = useAppStore((state: AppState) => state.setTelemetry);
+    const checkTelemetry = useAppStore((state: AppState) => state.checkTelemetry);
 
     const fetchRepoState = async () => {
         try {
@@ -77,7 +82,7 @@ export function useSettings() {
                     members: ['chaotic-aur'],
                 },
                 'Official Arch Linux': {
-                    name: 'Official Arch Linux',
+                    name: 'Official',
                     description: 'Core system repositories (extra, multilib)',
                     members: ['core', 'extra', 'multilib'],
                 },
@@ -131,10 +136,10 @@ export function useSettings() {
             invoke<Record<string, number>>('get_repo_counts').then(counts => {
                 setRepoCounts(counts);
             }).catch(e => {
-                console.warn("[useSettings] Failed to fetch repo counts", e);
+                getErrorService()?.reportWarning(e as Error | string);
             });
 
-            invoke<any>('get_infra_stats').then(stats => {
+            invoke<{ latency?: number; active_mirrors?: number }>('get_infra_stats').then(stats => {
                 setInfraStats({
                     latency: `${stats.latency || 45}ms`,
                     mirrors: stats.active_mirrors || 14,
@@ -172,7 +177,7 @@ export function useSettings() {
         try {
             await invoke('set_notifications_enabled', { enabled });
         } catch (e) {
-            console.error('Failed to sync notifications setting:', e);
+            getErrorService()?.reportError(e as Error | string);
         }
     };
 
@@ -197,11 +202,14 @@ export function useSettings() {
         setRepos(prev => prev.map(r => r.id === id ? { ...r, enabled: newEnabled } : r));
 
         try {
-            await invoke('toggle_repo_family', { family: repo.name, enabled: newEnabled });
+            // When enabling: pass password so key import runs atomically (avoids Unknown Trust on next update)
+            const pwd = newEnabled && reducePasswordPrompts ? await requestSessionPassword() : null;
+            await invoke('toggle_repo_family', { family: repo.name, enabled: newEnabled, skipOsSync: undefined, password: pwd ?? undefined });
             await invoke('trigger_repo_sync');
             fetchRepoState();
         } catch (e) {
             setRepos(prev => prev.map(r => r.id === id ? { ...r, enabled: !newEnabled } : r));
+            getErrorService()?.reportError(e as Error | string);
         }
     };
 
@@ -214,7 +222,7 @@ export function useSettings() {
         try {
             await invoke('set_repo_priority', { order: newRepos.map(r => r.name) });
         } catch (e) {
-            console.error("[useSettings] Priority sync failed", e);
+            getErrorService()?.reportError(e as Error | string);
         }
     };
 
@@ -232,7 +240,8 @@ export function useSettings() {
         setOneClickEnabled(enabled);
         try {
             await invoke('set_one_click_enabled', { enabled });
-            await invoke('install_monarch_policy', { password: null });
+            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+            await invoke('install_monarch_policy', { password: pwd });
         } catch (e) {
             console.error('[useSettings] One-Click toggle failed', e);
         }

@@ -1,4 +1,4 @@
-use crate::{aur_api, models, repo_manager::RepoManager, helper_client};
+use crate::{aur_api, helper_client, models, repo_manager::RepoManager};
 use serde::Serialize;
 use std::path::Path;
 use std::process::Stdio;
@@ -138,14 +138,30 @@ pub async fn install_package_core(
         }
     }
 
-    // Pre-flight check: Database Lock
+    // Pre-flight check: Database Lock - try to unlock if stale
     if crate::repair::check_pacman_lock().await {
         let _ = app.emit(
             "install-output",
-            "Error: Pacman database is locked (/var/lib/pacman/db.lck).",
+            "Database is locked. Checking if lock is stale...",
         );
-        let _ = app.emit("install-complete", "failed");
-        return Err("Pacman database is locked".to_string());
+        // Always use helper (Polkit) for unlock so we don't run sudo with a password that may be
+        // empty or wrong; the helper RemoveLock does the same safe rm and avoids "sudo: no password was provided".
+        match crate::repair::repair_unlock_pacman(app.clone(), None).await {
+            Ok(_) => {
+                let _ = app.emit(
+                    "install-output",
+                    "✓ Stale lock removed. Proceeding with installation...",
+                );
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "install-output",
+                    &format!("Error: Database is locked by another process: {}", e),
+                );
+                let _ = app.emit("install-complete", "failed");
+                return Err(format!("Pacman database is locked: {}", e));
+            }
+        }
     }
 
     // ✅ HARDWARE OPTIMIZATION DETECTION
@@ -159,17 +175,28 @@ pub async fn install_package_core(
         None
     };
 
-    // ✅ GET ENABLED REPOS (Soft Disable support)
-    let enabled_repos: Vec<String> = repo_manager
-        .get_all_repos()
-        .await
+    // Use ALL enabled repos for the transaction so dependencies can be resolved (e.g. vlc-git from chaotic needs deps from core/extra/community).
+    // Always include system repos (core, extra, community, multilib) so ALPM can resolve dependencies even if UI state is stale.
+    let all_repos = repo_manager.get_all_repos().await;
+    let mut enabled_repos: Vec<String> = all_repos
         .iter()
         .filter(|r| r.enabled)
         .map(|r| r.name.clone())
         .collect();
+    for sys in ["core", "extra", "community", "multilib"] {
+        if !enabled_repos.contains(&sys.to_string()) {
+            enabled_repos.push(sys.to_string());
+        }
+    }
 
     // Acquire global lock
     let _guard = crate::utils::PRIVILEGED_LOCK.lock().await;
+
+    let mut saw_unknown_variant = false;
+    let mut saw_corrupt_db = false;
+    // Buffer last install-output lines to surface real ALPM errors (e.g. "not found in any enabled repository")
+    let mut install_log: Vec<String> = Vec::new();
+    const LOG_CAP: usize = 50;
 
     match source {
         models::PackageSource::Aur => {
@@ -183,7 +210,7 @@ pub async fn install_package_core(
 
             // ✅ NEW: Install built packages via ALPM transaction (paths in /tmp/monarch-install for root)
             let _ = app.emit("install-output", "Installing built AUR package(s)...");
-            
+
             let mut rx = helper_client::invoke_helper(
                 app,
                 helper_client::HelperCommand::AlpmInstallFiles {
@@ -200,35 +227,141 @@ pub async fn install_package_core(
             }
         }
         _ => {
-            // ✅ REPO: Full ALPM transaction with all features
-            let _ = app.emit(
-                "install-output",
-                "--- Starting ALPM Transaction (with system sync) ---",
+            // Ensure monarch repo configs (e.g. 50-chaotic-aur.conf) are on disk before the helper runs.
+            // The helper reads /etc/pacman.d/monarch/ at startup; without this, "Package not found" / "no servers configured" can occur.
+            let is_monarch_repo = matches!(
+                source,
+                models::PackageSource::Chaotic
+                    | models::PackageSource::CachyOS
+                    | models::PackageSource::Garuda
+                    | models::PackageSource::Endeavour
+                    | models::PackageSource::Manjaro
             );
+            if is_monarch_repo {
+                repo_manager.apply_os_config(app, password.clone()).await.map_err(|e| {
+                    format!("Repository sync failed. {}", e)
+                })?;
+            }
 
-            // Use ALPM transaction instead of shell command
+            let _ = app.emit("install-output", "--- Starting ALPM Transaction ---");
+
+            // Launch already runs apply_os_config + sync_system_databases, so monarch DBs are present; no need to sync again per install.
+            let sync_first = false;
+
+            // Ghost fix: pass selected repo so helper installs from that repo only (not first match)
+            let target_repo = match source {
+                models::PackageSource::Aur => None,
+                _ => _repo_name.clone(),
+            };
             let mut rx = helper_client::invoke_helper(
                 app,
                 helper_client::HelperCommand::AlpmInstall {
                     packages: vec![name.to_string()],
-                    sync_first: true, // -Syu behavior (sync + install in one transaction)
+                    sync_first,
                     enabled_repos,
-                    cpu_optimization,
+                    cpu_optimization: cpu_optimization.clone(),
+                    target_repo,
                 },
                 password.clone(),
             )
             .await
             .map_err(|e| format!("Failed to invoke helper: {}", e))?;
 
-            // Stream progress events
             while let Some(msg) = rx.recv().await {
                 let _ = app.emit("install-output", &msg.message);
+                install_log.push(msg.message.clone());
+                if install_log.len() > LOG_CAP {
+                    install_log.remove(0);
+                }
+                if (msg.message.contains("unknown variant") && msg.message.contains("AlpmInstall"))
+                    || (msg.message.contains("expected one of")
+                        && msg.message.contains("InstallTargets"))
+                    || msg.message.contains("outdated and does not support ALPM")
+                {
+                    saw_unknown_variant = true;
+                }
+                if msg.message.contains("Unrecognized archive format")
+                    || msg.message.contains("could not open database")
+                {
+                    saw_corrupt_db = true;
+                }
+            }
+
+            if saw_unknown_variant {
+                let _ = app.emit(
+                    "install-output",
+                    "Installed helper is outdated; syncing and installing with legacy path.",
+                );
+                let _ = app.emit(
+                    "install-output",
+                    "To fix permanently: run from source (npm run tauri dev), complete Onboarding once, or reinstall: pacman -Syu monarch-store",
+                );
+                let mut rx_refresh = helper_client::invoke_helper(
+                    app,
+                    helper_client::HelperCommand::Refresh,
+                    password.clone(),
+                )
+                .await
+                .map_err(|e| format!("Failed to invoke helper (refresh): {}", e))?;
+                let mut refresh_corrupt = false;
+                while let Some(msg) = rx_refresh.recv().await {
+                    let _ = app.emit("install-output", &msg.message);
+                    install_log.push(msg.message.clone());
+                    if install_log.len() > LOG_CAP {
+                        install_log.remove(0);
+                    }
+                    if msg.message.contains("Unrecognized archive format")
+                        || msg.message.contains("could not open database")
+                    {
+                        refresh_corrupt = true;
+                    }
+                }
+
+                // If corruption detected during refresh, try force refresh before install
+                if refresh_corrupt {
+                    let _ = app.emit(
+                        "install-output",
+                        "Corruption detected; force refreshing databases...",
+                    );
+                    let mut rx_force = helper_client::invoke_helper(
+                        app,
+                        helper_client::HelperCommand::ForceRefreshDb,
+                        password.clone(),
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to invoke helper (force refresh): {}", e))?;
+                    while let Some(msg) = rx_force.recv().await {
+                        let _ = app.emit("install-output", &msg.message);
+                    }
+                }
+
+                let mut rx_install = helper_client::invoke_helper(
+                    app,
+                    helper_client::HelperCommand::InstallTargets {
+                        packages: vec![name.to_string()],
+                    },
+                    password.clone(),
+                )
+                .await
+                .map_err(|e| format!("Failed to invoke helper (install): {}", e))?;
+                while let Some(msg) = rx_install.recv().await {
+                    let _ = app.emit("install-output", &msg.message);
+                    install_log.push(msg.message.clone());
+                    if install_log.len() > LOG_CAP {
+                        install_log.remove(0);
+                    }
+                    if msg.message.contains("Unrecognized archive format")
+                        || msg.message.contains("could not open database")
+                    {
+                        saw_corrupt_db = true;
+                    }
+                }
             }
         }
     }
 
     // ✅ POST-INSTALL VERIFICATION (using shell command for accuracy - no ALPM cache staleness)
-    let verification = tokio::task::spawn_blocking({
+    let mut verification = tokio::task::spawn_blocking({
         let pkg_name = name.to_string();
         move || {
             std::process::Command::new("pacman")
@@ -240,11 +373,132 @@ pub async fn install_package_core(
     })
     .await
     .map_err(|e| format!("Verification task failed: {}", e))?;
-    
+
+    // Only retry with sync when failure suggests missing/stale package (sync might help).
+    // Do NOT retry with sync for "could not satisfy dependencies" — that's a dependency resolution failure; syncing again won't fix it and wastes several minutes (user already synced at startup).
+    let is_dependency_failure = install_log.iter().any(|m| {
+        m.contains("could not satisfy dependencies") || m.contains("could not satisfy dependency")
+    });
+    let might_need_sync = install_log.iter().any(|m| {
+        m.contains("not found in any enabled repository")
+            || m.contains("target not found")
+            || m.contains("no such package")
+            || m.contains("could not find")
+    });
+
+    if !verification
+        && source != models::PackageSource::Aur
+        && !saw_unknown_variant
+        && is_dependency_failure
+    {
+        let _ = app.emit(
+            "install-output",
+            "Dependency resolution failed (sync already done at startup; skipping duplicate sync).",
+        );
+    }
+
+    if !verification
+        && source != models::PackageSource::Aur
+        && !saw_unknown_variant
+        && might_need_sync
+        && !is_dependency_failure
+    {
+        // DBs may be stale (e.g. sync at launch skipped). Retry once with sync.
+        let _ = app.emit(
+            "install-output",
+            "Package not found; syncing databases and retrying...",
+        );
+        let all_repos_retry = repo_manager.get_all_repos().await;
+        let enabled_repos_retry: Vec<String> = all_repos_retry
+            .iter()
+            .filter(|r| r.enabled)
+            .map(|r| r.name.clone())
+            .collect();
+                let target_repo_retry = match source {
+                    models::PackageSource::Aur => None,
+                    _ => _repo_name.clone(),
+                };
+                let mut rx_install = helper_client::invoke_helper(
+                    app,
+                    helper_client::HelperCommand::AlpmInstall {
+                        packages: vec![name.to_string()],
+                        sync_first: true,
+                        enabled_repos: enabled_repos_retry,
+                        cpu_optimization: cpu_optimization.clone(),
+                        target_repo: target_repo_retry,
+                    },
+                    password.clone(),
+                )
+        .await
+        .map_err(|e| format!("Failed to invoke helper (install): {}", e))?;
+        while let Some(msg) = rx_install.recv().await {
+            let _ = app.emit("install-output", &msg.message);
+            install_log.push(msg.message.clone());
+            if install_log.len() > LOG_CAP {
+                install_log.remove(0);
+            }
+            if msg.message.contains("Unrecognized archive format")
+                || msg.message.contains("could not open database")
+            {
+                saw_corrupt_db = true;
+            }
+        }
+        verification = tokio::task::spawn_blocking({
+            let pkg_name = name.to_string();
+            move || {
+                std::process::Command::new("pacman")
+                    .args(["-Q", &pkg_name])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            }
+        })
+        .await
+        .map_err(|e| format!("Verification task failed: {}", e))?;
+    }
+
     if !verification {
         let _ = app.emit("install-complete", "failed");
+        if saw_corrupt_db {
+            return Err(format!(
+                "Sync databases are corrupt (Unrecognized archive format). Use Settings → System Management → Refresh Databases, then retry. If it still fails, run 'sudo pacman -Syy' once."
+            ));
+        }
+        // Surface the real ALPM error when package is not in any enabled repo
+        let not_in_repo = install_log
+            .iter()
+            .find(|m| m.contains("not found in any enabled repository"));
+        if let Some(msg) = not_in_repo {
+            return Err(format!(
+                "{} Try enabling Chaotic-AUR or another repo that provides this package, or install from AUR.",
+                msg.trim()
+            ));
+        }
+        if is_dependency_failure {
+            // Surface the exact ALPM line (e.g. "Transaction preparation failed: ..." or "unable to satisfy dependency 'X' required by Y")
+            let detail = install_log.iter().find(|m| {
+                m.contains("Transaction preparation failed")
+                    || m.contains("could not satisfy")
+                    || m.contains("unable to satisfy")
+                    || m.contains("breaks dependency")
+            });
+            let detail_str = detail
+                .map(|s| s.trim().trim_start_matches("Error: ").to_string())
+                .filter(|s| !s.is_empty());
+            return Err(if let Some(d) = detail_str {
+                format!(
+                    "Dependencies could not be satisfied for '{}': {}. Try enabling more repos (e.g. multilib, Chaotic-AUR) or install the missing dependency first.",
+                    name, d
+                )
+            } else {
+                format!(
+                    "Dependencies could not be satisfied for '{}'. A required dependency may be missing from your enabled repos, or there may be a version conflict. Check the log above or try: pacman -S {}",
+                    name, name
+                )
+            });
+        }
         return Err(format!(
-            "Installation reported success but package '{}' is not installed. Check logs for details.",
+            "Package '{}' could not be installed. Check the log above for details.",
             name
         ));
     }
@@ -266,7 +520,9 @@ pub async fn install_package_core(
         app,
         "install_package",
         Some(serde_json::json!({
-            "pkg": name, "source": format!("{:?}", source)
+            "pkg": name,
+            "source": format!("{:?}", source),
+            "success": true,
         })),
     )
     .await;
@@ -301,7 +557,7 @@ pub async fn uninstall_package(
             name
         ));
     }
-    
+
     // Acquire global lock
     let _guard = crate::utils::PRIVILEGED_LOCK.lock().await;
 
@@ -340,7 +596,7 @@ pub async fn uninstall_package(
     })
     .await
     .map_err(|e| format!("Verification task failed: {}", e))?;
-    
+
     if verification {
         let _ = app.emit("install-complete", "failed");
         return Err(format!(
@@ -350,6 +606,17 @@ pub async fn uninstall_package(
     }
 
     let _ = app.emit("install-complete", "success");
+
+    crate::utils::track_event_safe(
+        &app,
+        "uninstall_package",
+        Some(serde_json::json!({
+            "pkg": name,
+            "success": true,
+        })),
+    )
+    .await;
+
     Ok(())
 }
 
@@ -454,8 +721,9 @@ async fn build_aur_package_single(
 
     let pkg_dir = pkg_path.join(name);
 
-    // SECURITY: Root Check
-    // We must ensure we are NOT running as root before invoking makepkg
+    // SECURITY (AUR / Arch Packaging): makepkg must NEVER run as root (instant ban risk).
+    // We explicitly refuse if effective UID is root; we do not "drop" privileges because
+    // the GUI runs as the user—only root would trigger this check.
     #[cfg(target_os = "linux")]
     {
         let is_root = std::process::Command::new("id")
@@ -478,12 +746,18 @@ async fn build_aur_package_single(
     );
 
     let mut makepkg = tokio::process::Command::new("makepkg");
+    // When no password: close stdin so makepkg never blocks on read (e.g. prompts).
+    let stdin_mode = if password.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
     makepkg
-        .args(["-s", "--noconfirm", "--needed"]) // REMOVED -i (install), we build only
+        .args(["-s", "-r", "--noconfirm", "--needed"]) // -r: remove make-deps after build (avoid orphan build libs)
         .env("MAKEFLAGS", format!("-j{}", num_cpus::get()))
         .env("PKGEXT", ".pkg.tar.zst")
         .current_dir(&pkg_dir)
-        .stdin(Stdio::piped())
+        .stdin(stdin_mode)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -492,12 +766,27 @@ async fn build_aur_package_single(
         makepkg.env("SUDO_ASKPASS", ap);
         makepkg.env("PACMAN", "sudo -A pacman");
     } else {
-        // Fallback: If no password provided, use helper as Proxy if available
+        // Fallback: If no password provided, use helper as Proxy if available.
+        // Wrapper must pass a temp JSON file path to the helper (not inline JSON), so args
+        // from makepkg ($@) are correctly encoded as a JSON array and we avoid "Invalid JSON command".
         let helper = crate::utils::MONARCH_PK_HELPER;
         if std::path::Path::new(helper).exists() {
             let wrapper_path = pkg_dir.join("pacman-helper.sh");
             let wrapper_content = format!(
-                "#!/bin/sh\n/usr/bin/pkexec {} \"{{\\\"command\\\": \\\"RunCommand\\\", \\\"payload\\\": {{\\\"binary\\\": \\\"pacman\\\", \\\"args\\\": [\\\"$@\\\"]}}}}\"",
+                r#"#!/bin/sh
+helper="{}"
+tmpfile=$(mktemp /var/tmp/monarch-cmd-XXXXXX.json) || exit 1
+first=1
+printf '%s' '{{"command":"RunCommand","payload":{{"binary":"pacman","args":[' >> "$tmpfile"
+for a in "$@"; do
+  [ $first -eq 1 ] && first=0 || printf ',' >> "$tmpfile"
+  escaped=$(printf '%s\n' "$a" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  printf '"%s"' "$escaped" >> "$tmpfile"
+done
+printf ']}}}}\n' >> "$tmpfile"
+/usr/bin/pkexec "$helper" "$tmpfile"
+rm -f "$tmpfile"
+"#,
                 helper
             );
             std::fs::write(&wrapper_path, wrapper_content).map_err(|e| e.to_string())?;
@@ -658,13 +947,14 @@ async fn build_aur_package_single(
                     .status()
                     .await;
 
-                // Retry makepkg
+                // Retry makepkg (stdin closed so it never blocks on read)
                 let mut retry_makepkg = tokio::process::Command::new("makepkg");
                 retry_makepkg
-                    .args(["-s", "--noconfirm", "--needed"])
+                    .args(["-s", "-r", "--noconfirm", "--needed"]) // -r: remove make-deps after build
                     .env("MAKEFLAGS", format!("-j{}", num_cpus::get()))
                     .env("PKGEXT", ".pkg.tar.zst")
                     .current_dir(&pkg_dir)
+                    .stdin(Stdio::null())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
 
@@ -707,9 +997,12 @@ async fn build_aur_package_single(
                     let err_summary = if errs.is_empty() {
                         "Build failed after key import. Check logs for details.".to_string()
                     } else {
-                        errs.last()
-                            .cloned()
-                            .unwrap_or_else(|| "Unknown build error".to_string())
+                        let last = errs.last().cloned().unwrap_or_default();
+                        if last.to_lowercase().contains("unknown error has occurred") {
+                            "AUR build failed: makepkg reported an unknown error. Ensure base-devel and git are installed; run scripts/monarch-permission-sanitizer.sh to fix build cache permissions.".to_string()
+                        } else {
+                            last
+                        }
                     };
                     return Err(err_summary);
                 }
@@ -722,14 +1015,17 @@ async fn build_aur_package_single(
                 ));
             }
         } else {
-            // Non-PGP build failure
+            // Non-PGP build failure — surface descriptive message for makepkg "unknown error"
             let errs = build_errors.lock().await;
             let err_summary = if errs.is_empty() {
                 "makepkg build failed. Check logs for details.".to_string()
             } else {
-                errs.last()
-                    .cloned()
-                    .unwrap_or_else(|| "Unknown build error".to_string())
+                let last = errs.last().cloned().unwrap_or_default();
+                if last.to_lowercase().contains("unknown error has occurred") {
+                    "AUR build failed: makepkg reported an unknown error. Ensure base-devel and git are installed; run scripts/monarch-permission-sanitizer.sh to fix build cache permissions.".to_string()
+                } else {
+                    last
+                }
             };
             return Err(err_summary);
         }
@@ -847,10 +1143,13 @@ async fn is_package_satisfied(name: &str) -> bool {
     }
 }
 
-async fn is_in_official_repos(name: &str) -> bool {
-    // Check if pacman can find it in sync databases
+/// Returns true if the package exists in any sync database (official or enabled repos).
+/// Used to avoid building from AUR when the package is available as pre-built in Chaotic/CachyOS/etc.
+pub(crate) async fn is_in_sync_repos(name: &str) -> bool {
     let status = tokio::process::Command::new("pacman")
         .args(["-Si", name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .output()
         .await;
 
@@ -858,6 +1157,10 @@ async fn is_in_official_repos(name: &str) -> bool {
         Ok(o) => o.status.success(),
         Err(_) => false,
     }
+}
+
+async fn is_in_official_repos(name: &str) -> bool {
+    is_in_sync_repos(name).await
 }
 
 pub fn audit_aur_builder_deps(app: &AppHandle) -> Result<(), String> {

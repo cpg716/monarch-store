@@ -4,7 +4,7 @@ import { Search, Clock, X, Sparkles, TrendingUp, Heart } from 'lucide-react';
 import { useSearchHistory } from '../hooks/useSearchHistory';
 import { useFavorites } from '../hooks/useFavorites';
 import PackageCard, { Package } from '../components/PackageCard';
-import PackageCardSkeleton from '../components/PackageCardSkeleton';
+import SkeletonCard from '../components/SkeletonCard';
 import EmptyState from '../components/EmptyState';
 import { clsx } from 'clsx';
 
@@ -148,7 +148,7 @@ export default function SearchPage({
 
                                 if (repo.source === 'chaotic') label = 'AUR-Binaries';
                                 if (repo.source === 'aur') label = 'AUR-Source';
-                                if (repo.source === 'official') label = 'Official Arch';
+                                if (repo.source === 'official') label = 'Official';
                                 if (repo.source === 'manjaro') label = 'Manjaro';
                                 if (repo.source === 'cachyos') label = 'CachyOS';
 
@@ -287,9 +287,9 @@ export default function SearchPage({
                                     variant="error"
                                 />
                             ) : loading && packages.length === 0 ? (
-                                <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6">
-                                    {[...Array(15)].map((_, i) => (
-                                        <PackageCardSkeleton key={i} />
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 max-w-7xl mx-auto w-full">
+                                    {[...Array(8)].map((_, i) => (
+                                        <SkeletonCard key={i} />
                                     ))}
                                 </div>
                             ) : displayed.length === 0 ? (
@@ -304,7 +304,7 @@ export default function SearchPage({
                                 />
                             ) : (
                                 <>
-                                    <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6 max-w-7xl mx-auto w-full">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 max-w-7xl mx-auto w-full">
                                         {displayed.map((pkg) => (
                                             <PackageCard
                                                 key={`${pkg.name}-${pkg.source}`}

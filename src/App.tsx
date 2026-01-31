@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Heart, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Heart, AlertCircle, Database, Loader2 } from 'lucide-react';
 import { useFavorites } from './hooks/useFavorites';
 import Sidebar from './components/Sidebar';
 import SearchBar from './components/SearchBar';
@@ -19,6 +19,7 @@ import './App.css';
 import LoadingScreen from './components/LoadingScreen';
 import OnboardingModal from './components/OnboardingModal';
 import ErrorModal from './components/ErrorModal';
+import ConfirmationModal from './components/ConfirmationModal';
 import SearchPage from './pages/SearchPage';
 import { useSearchHistory } from './hooks/useSearchHistory';
 import HomePage from './pages/HomePage';
@@ -26,6 +27,8 @@ import { ESSENTIALS_POOL } from './constants';
 import { listen } from '@tauri-apps/api/event';
 import { UpdateProgress } from './store/internal_store';
 import { useToast } from './context/ToastContext';
+import { useSessionPassword } from './context/useSessionPassword';
+import { useErrorService } from './context/ErrorContext';
 
 function App() {
   const [activeTab, setActiveTab] = useState('explore');
@@ -37,9 +40,12 @@ function App() {
   const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
   const [preferredSource, setPreferredSource] = useState<string | undefined>(undefined);
   const [onboardingReason, setOnboardingReason] = useState<string | undefined>(undefined);
+  const [showSystemFixPopup, setShowSystemFixPopup] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(true);
+  const [pendingDbRepair, setPendingDbRepair] = useState(false);
+  const [dbRepairInProgress, setDbRepairInProgress] = useState(false);
   const [systemHealth, setSystemHealth] = useState<{ is_healthy: boolean, reasons: string[] } | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const searchRequestIdRef = useRef(0);
@@ -59,6 +65,9 @@ function App() {
   const { accentColor } = useTheme();
   const { favorites } = useFavorites();
   const { show: showToast } = useToast();
+  const { requestSessionPassword } = useSessionPassword();
+  const errorService = useErrorService();
+  const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
 
   const [enabledRepos, setEnabledRepos] = useState<{ name: string; enabled: boolean; source: string }[]>([]);
 
@@ -76,8 +85,8 @@ function App() {
           );
         }
       })
-      .catch(() => {});
-  }, [isRefreshing, showToast]);
+      .catch((e) => errorService.reportWarning(e as Error | string));
+  }, [isRefreshing, showToast, errorService]);
 
   // Global Update Listeners
   useEffect(() => {
@@ -101,7 +110,7 @@ function App() {
               const warnings = await invoke<string[]>('get_pacnew_warnings');
               setPacnewWarnings(warnings);
             } catch (e) {
-              console.error("Post-update checks failed", e);
+              errorService.reportError(e as Error | string);
             }
           })();
         }, 1500);
@@ -135,27 +144,60 @@ function App() {
 
   // Removed duplicate get_repo_states call - now only fetched in initializeStartup
 
-  const handleOnboardingComplete = () => {
+  const refreshSystemHealth = async () => {
+    try {
+      const status = await invoke<{
+        needs_policy: boolean;
+        needs_keyring: boolean;
+        needs_migration: boolean;
+        needs_sync_db_repair: boolean;
+        is_healthy: boolean;
+        reasons: string[];
+      }>('check_initialization_status');
+      setSystemHealth(status);
+      return status;
+    } catch (e) {
+      errorService.reportError(e as Error | string);
+      return null;
+    }
+  };
+
+  const handleOnboardingComplete = async () => {
     localStorage.setItem('monarch_onboarding_v3', 'true');
     setShowOnboarding(false);
+    // Re-check so the infrastructure banner updates or disappears after repair
+    await refreshSystemHealth();
   };
 
   useEffect(() => {
     const initializeStartup = async () => {
       const startTime = Date.now();
       try {
-        // 1. Parallel background tasks
+        // 0. Clear stale pacman lock from previous cancel/crash; use app password dialog when enabled to avoid system prompt
+        const needsUnlock = await invoke<boolean>('needs_startup_unlock').catch(() => false);
+        if (needsUnlock && reducePasswordPrompts) {
+          try {
+            const pwd = await requestSessionPassword();
+            await invoke('unlock_pacman_if_stale', { password: pwd ?? null });
+          } catch (e) {
+            errorService.reportWarning(e as Error | string);
+          }
+        } else if (needsUnlock) {
+          await invoke('unlock_pacman_if_stale').catch((e) => errorService.reportWarning(e as Error | string));
+        }
+        // 1. Parallel background tasks (sync telemetry from backend so UI reflects user preference)
         fetchInfraStats();
-        useAppStore.getState().checkTelemetry(); // Initialize privacy state
+        await useAppStore.getState().checkTelemetry();
         invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states')
           .then(repos => setEnabledRepos(repos.filter(r => r.enabled)))
-          .catch(console.error);
+          .catch((e) => errorService.reportError(e as Error | string));
 
         // 2. Health & Onboarding status
-        const status = await invoke<{
+        let status = await invoke<{
           needs_policy: boolean,
           needs_keyring: boolean,
           needs_migration: boolean,
+          needs_sync_db_repair: boolean,
           is_healthy: boolean,
           reasons: string[]
         }>('check_initialization_status');
@@ -165,27 +207,46 @@ function App() {
         const isCompleted = localStorage.getItem('monarch_onboarding_v3');
         const legacyCompleted = localStorage.getItem('monarch_onboarding_v2_final') || localStorage.getItem('monarch_onboarding_completed');
 
-        // 3. Simple Decision: Onboarding/Repair vs Normal Home
+        // 2b. Grandma-proof: don't block splash for minutes. If only issue is broken DBs, show app then one "Fix databases" step.
+        // If other defects (policy, keyring, migration), show onboarding as before.
+        const onlySyncDbRepair = status.needs_sync_db_repair && status.reasons.length <= 1 &&
+          status.reasons.some((r: string) => r.toLowerCase().includes('sync') || r.toLowerCase().includes('database'));
         let redoOnboarding = !isCompleted && !legacyCompleted;
-
         if (!status.is_healthy) {
-          console.warn("System is unhealthy. Triggering repair flow.");
-          const reasonText = status.reasons.join(" ");
-          setOnboardingReason(`MonARCH detected system defects: ${reasonText} Your password will be needed once to fix the keyring and security policy.`);
-          redoOnboarding = true;
+          if (onlySyncDbRepair) {
+            setPendingDbRepair(true);
+          } else {
+            console.warn("System is unhealthy. Triggering repair flow.");
+            const reasonText = status.reasons.join(" ");
+            setOnboardingReason(`MonARCH detected system defects: ${reasonText} MonARCH will attempt to fix them on launch. In the next step you can choose to enter your password once to avoid multiple system prompts.`);
+            setShowSystemFixPopup(true);
+            redoOnboarding = true;
+          }
         }
 
+        // 3. Simple Decision: Onboarding/Repair vs Normal Home
         if (redoOnboarding) {
           setShowOnboarding(true);
         } else {
-          // Healthy enough (or legacy user): sync only if refresh requested (pacman hook) or "Sync on startup" is on
+          // Healthy enough (or legacy user): sync at launch if refresh requested (pacman hook) or "Sync on startup" is on
           if (!isCompleted && legacyCompleted) {
             localStorage.setItem('monarch_onboarding_v3', 'true');
           }
           const refreshRequested = await invoke<boolean>('check_and_clear_refresh_requested').catch(() => false);
           const syncOnStartup = await invoke<boolean>('is_sync_on_startup_enabled').catch(() => true);
-          if (refreshRequested || syncOnStartup) {
-            invoke('trigger_repo_sync', { syncIntervalHours: 3 }).catch(console.error);
+          const lastSyncAgeSec = await invoke<number | null>('get_last_sync_age_seconds').catch(() => null);
+          const STALE_SECS = 6 * 3600; // 6 hours
+          const needsSync = refreshRequested || (syncOnStartup && (lastSyncAgeSec == null || lastSyncAgeSec > STALE_SECS));
+          if (needsSync) {
+            try {
+              const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+              // Write monarch repo configs to disk first so launch sync includes them (e.g. Chaotic-AUR).
+              await invoke('apply_os_config', { password: pwd ?? null });
+              await invoke('sync_system_databases', { password: pwd });
+            } catch (e) {
+              errorService.reportWarning(e as Error | string);
+            }
+            invoke('trigger_repo_sync', { syncIntervalHours: 3 }).catch((e) => errorService.reportError(e as Error | string));
           }
 
           // --- PRE-WARM CACHE (Performance Optimization) ---
@@ -209,13 +270,13 @@ function App() {
             // Wait for critical data (parallel) while splash screen is up
             await Promise.all([warmEssentials, warmTrending]);
           } catch (e) {
-            console.warn("Pre-warm failed", e);
+            errorService.reportWarning(e as Error | string);
           }
           // -------------------------------------------------
         }
 
       } catch (e) {
-        console.error("Critical Startup Logic Error", e);
+        errorService.reportError(e as Error | string);
       } finally {
         const elapsed = Date.now() - startTime;
         const remaining = Math.max(0, 1500 - elapsed);
@@ -223,7 +284,7 @@ function App() {
       }
     };
     initializeStartup();
-  }, [fetchInfraStats]);
+  }, [fetchInfraStats, errorService]);
 
   useEffect(() => {
     if (searchQuery) setSelectedPackage(null);
@@ -251,9 +312,17 @@ function App() {
         if (currentRequestId !== searchRequestIdRef.current) return;
         setPackages(results);
         addSearch(searchQuery);
-        invoke('track_event', { event: 'search', payload: { query: searchQuery, result_count: results.length } }).catch(() => { });
+        invoke('track_event', {
+          event: 'search',
+          payload: {
+            query: searchQuery,
+            result_count: results.length,
+            query_length: searchQuery.length,
+            has_results: results.length > 0,
+          },
+        }).catch(() => { });
       } catch (e) {
-        console.error("Search failed", e);
+        errorService.reportError(e as Error | string);
       } finally {
         // Only update loading state if this is still the latest request
         if (currentRequestId === searchRequestIdRef.current) {
@@ -264,7 +333,7 @@ function App() {
 
     const timeoutId = setTimeout(() => search(), 300);
     return () => clearTimeout(timeoutId);
-  }, [searchQuery, addSearch]);
+  }, [searchQuery, addSearch, errorService]);
 
   const handleTabChange = (tab: string) => {
     if (tab === 'search') {
@@ -307,15 +376,64 @@ function App() {
     }
   };
 
+  const runDbRepair = async () => {
+    if (dbRepairInProgress) return;
+    setDbRepairInProgress(true);
+    try {
+      const pwd = await requestSessionPassword();
+      await invoke('force_refresh_databases', { password: pwd });
+      await invoke('clear_sync_db_health_cache');
+      const refreshed = await invoke<{ needs_sync_db_repair: boolean; is_healthy: boolean; reasons: string[] }>('check_initialization_status');
+      setSystemHealth(
+        refreshed.needs_sync_db_repair
+          ? { ...refreshed, is_healthy: true, reasons: refreshed.reasons.filter((r: string) => !r.toLowerCase().includes('sync') && !r.toLowerCase().includes('database')) }
+          : refreshed
+      );
+      setPendingDbRepair(false);
+      showToast('Package databases fixed.', 'success');
+    } catch (e) {
+      errorService.reportError(e as Error | string);
+      showToast('Repair failed. Try Settings → Refresh Databases or run: sudo pacman -Syy', 'error');
+    } finally {
+      setDbRepairInProgress(false);
+    }
+  };
+
   if (isRefreshing) return <LoadingScreen />;
 
   return (
     <div className="flex h-screen w-screen bg-app-bg text-app-fg overflow-hidden font-sans transition-colors" style={{ '--tw-selection-bg': `${accentColor}4D` } as any}>
+      {/* Grandma-proof: one-step DB repair overlay when only issue is corrupt sync DBs */}
+      {pendingDbRepair && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6">
+          <div className="bg-app-bg border border-app-border rounded-2xl shadow-2xl p-8 max-w-md w-full text-center">
+            <div className="w-14 h-14 rounded-full bg-amber-500/20 flex items-center justify-center mx-auto mb-6">
+              <Database size={28} className="text-amber-500" />
+            </div>
+            <h2 className="text-xl font-bold text-app-fg mb-2">Package databases need a quick fix</h2>
+            <p className="text-app-muted text-sm mb-6">Enter your password once to repair. This only takes a moment.</p>
+            <button
+              onClick={runDbRepair}
+              disabled={dbRepairInProgress}
+              className="w-full py-3 px-6 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {dbRepairInProgress ? (
+                <>
+                  <Loader2 size={18} className="animate-spin" />
+                  Repairing…
+                </>
+              ) : (
+                'Fix now'
+              )}
+            </button>
+          </div>
+        </div>
+      )}
       {!showOnboarding && <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />}
 
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative">
-        {!showOnboarding && systemHealth && !systemHealth.is_healthy && (
-          <div className="bg-red-600 text-white px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-4 text-sm font-bold animate-in slide-in-from-top duration-300 z-[100] shrink-0 shadow-lg">
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative min-w-0">
+        {!showOnboarding && systemHealth && !systemHealth.is_healthy && !pendingDbRepair && (
+          <div className="bg-red-600 text-white px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-4 text-sm font-bold animate-in slide-in-from-top duration-300 z-30 shrink-0 shadow-lg">
             <div className="flex items-start gap-3">
               <AlertCircle size={20} className="shrink-0 mt-0.5" />
               <div>
@@ -340,6 +458,7 @@ function App() {
             onBack={handleBack}
             preferredSource={preferredSource}
             installInProgress={activeInstall !== null}
+            activeInstallPackage={activeInstall}
             onInstall={(p: { name: string; source: string; repoName?: string }) => setActiveInstall({ ...p, mode: 'install' })}
             onUninstall={(p: { name: string; source: string; repoName?: string }) => setActiveInstall({ ...p, mode: 'uninstall' })}
           />
@@ -360,13 +479,14 @@ function App() {
             <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 via-app-bg/50 to-blue-500/5 pointer-events-none transition-colors" />
 
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0 pb-32 scroll-smooth scroll-gpu">
+              <div className="max-w-[1920px] mx-auto w-full">
               {activeTab === 'explore' && !searchQuery && (
                 <div className="px-6 pt-6 animate-in fade-in slide-in-from-top-5 duration-700">
                   <HeroSection />
                 </div>
               )}
 
-              <div className="sticky top-0 z-30 px-6 py-4 bg-app-bg/80 backdrop-blur-xl transition-all flex justify-center">
+              <div className="sticky top-0 z-10 px-4 sm:px-6 py-4 bg-app-bg backdrop-blur-xl transition-all flex items-center justify-center gap-3">
                 <SearchBar value={searchQuery} onChange={setSearchQuery} />
               </div>
 
@@ -403,14 +523,39 @@ function App() {
                 ) : activeTab === 'updates' ? (
                   <UpdatesPage />
                 ) : activeTab === 'settings' ? (
-                  <SettingsPage onRestartOnboarding={() => setShowOnboarding(true)} />
+                  <SettingsPage
+                    onRestartOnboarding={() => setShowOnboarding(true)}
+                    onRepairComplete={async () => { await refreshSystemHealth(); }}
+                  />
                 ) : null}
+              </div>
               </div>
             </div>
           </div>
         )}
       </main>
-      {showOnboarding && <OnboardingModal onComplete={handleOnboardingComplete} reason={onboardingReason} />}
+      {/* System Fix Popup - Shows BEFORE onboarding when system defects detected */}
+      {showSystemFixPopup && onboardingReason && (
+        <ConfirmationModal
+          isOpen={showSystemFixPopup}
+          onClose={() => {
+            setShowSystemFixPopup(false);
+            setShowOnboarding(true); // Show onboarding after popup is dismissed
+          }}
+          onConfirm={() => {
+            setShowSystemFixPopup(false);
+            setShowOnboarding(true); // Show onboarding after user confirms
+          }}
+          title="System Setup Required"
+          message={onboardingReason}
+          confirmLabel="Continue to Setup"
+          cancelLabel="Skip (Not Recommended)"
+          variant="info"
+        />
+      )}
+      
+      {/* Onboarding - Only show after popup is dismissed or if no reason */}
+      {showOnboarding && !showSystemFixPopup && <OnboardingModal onComplete={handleOnboardingComplete} reason={onboardingReason} />}
       {activeInstall && (
         <InstallMonitor
           pkg={activeInstall}

@@ -9,7 +9,7 @@ import { useFocusTrap } from '../hooks/useFocusTrap';
  * Modal for displaying critical errors with recovery actions
  */
 export default function ErrorModal() {
-    const { currentCriticalError, dismissCritical } = useErrorService();
+    const { currentCriticalError, dismissCritical, reportError } = useErrorService();
     const isOpen = !!currentCriticalError;
     
     useEscapeKey(dismissCritical, isOpen);
@@ -49,7 +49,7 @@ export default function ErrorModal() {
             try {
                 await recoveryAction.handler();
             } catch (e) {
-                console.error('Recovery action failed:', e);
+                reportError(e as Error | string);
             }
         }
         dismissCritical();
@@ -58,7 +58,7 @@ export default function ErrorModal() {
     return (
         <AnimatePresence>
             {isOpen && (
-                <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
                     <motion.div
                         ref={focusTrapRef}
                         initial={{ opacity: 0, scale: 0.9, y: 20 }}
@@ -97,9 +97,9 @@ export default function ErrorModal() {
 
                         {/* Body */}
                         <div className="p-6 space-y-4">
-                            {/* Raw error message (if available and technical) */}
-                            {error.raw && error.friendly?.isTechnical && (
-                                <details className="bg-app-bg/50 border border-app-border rounded-xl p-4">
+                            {/* Raw error message (if available and technical, or Backend Response Error for diagnosis) */}
+                            {error.raw && (error.friendly?.isTechnical || error.title === 'Backend Response Error') && (
+                                <details className="bg-app-bg/50 border border-app-border rounded-xl p-4" open={error.title === 'Backend Response Error'}>
                                     <summary className="text-xs font-bold text-app-muted uppercase tracking-wider cursor-pointer hover:text-app-fg transition-colors">
                                         Technical Details
                                     </summary>

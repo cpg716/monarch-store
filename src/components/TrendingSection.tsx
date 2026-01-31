@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import PackageCard, { Package, ChaoticPackage } from './PackageCard';
+import SkeletonCard from './SkeletonCard';
 import { useErrorService } from '../context/ErrorContext';
 
 interface TrendingSectionProps {
@@ -85,9 +86,16 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
 
     if (loading) {
         return (
-            <div className="h-64 flex items-center justify-center">
-                <div className="w-8 h-8 rounded-full border-2 border-app-accent border-t-transparent animate-spin" />
-            </div>
+            <section>
+                <div className="flex items-center justify-between mb-6">
+                    {title && <div className="h-8 w-48 rounded bg-gray-200 dark:bg-gray-700 animate-pulse" />}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 max-w-7xl mx-auto w-full">
+                    {[...Array(8)].map((_, i) => (
+                        <SkeletonCard key={i} />
+                    ))}
+                </div>
+            </section>
         );
     }
 
@@ -144,7 +152,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                     </div>
                 </div>
             ) : (
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6 max-w-7xl mx-auto w-full">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 max-w-7xl mx-auto w-full">
                     {displayedPackages.map((pkg) => (
                         <PackageCard
                             key={`${pkg.name}-${pkg.source}`}

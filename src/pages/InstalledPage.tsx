@@ -6,6 +6,8 @@ import { invoke } from '@tauri-apps/api/core';
 import ConfirmationModal from '../components/ConfirmationModal';
 import { useToast } from '../context/ToastContext';
 import { useErrorService } from '../context/ErrorContext';
+import { useSessionPassword } from '../context/useSessionPassword';
+import { useAppStore } from '../store/internal_store';
 import { Package } from '../components/PackageCard';
 
 interface InstalledApp {
@@ -53,6 +55,8 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
     const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; id: string; name: string } | null>(null);
     const { success } = useToast();
     const errorService = useErrorService();
+    const { requestSessionPassword } = useSessionPassword();
+    const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
 
     // Fetch installed packages on mount
     useEffect(() => {
@@ -92,7 +96,8 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
         const { id, name } = confirmModal;
 
         try {
-            await invoke('uninstall_package', { name: id, password: null });
+            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+            await invoke('uninstall_package', { name: id, password: pwd });
             setApps(apps.filter(a => a.name !== id));
             success(`${name} uninstalled successfully`);
         } catch (e) {
@@ -131,100 +136,100 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
 
     return (
         <div className="h-full flex flex-col bg-app-bg animate-in slide-in-from-right duration-300 transition-colors">
-            {/* Header */}
-            <div className="p-8 pb-6 sticky top-0 bg-app-bg/95 backdrop-blur-3xl z-20 border-b border-black/5 dark:border-white/5 transition-colors shadow-sm dark:shadow-2xl dark:shadow-black/20">
-                <div className="flex items-end justify-between mb-6">
-                    <div>
-                        <h1 className="text-4xl lg:text-5xl font-black flex items-center gap-3 text-slate-900 dark:text-white tracking-tight leading-none mb-2">
+            {/* Header — ~30% tighter */}
+            <div className="px-5 pt-5 pb-4 sticky top-0 bg-app-bg/95 backdrop-blur-3xl z-20 border-b border-black/5 dark:border-white/5 transition-colors shadow-sm dark:shadow-2xl dark:shadow-black/20">
+                <div className="flex items-end justify-between mb-4">
+                    <div className="min-w-0">
+                        <h1 className="text-2xl lg:text-3xl font-black flex items-center gap-2 text-slate-900 dark:text-white tracking-tight leading-none mb-1">
                             Installed
                         </h1>
-                        <p className="text-lg text-slate-500 dark:text-app-muted font-medium">
+                        <p className="text-sm text-slate-500 dark:text-app-muted font-medium truncate">
                             {loading ? 'Thinking...' : `${apps.length} packages • ${totalSize}`}
                         </p>
                     </div>
                 </div>
 
-                <div className="relative group">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-app-muted group-focus-within:text-blue-500 transition-colors" size={20} />
+                <div className="relative group mt-3">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-app-muted group-focus-within:text-blue-500 transition-colors" size={18} />
                     <input
                         type="text"
                         placeholder="Filter installed apps..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full bg-white dark:bg-black/20 border border-black/5 dark:border-white/10 rounded-2xl py-4 pl-12 pr-4 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-white/20 text-lg shadow-inner"
+                        className="w-full bg-white dark:bg-black/20 border border-black/5 dark:border-white/10 rounded-xl py-2.5 pl-10 pr-3 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-white/20 text-sm shadow-inner"
                     />
                 </div>
             </div>
 
             {/* Content List */}
-            <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 custom-scrollbar min-h-0">
                 {loading ? (
-                    <div className="flex flex-col items-center justify-center py-32 text-app-muted gap-6">
-                        <Loader2 size={48} className="animate-spin text-blue-500" />
-                        <p className="text-xl font-medium">Loading library...</p>
+                    <div className="flex flex-col items-center justify-center py-20 text-app-muted gap-4">
+                        <Loader2 size={36} className="animate-spin text-blue-500" />
+                        <p className="text-base font-medium">Loading library...</p>
                     </div>
                 ) : filteredApps.length === 0 ? (
-                    <div className="text-center text-app-muted mt-32">
-                        <PackageIcon size={64} className="mx-auto mb-6 opacity-20" />
-                        <p className="text-2xl font-bold text-slate-900 dark:text-white mb-2">No applications found</p>
-                        <p className="text-lg opacity-60">Try a different search term</p>
+                    <div className="text-center text-app-muted mt-20">
+                        <PackageIcon size={48} className="mx-auto mb-4 opacity-20" />
+                        <p className="text-xl font-bold text-slate-900 dark:text-white mb-1">No applications found</p>
+                        <p className="text-sm opacity-60">Try a different search term</p>
                     </div>
                 ) : (
-                    <div className="space-y-3 max-w-5xl mx-auto">
+                    <div className="space-y-2 max-w-4xl mx-auto">
                         <AnimatePresence>
                             {filteredApps.map((app) => (
                                 <motion.div
                                     key={app.name}
-                                    initial={{ opacity: 0, y: 10 }}
+                                    initial={{ opacity: 0, y: 8 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     exit={{ opacity: 0, height: 0 }}
                                     onClick={() => handleNavigation(app)}
-                                    className="group bg-white dark:bg-app-card border border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/20 rounded-2xl transition-all overflow-hidden relative shadow-sm dark:shadow-lg hover:shadow-xl dark:hover:shadow-2xl hover:-translate-y-1 backdrop-blur-sm p-4 flex items-center gap-6 cursor-pointer"
+                                    className="group bg-white dark:bg-app-card border border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/20 rounded-xl transition-all overflow-hidden relative shadow-sm dark:shadow-md hover:shadow-lg hover:-translate-y-0.5 backdrop-blur-sm p-3 flex items-center gap-3 md:gap-4 cursor-pointer min-w-0"
                                 >
                                     {/* Icon */}
-                                    <div className="w-16 h-16 rounded-2xl bg-slate-50 dark:bg-black/20 border border-black/5 dark:border-white/5 flex items-center justify-center shrink-0 overflow-hidden relative shadow-inner p-2.5">
+                                    <div className="w-11 h-11 rounded-xl bg-slate-50 dark:bg-black/20 border border-black/5 dark:border-white/5 flex items-center justify-center shrink-0 overflow-hidden relative shadow-inner p-1.5">
                                         <AppIcon pkgId={app.name} />
                                     </div>
 
-                                    {/* Info */}
-                                    <div className="flex-1 min-w-0 flex flex-col justify-center gap-1">
-                                        <div className="flex items-center gap-3">
-                                            <h3 className="font-bold text-xl text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                                    {/* Info — min-w-0 so text truncates instead of overflowing */}
+                                    <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <h3 className="font-bold text-base text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors truncate">
                                                 {app.name}
                                             </h3>
-                                            <span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/10 text-xs font-mono text-slate-500 dark:text-white/60 border border-black/5 dark:border-white/5">
+                                            <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-white/10 text-[10px] font-mono text-slate-500 dark:text-white/60 border border-black/5 dark:border-white/5 shrink-0">
                                                 {app.version}
                                             </span>
                                         </div>
-                                        <p className="text-slate-500 dark:text-app-muted text-sm truncate font-medium max-w-[90%]">
+                                        <p className="text-slate-500 dark:text-app-muted text-xs font-medium line-clamp-2 min-w-0">
                                             {app.description || "No description available"}
                                         </p>
                                     </div>
 
-                                    {/* Meta Stats */}
-                                    <div className="hidden lg:flex flex-col gap-2 items-end min-w-[140px]">
-                                        <div className="flex items-center gap-2 text-xs font-bold text-slate-500 dark:text-app-muted/80 bg-slate-50 dark:bg-black/20 px-3 py-1.5 rounded-lg border border-black/5 dark:border-white/5 w-full justify-end">
-                                            {app.size || "Unknown"} <HardDrive size={12} className="text-blue-500" />
+                                    {/* Meta Stats — compact */}
+                                    <div className="hidden sm:flex flex-col gap-1 items-end min-w-[100px] shrink-0">
+                                        <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 dark:text-app-muted/80 bg-slate-50 dark:bg-black/20 px-2 py-1 rounded border border-black/5 dark:border-white/5">
+                                            {app.size || "—"} <HardDrive size={10} className="text-blue-500 shrink-0" />
                                         </div>
-                                        <div className="flex items-center gap-2 text-xs font-bold text-slate-500 dark:text-app-muted/80 bg-slate-50 dark:bg-black/20 px-3 py-1.5 rounded-lg border border-black/5 dark:border-white/5 w-full justify-end">
-                                            {(app.install_date || "N/A").split(' ')[0]} <Calendar size={12} className="text-purple-500" />
+                                        <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 dark:text-app-muted/80 bg-slate-50 dark:bg-black/20 px-2 py-1 rounded border border-black/5 dark:border-white/5">
+                                            {(app.install_date || "N/A").split(' ')[0]} <Calendar size={10} className="text-purple-500 shrink-0" />
                                         </div>
                                     </div>
 
                                     {/* Actions */}
-                                    <div className="flex items-center gap-3 pl-4 border-l border-black/5 dark:border-white/5">
+                                    <div className="flex items-center gap-1.5 pl-3 border-l border-black/5 dark:border-white/5 shrink-0">
                                         <button
                                             onClick={(e) => { e.stopPropagation(); handleLaunch(app.name); }}
-                                            className="h-10 px-5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-900/20 active:scale-95 border border-white/10 hover:shadow-blue-500/20"
+                                            className="h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-md active:scale-95 border border-white/10"
                                         >
-                                            <Play size={16} fill="currentColor" /> Launch
+                                            <Play size={14} fill="currentColor" /> Launch
                                         </button>
                                         <button
                                             onClick={(e) => { e.stopPropagation(); handleUninstall(app.name, app.name); }}
-                                            className="h-10 w-10 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-500 dark:text-red-400 border border-red-500/10 hover:border-red-500/30 transition-all flex items-center justify-center active:scale-95"
+                                            className="h-8 w-8 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 dark:text-red-400 border border-red-500/10 hover:border-red-500/30 transition-all flex items-center justify-center active:scale-95 shrink-0"
                                             title="Uninstall"
                                         >
-                                            <Trash2 size={18} />
+                                            <Trash2 size={14} />
                                         </button>
                                     </div>
                                 </motion.div>

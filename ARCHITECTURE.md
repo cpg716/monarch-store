@@ -1,6 +1,6 @@
 # 🏗️ MonARCH Store Architecture
 
-**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+**Last updated:** 2025-01-31 (v0.3.5-alpha)
 
 ## Core Philosophy: "Safe by Default, Powerful by Choice"
 
@@ -41,12 +41,14 @@ The installation flow uses the **monarch-helper** binary (invoked via `pkexec`) 
 *   **Helper (root)**: Reads the command from the temp file, runs ALPM transactions (sync + install, or uninstall, or sysupgrade). Progress is streamed back via events.
 *   **Rule**: We **never** run `pacman -Sy` alone. Repo installs use `pacman -Syu --needed` in a single transaction; system updates use one full upgrade. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md).
 
-### 4. Butterfly System Health
-MonARCH includes a permission-aware health monitoring ecosystem:
+### 4. Butterfly System Health & Omni-User (v0.3.5)
+MonARCH includes a permission-aware health monitoring ecosystem and a dual-core UX (simplicity by default, power by choice):
 *   **Butterfly Probes**: Verifies `pkexec`, `git`, and `polkit` health at startup to prevent silent failures.
 *   **Parallel ODRS Integration**: Ratings are fetched concurrently during onboarding/home view for faster load.
 *   **Permission-Safe Sensors**: Health checks are non-privileged, preventing false "Corrupted Keyring" warnings.
 *   **Unified Repair Wizard**: A single authorized maintenance flow for Keyring, Security Policies, and Repo sync.
+*   **Self-Healing**: During install, corrupt sync DBs or locked DB trigger silent repair (force refresh or unlock) and retry—no error pop-up. Helper `force_refresh_sync_dbs` reads `/etc/pacman.conf` directly so recovery works when ALPM is blind. At startup the app calls `needs_startup_unlock()`; if a stale lock exists and **Reduce password prompts** is on, the in-app password is used for unlock so the system prompt does not appear at launch.
+*   **Glass Cockpit**: Settings → General: **Show Detailed Transaction Logs**. Maintenance: **Advanced Repair** (Unlock DB, Fix Keys, Refresh DBs, Clear Cache, Clean Orphans). Repositories: **Test Mirrors** per repo (top 3 mirrors with latency; rate-mirrors/reflector).
 
 ### 5. Frontend Stack
 *   **Stack**: React 19, TypeScript, Tailwind CSS 4, Vite 7, Zustand (state), Framer Motion. Key dirs: `src/components/`, `src/pages/`, `src/hooks/`, `src/store/`.

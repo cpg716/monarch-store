@@ -1,14 +1,23 @@
 #!/bin/bash
 # /usr/lib/monarch-store/monarch-wrapper
 # This file allows MonARCH to have a distinct Polkit Identity.
+# Used for: pacman/makepkg (direct exec) and script execution (bash -s with script on stdin).
 
-# Security: Only allow specific binaries
+# Security: Only allow specific invocations
 case "$1" in
     "/usr/bin/pacman")
         exec "$@"
         ;;
     "/usr/bin/makepkg") # Rare case, usually run as user
         exec "$@"
+        ;;
+    "bash")
+        # Onboarding/script path: pkexec monarch-wrapper bash -s < script
+        if [ "$2" = "-s" ]; then
+            exec /bin/bash -s
+        fi
+        echo "Error: Unauthorized wrapper usage: bash $2"
+        exit 1
         ;;
     *)
         echo "Error: Unauthorized command $1"

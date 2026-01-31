@@ -2,6 +2,7 @@ use crate::{
     aur_api, chaotic_api, metadata, models, pkgstats_api, repo_manager::RepoManager, utils,
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use tauri::State;
 
 #[derive(Serialize)]
@@ -31,7 +32,11 @@ pub async fn search_packages(
         utils::track_event_safe(
             &app_handle,
             "search_query",
-            Some(serde_json::json!({"term": q_telemetry, "category": "all"})),
+            Some(serde_json::json!({
+                "term": q_telemetry,
+                "term_length": q_telemetry.len(),
+                "category": "all",
+            })),
         )
         .await;
     });
@@ -112,7 +117,14 @@ pub async fn get_packages_by_names(
     names: Vec<String>,
 ) -> Result<Vec<models::Package>, String> {
     let mut packages = Vec::new();
-    let repo_pkgs = state_repo.inner().get_packages_batch(&names).await;
+    // ALPM: empty repo list = search ALL syncdbs (core, extra, community, multilib + monarch)
+    // so combined listing includes Official repos (e.g. Lutris from community).
+    let names_clone = names.clone();
+    let repo_pkgs = tokio::task::spawn_blocking(move || {
+        crate::alpm_read::get_packages_batch(&names_clone, &[])
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     for mut pkg in repo_pkgs {
         if pkg.icon.is_none() || pkg.app_id.is_none() {
             if let Ok(loader) = state_meta.inner().0.lock() {
@@ -215,6 +227,22 @@ pub async fn get_packages_by_names(
     packages = utils::merge_and_deduplicate(Vec::new(), packages);
 
     Ok(packages)
+}
+
+#[tauri::command]
+pub async fn get_chaotic_package_info(
+    state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    name: String,
+) -> Result<Option<chaotic_api::ChaoticPackage>, String> {
+    Ok(state_chaotic.inner().find_package(&name).await)
+}
+
+#[tauri::command]
+pub async fn get_chaotic_packages_batch(
+    state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    names: Vec<String>,
+) -> Result<HashMap<String, chaotic_api::ChaoticPackage>, String> {
+    state_chaotic.inner().get_packages_by_names(&names).await
 }
 
 #[tauri::command]
@@ -326,7 +354,7 @@ pub async fn get_trending(
                             display_name: Some(app.name),
                             description: app.summary.unwrap_or_default(),
                             version: app.version.unwrap_or_else(|| "optimized".to_string()),
-                            source: models::PackageSource::Official, // It's a repo package
+                            source: models::PackageSource::CachyOS,
                             // ... fields ...
                             maintainer: Some("CachyOS Team".to_string()),
                             license: None,
@@ -359,7 +387,7 @@ pub async fn get_trending(
                         display_name: Some(utils::to_pretty_name(name)),
                         description: "High-performance CachyOS component".to_string(),
                         version: "latest".to_string(),
-                        source: models::PackageSource::Official,
+                        source: models::PackageSource::CachyOS,
                         maintainer: Some("CachyOS Team".to_string()),
                         license: None,
                         url: None,
@@ -540,8 +568,14 @@ pub async fn get_package_variants(
         vec![pkg_lower.clone()]
     };
 
-    // Repo Search
-    let repo_pkgs = state_repo.inner().get_packages_batch(&search_names).await;
+    // Repo Search: use empty list to search ALL syncdbs (core, extra, community, multilib + monarch)
+    // so we show Official + Chaotic + AUR variants in one listing.
+    let search_names_clone = search_names.clone();
+    let repo_pkgs = tokio::task::spawn_blocking(move || {
+        crate::alpm_read::get_packages_batch(&search_names_clone, &[])
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     combined_packages.extend(repo_pkgs);
 
     // Chaotic Search
@@ -821,10 +855,22 @@ pub async fn get_category_packages_paginated(
 
     // ------------------------
 
-    // --- FIX: AUGMENT DATES FROM REPO DB ---
-    // AppStream data often lacks recent build dates. We fetch from RepoManager to fill gaps.
+    // --- FIX: AUGMENT DATES FROM REPO DB (ALPM as single READ source) ---
     let names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
-    let repo_data = state_repo.inner().get_packages_batch(&names).await;
+    let enabled_repos: Vec<String> = state_repo
+        .inner()
+        .get_all_repos()
+        .await
+        .iter()
+        .filter(|r| r.enabled)
+        .map(|r| r.name.clone())
+        .collect();
+    let names_clone = names.clone();
+    let repo_data = tokio::task::spawn_blocking(move || {
+        crate::alpm_read::get_packages_batch(&names_clone, &enabled_repos)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let date_map: std::collections::HashMap<String, i64> = repo_data
         .into_iter()
         .filter_map(|p| p.last_modified.map(|d| (p.name, d)))

@@ -2,12 +2,13 @@ import { useState, useEffect, useRef } from 'react';
 import {
     ArrowLeft, Download, Play, Heart, Star, Code, X,
     AlertTriangle, Trash2, User, Globe, Calendar,
-    Package as PackageIcon, ChevronRight, CheckCircle2,
+    ChevronRight, CheckCircle2,
     Loader2, ShieldCheck, MessageSquare, Cpu, ChevronDown, RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import DOMPurify from 'dompurify'; // Vector 1: HTML Injection Fix
 import RepoSelector from '../components/RepoSelector';
+import RepoBadge from '../components/RepoBadge';
 import { Package } from '../components/PackageCard';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
@@ -32,6 +33,8 @@ interface PackageDetailsProps {
     preferredSource?: string;
     /** When true, disable Install/Uninstall to prevent concurrent ALPM operations. */
     installInProgress?: boolean;
+    /** When set and name matches this pkg, show "Installing..." / "Uninstalling..." with spinner (no layout shift). */
+    activeInstallPackage?: { name: string; mode: 'install' | 'uninstall' } | null;
     onInstall: (p: { name: string; source: string; repoName?: string }) => void;
     onUninstall: (p: { name: string; source: string; repoName?: string }) => void;
 }
@@ -52,33 +55,10 @@ interface InstallStatus {
 }
 
 
-// --- Helper Components ---
-const Badge = ({ children, className }: { children: React.ReactNode, className?: string }) => (
-    <span className={clsx("px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border", className)}>
-        {children}
-    </span>
-);
-
-const SourceBadge = ({ source }: { source: string }) => {
-    const s = source.toLowerCase();
-    const isOfficial = s === 'official' || s === 'core' || s === 'extra' || s === 'multilib';
-    const style =
-        isOfficial ? "bg-blue-500/10 text-blue-400 border-blue-500/20" :
-            s === 'chaotic' ? "bg-purple-500/10 text-purple-400 border-purple-500/20" :
-                s === 'aur' ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
-                    "bg-zinc-500/10 text-zinc-400 border-zinc-500/20";
-
-    return (
-        <Badge className={clsx(style, "flex items-center gap-1.5")}>
-            {isOfficial && <img src={archLogo} className="w-3 h-3 object-contain brightness-0 invert" alt="Arch" />}
-            {source}
-        </Badge>
-    );
-};
-
 // --- Main Component ---
 
-export default function PackageDetails({ pkg, onBack, preferredSource, installInProgress = false, onInstall, onUninstall }: PackageDetailsProps) {
+export default function PackageDetails({ pkg, onBack, preferredSource, installInProgress = false, activeInstallPackage = null, onInstall, onUninstall }: PackageDetailsProps) {
+    const activeInstall = activeInstallPackage;
     // --- State & Hooks ---
     const { metadata: fullMeta } = usePackageMetadata(pkg.name);
     const { success } = useToast();
@@ -140,11 +120,13 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
 
                 const combined = [...fetchedVars, ...propAlternatives];
                 // Deduplicate
-                const vars = combined.filter((v, index, self) =>
+                let vars = combined.filter((v, index, self) =>
                     index === self.findIndex((t) => (
                         t.source === v.source && t.version === v.version && t.pkg_name === v.pkg_name
                     ))
                 );
+                // Repo availability: only show sources where the package actually exists (has a version)
+                vars = vars.filter((v) => v.version != null && String(v.version).trim() !== '');
                 setVariants(vars);
 
                 // Check installed status to auto-select
@@ -156,14 +138,12 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                         if (res.source) {
                             setSelectedSource(res.source);
                             return;
-                        } else if (vars.some(v => v.source === 'aur')) {
-                            setSelectedSource('aur'); // Default to AUR if source ambiguous but AUR present
-                            return;
                         }
+                        // When installed but backend has no source: prefer card's source (pkg.source) below
                     }
                 } catch (e) { errorService.reportError(e as Error | string); }
 
-                // Fallback selection logic
+                // Fallback selection: prefer card source so OFFICIAL on card shows OFFICIAL on details
                 if (preferredSource && vars.some(v => v.source === preferredSource)) setSelectedSource(preferredSource);
                 else if (vars.some(v => v.source === pkg.source)) setSelectedSource(pkg.source);
                 else if (vars.some(v => v.source === 'chaotic')) setSelectedSource('chaotic');
@@ -217,7 +197,14 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
             setShowReviewForm(false);
             setReviewTitle(''); setReviewBody('');
             refreshReviews();
-            invoke('track_event', { event: 'review_submitted', payload: { package: pkg.name, rating: reviewRating } });
+            invoke('track_event', {
+              event: 'review_submitted',
+              payload: {
+                package: pkg.name,
+                rating: reviewRating,
+                rating_bucket: reviewRating <= 2 ? '1-2' : reviewRating <= 3 ? '3' : '4-5',
+              },
+            });
             success("Review submitted!");
         } catch (e) { errorService.reportError(e as Error | string); }
     };
@@ -230,6 +217,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
             setPkgbuildContent(content);
             setShowPkgbuild(true);
         } catch (e) {
+            errorService.reportError(e as Error | string);
             setPkgbuildError(String(e));
             setShowPkgbuild(true);
         } finally { setPkgbuildLoading(false); }
@@ -285,7 +273,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                         {(pkg.icon || fullMeta?.icon_url) ? (
                             <img src={resolveIconUrl(pkg.icon || fullMeta?.icon_url)} alt={pkg.name} className="w-full h-full object-contain filter drop-shadow-xl" />
                         ) : (
-                            <PackageIcon size={40} className="text-white/20" />
+                            <img src={archLogo} className="w-full h-full object-contain opacity-80 grayscale dark:invert" alt="Arch Linux" />
                         )}
                     </motion.div>
 
@@ -302,9 +290,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                         </motion.h1>
 
                         <div className="flex flex-wrap items-center gap-2 md:gap-4 mb-6 text-app-muted/80 font-medium">
-                            {/* Restored Source Badge */}
-                            <SourceBadge source={selectedSource} />
-
+                            <RepoBadge repo={selectedSource} />
                             <div className="px-3 py-1 rounded-full bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-sm flex items-center gap-2 text-slate-700 dark:text-white/80">
                                 <Cpu size={14} /> <span>v{variants.find(v => v.source === selectedSource)?.version || pkg.version}</span>
                             </div>
@@ -382,7 +368,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                         >
                             <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                                 {/* Repo Selector - Full Width on Mobile */}
-                                {variants.length > 1 && (
+                                {variants.length >= 1 && (
                                     <div className="relative z-50 w-full sm:w-auto sm:min-w-[300px]">
                                         <RepoSelector
                                             variants={variants}
@@ -425,27 +411,37 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                                     </button>
 
                                                     {/* Update Button */}
-                                                    {!isSourceMismatch && isUpdateAvailable && (
-                                                        <button
-                                                            onClick={handleInstallClick}
-                                                            disabled={installInProgress}
-                                                            className="h-14 px-8 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-bold shadow-xl shadow-blue-600/20 active:scale-95 transition-all flex items-center gap-3 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                                                        >
-                                                            <Download size={24} /> Update (v{candidateVersion})
-                                                        </button>
-                                                    )}
+                                                    {!isSourceMismatch && isUpdateAvailable && (() => {
+                                                        const isThisUpdating = activeInstall?.name === pkg.name && activeInstall?.mode === 'install';
+                                                        return (
+                                                            <button
+                                                                onClick={handleInstallClick}
+                                                                disabled={installInProgress}
+                                                                className="h-14 min-w-[12rem] px-8 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-bold shadow-xl shadow-blue-600/20 active:scale-95 transition-all flex items-center justify-center gap-3 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                                                            >
+                                                                {isThisUpdating ? <Loader2 size={24} className="animate-spin shrink-0" /> : <Download size={24} />}
+                                                                <span className="truncate">{isThisUpdating ? "Updating…" : `Update (v${candidateVersion})`}</span>
+                                                            </button>
+                                                        );
+                                                    })()}
 
                                                     {/* Uninstall Button */}
-                                                    <button
-                                                        onClick={() => onUninstall({
-                                                        name: installedVariant?.actual_package_name || pkg.name,
-                                                        source: installedVariant?.source || installedVariant?.repo || 'official'
-                                                    })}
-                                                        disabled={installInProgress}
-                                                        className="h-14 px-6 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-red-600 dark:text-red-400 border border-slate-200 dark:border-white/10 rounded-2xl font-bold active:scale-95 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    >
-                                                        <Trash2 size={20} /> Uninstall
-                                                    </button>
+                                                    {(() => {
+                                                        const isThisUninstalling = activeInstall?.name === (installedVariant?.actual_package_name || pkg.name) && activeInstall?.mode === 'uninstall';
+                                                        return (
+                                                            <button
+                                                                onClick={() => onUninstall({
+                                                                    name: installedVariant?.actual_package_name || pkg.name,
+                                                                    source: installedVariant?.source || installedVariant?.repo || 'official'
+                                                                })}
+                                                                disabled={installInProgress}
+                                                                className="h-14 min-w-[10rem] px-6 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-red-600 dark:text-red-400 border border-slate-200 dark:border-white/10 rounded-2xl font-bold active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                            >
+                                                                {isThisUninstalling ? <Loader2 size={20} className="animate-spin shrink-0" /> : <Trash2 size={20} />}
+                                                                <span className="truncate">{isThisUninstalling ? "Uninstalling…" : "Uninstall"}</span>
+                                                            </button>
+                                                        );
+                                                    })()}
                                                 </>
                                             );
                                         } else {
@@ -453,19 +449,25 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                             const isManjaro = distro.id === 'manjaro';
                                             const isRisky = isManjaro && (source === 'chaotic' || source === 'official' || source === 'core' || source === 'extra');
 
+                                            const isThisPackageInstalling = activeInstall?.name === pkg.name && activeInstall?.mode === 'install';
                                             return (
                                                 <button
                                                     onClick={handleInstallClick}
                                                     disabled={installInProgress}
                                                     className={clsx(
-                                                        "h-14 px-10 rounded-2xl font-bold shadow-xl active:scale-95 transition-all flex items-center gap-3 text-lg border",
+                                                        "h-14 min-w-[12rem] px-10 rounded-2xl font-bold shadow-xl active:scale-95 transition-all flex items-center justify-center gap-3 text-lg border",
                                                         isRisky
                                                             ? "bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/20 border-amber-500/20"
                                                             : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/20 border-white/10",
                                                         "disabled:opacity-50 disabled:cursor-not-allowed"
                                                     )}
                                                 >
-                                                    <Download size={24} /> {isRisky ? "Install (Unsafe)" : "Install"}
+                                                    {isThisPackageInstalling ? (
+                                                        <Loader2 size={24} className="animate-spin shrink-0" aria-hidden />
+                                                    ) : (
+                                                        <Download size={24} className="shrink-0" />
+                                                    )}
+                                                    <span className="truncate">{isThisPackageInstalling ? "Installing…" : isRisky ? "Install (Unsafe)" : "Install"}</span>
                                                 </button>
                                             );
                                         }
@@ -705,7 +707,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                     <motion.div
                         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                         onClick={() => setLightboxIndex(null)}
-                        className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4"
+                        className="fixed inset-0 z-40 bg-black/95 backdrop-blur-xl flex items-center justify-center p-4"
                     >
                         <button onClick={() => setLightboxIndex(null)} className="absolute top-6 right-6 p-4 text-white/50 hover:text-white" aria-label="Close"><X size={32} /></button>
                         <img
@@ -722,7 +724,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                 {showPkgbuild && (
                     <motion.div
                         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                        className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+                        className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
                         onClick={() => setShowPkgbuild(false)}
                     >
                         <motion.div

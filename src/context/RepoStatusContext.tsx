@@ -1,6 +1,6 @@
-
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getErrorService } from './getErrorService';
 
 interface RepoStatusContextType {
     repos: { [key: string]: boolean };
@@ -19,7 +19,7 @@ export function RepoStatusProvider({ children }: { children: ReactNode }) {
             setRepos(prev => ({ ...prev, [name]: status }));
             return status;
         } catch (e) {
-            console.error(`Failed to check repo ${name}`, e);
+            getErrorService()?.reportError(e as Error | string);
             return false;
         }
     };

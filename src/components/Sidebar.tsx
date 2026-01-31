@@ -57,7 +57,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
         <motion.div
             animate={{ width: isExpanded ? 260 : 80 }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
-            className="h-full bg-app-sidebar/80 backdrop-blur-3xl border-r border-app-border flex flex-col py-6 relative z-50 transition-colors duration-200"
+            className="h-full bg-app-sidebar/80 backdrop-blur-3xl border-r border-app-border flex flex-col py-6 relative z-50 transition-colors duration-200 shrink-0"
         >
             {/* Logo Section */}
             <div className={clsx(

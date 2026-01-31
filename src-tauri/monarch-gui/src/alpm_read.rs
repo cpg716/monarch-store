@@ -1,5 +1,92 @@
 use crate::models::{Package, PackageSource};
 use alpm::{Alpm, SigLevel};
+use std::path::Path;
+
+/// Collect all repository section names from pacman.conf and any Include'd files
+/// (e.g. /etc/pacman.d/monarch/*.conf) so core, extra, community, multilib are
+/// registered when using modular Include.
+fn collect_repo_sections_from_conf(conf_path: &str) -> Vec<String> {
+    let mut sections = Vec::new();
+    let content = match std::fs::read_to_string(conf_path) {
+        Ok(c) => c,
+        Err(_) => return sections,
+    };
+    let conf_dir = Path::new(conf_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("/etc"));
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let section = line[1..line.len() - 1].trim();
+            if section != "options" && !sections.contains(&section.to_string()) {
+                sections.push(section.to_string());
+            }
+            continue;
+        }
+        if line.to_lowercase().starts_with("include") {
+            let rest = line[6..].trim_start_matches(|c: char| c == '=' || c == ' ').trim();
+            let path = rest.trim_matches(|c| c == '"' || c == '\'');
+            let full = if path.starts_with('/') {
+                path.to_string()
+            } else {
+                conf_dir.join(path).to_string_lossy().into_owned()
+            };
+            for included_path in glob_includes(&full) {
+                for s in collect_repo_sections_from_conf(&included_path) {
+                    if !sections.contains(&s) {
+                        sections.push(s);
+                    }
+                }
+            }
+        }
+    }
+    sections
+}
+
+fn glob_includes(pattern: &str) -> Vec<String> {
+    let path = Path::new(pattern);
+    if !pattern.contains('*') {
+        return if path.exists() && path.is_file() {
+            vec![pattern.to_string()]
+        } else {
+            Vec::new()
+        };
+    }
+    let dir = path.parent().unwrap_or_else(|| Path::new("/"));
+    let file_pattern = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let suffix = file_pattern.find('*').map(|i| &file_pattern[i + 1..]).unwrap_or("");
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if (suffix.is_empty() || name.ends_with(suffix)) && p.is_file() {
+                if let Some(s) = p.to_str() {
+                    out.push(s.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn register_syncdbs_from_conf(alpm: &Alpm, conf_path: &str) {
+    let sections = collect_repo_sections_from_conf(conf_path);
+    if sections.is_empty() {
+        let _ = alpm.register_syncdb("core", SigLevel::PACKAGE_OPTIONAL);
+        let _ = alpm.register_syncdb("extra", SigLevel::PACKAGE_OPTIONAL);
+        let _ = alpm.register_syncdb("community", SigLevel::PACKAGE_OPTIONAL);
+        let _ = alpm.register_syncdb("multilib", SigLevel::PACKAGE_OPTIONAL);
+        return;
+    }
+    for section in sections {
+        let _ = alpm.register_syncdb(section.as_str(), SigLevel::PACKAGE_OPTIONAL);
+    }
+}
 
 pub fn search_local_dbs(query: &str) -> Vec<Package> {
     let alpm = match Alpm::new("/", "/var/lib/pacman") {
@@ -23,22 +110,7 @@ pub fn search_local_dbs(query: &str) -> Vec<Package> {
         }
     }
 
-    if let Ok(conf) = std::fs::read_to_string("/etc/pacman.conf") {
-        for line in conf.lines() {
-            let line = line.trim();
-            if line.starts_with('[') && line.ends_with(']') {
-                let section = &line[1..line.len() - 1];
-                if section != "options" {
-                    let _ = alpm.register_syncdb(section, SigLevel::PACKAGE_OPTIONAL);
-                }
-            }
-        }
-    } else {
-        // Fallback
-        let _ = alpm.register_syncdb("core", SigLevel::PACKAGE_OPTIONAL);
-        let _ = alpm.register_syncdb("extra", SigLevel::PACKAGE_OPTIONAL);
-        let _ = alpm.register_syncdb("chaotic-aur", SigLevel::PACKAGE_OPTIONAL);
-    }
+    register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
 
     let mut results = Vec::new();
     let query_lower = query.to_lowercase();
@@ -57,10 +129,7 @@ pub fn search_local_dbs(query: &str) -> Vec<Package> {
                     display_name: Some(crate::utils::to_pretty_name(pkg.name())),
                     description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
                     version: pkg.version().to_string(),
-                    source: match db.name() {
-                        "chaotic-aur" => PackageSource::Chaotic,
-                        _ => PackageSource::Official,
-                    },
+                    source: PackageSource::from_repo_name(db.name()),
                     installed: is_installed,
                     download_size: Some(pkg.download_size() as u64),
                     installed_size: Some(pkg.isize() as u64),
@@ -100,44 +169,35 @@ pub fn search_local_dbs(query: &str) -> Vec<Package> {
 pub fn get_package_native(name: &str) -> Option<Package> {
     let alpm = Alpm::new("/", "/var/lib/pacman").ok()?;
 
-    // Check local database first
+    // Register all repos (including from Include directives) and try sync DBs for real source
+    register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
+    for db in alpm.syncdbs() {
+        if let Ok(pkg) = db.pkg(name) {
+            let installed = alpm.localdb().pkg(name).is_ok();
+            return Some(Package {
+                name: pkg.name().to_string(),
+                version: pkg.version().to_string(),
+                description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
+                source: PackageSource::from_repo_name(db.name()),
+                installed,
+                download_size: Some(pkg.download_size() as u64),
+                installed_size: Some(pkg.isize() as u64),
+                ..Default::default()
+            });
+        }
+    }
+
+    // Installed but not in any sync DB (e.g. AUR-only): return localdb package; assume AUR
     if let Ok(pkg) = alpm.localdb().pkg(name) {
         return Some(Package {
             name: pkg.name().to_string(),
             version: pkg.version().to_string(),
             description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
+            source: PackageSource::Aur,
             installed: true,
             installed_size: Some(pkg.isize() as u64),
             ..Default::default()
         });
-    }
-
-    // Check sync databases
-    if let Ok(conf) = std::fs::read_to_string("/etc/pacman.conf") {
-        for line in conf.lines() {
-            let line = line.trim();
-            if line.starts_with('[') && line.ends_with(']') {
-                let section = &line[1..line.len() - 1];
-                if section != "options" {
-                    if let Ok(db) = alpm.register_syncdb(section, SigLevel::PACKAGE_OPTIONAL) {
-                        if let Ok(pkg) = db.pkg(name) {
-                            return Some(Package {
-                                name: pkg.name().to_string(),
-                                version: pkg.version().to_string(),
-                                description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-                                source: match db.name() {
-                                    "chaotic-aur" => PackageSource::Chaotic,
-                                    _ => PackageSource::Official,
-                                },
-                                download_size: Some(pkg.download_size() as u64),
-                                installed_size: Some(pkg.isize() as u64),
-                                ..Default::default()
-                            });
-                        }
-                    }
-                }
-            }
-        }
     }
 
     None
@@ -161,4 +221,63 @@ pub fn get_installed_packages_native() -> Vec<Package> {
             ..Default::default()
         })
         .collect()
+}
+
+/// Batch lookup from ALPM sync DBs (and localdb for installed). Single source of truth for READ;
+/// same data install uses, so packages we show are always findable. Only returns packages from
+/// repos in `enabled_repos` (empty = no filter, use all registered syncdbs).
+pub fn get_packages_batch(names: &[String], enabled_repos: &[String]) -> Vec<Package> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let alpm = match Alpm::new("/", "/var/lib/pacman") {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+
+    register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
+
+    let names_set: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
+    let mut results = Vec::new();
+
+    for db in alpm.syncdbs() {
+        let db_name = db.name();
+        if !enabled_repos.is_empty() && !enabled_repos.iter().any(|r| r == db_name) {
+            continue;
+        }
+        for pkg in db.pkgs() {
+            if names_set.contains(pkg.name()) {
+                let is_installed = alpm.localdb().pkg(pkg.name()).is_ok();
+                results.push(Package {
+                    name: pkg.name().to_string(),
+                    display_name: Some(crate::utils::to_pretty_name(pkg.name())),
+                    description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
+                    version: pkg.version().to_string(),
+                    source: PackageSource::from_repo_name(db_name),
+                    installed: is_installed,
+                    download_size: Some(pkg.download_size() as u64),
+                    installed_size: Some(pkg.isize() as u64),
+                    last_modified: None,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    for pkg in alpm.localdb().pkgs() {
+        if names_set.contains(pkg.name()) && !results.iter().any(|r| r.name == pkg.name()) {
+            results.push(Package {
+                name: pkg.name().to_string(),
+                display_name: Some(crate::utils::to_pretty_name(pkg.name())),
+                description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
+                version: pkg.version().to_string(),
+                source: PackageSource::Aur,
+                installed: true,
+                installed_size: Some(pkg.isize() as u64),
+                ..Default::default()
+            });
+        }
+    }
+
+    results
 }

@@ -4,6 +4,8 @@ export interface FriendlyError {
     isTechnical: boolean;
     recoveryAction?: 'unlock' | 'repair_keyring' | 'refresh_mirrors' | 'clean_cache' | 'retry' | 'manual';
     recoveryLabel?: string;
+    /** Raw message for Expert / "View Log" display */
+    expertMessage?: string;
 }
 
 /**
@@ -13,28 +15,31 @@ export interface FriendlyError {
 export function friendlyError(raw: string): FriendlyError {
     const r = raw.toLowerCase();
 
-    // 1. Database Lock Errors (Most common, very recoverable)
+    // 1. Database Lock Errors (Most common, very recoverable — auto-unlock)
+    // ALPM_ERR_DB_WRITE: show friendly message; expert view shows raw [ALPM] error
     if (r.includes("unable to lock database") || r.includes("database is locked") || r.includes("db.lck")
-        || r.includes("alpm_err_db_write") || r.includes("db_write")) {
+        || r.includes("alpm_err_db_write") || r.includes("db_write")
+        || (r.includes("could not remove") && r.includes("db.lck"))) {
         return {
-            title: "Package Manager Busy",
-            description: "Another package manager is running or a previous operation was interrupted.",
+            title: "Database Locked",
+            description: "Another package manager is running or a previous operation was interrupted. Auto-unlocking…",
             isTechnical: false,
             recoveryAction: 'unlock',
-            recoveryLabel: 'Unlock & Retry'
+            recoveryLabel: 'Unlock & Retry',
+            expertMessage: raw.trim()
         };
     }
 
     // 2. Security / Keyring Errors (Common, auto-recoverable)
-    if (r.includes("gpgme error") || r.includes("pgp signature") || r.includes("invalid or corrupted package") 
+    if (r.includes("gpgme error") || r.includes("pgp signature") || r.includes("invalid or corrupted package")
         || r.includes("key could not be looked up") || r.includes("unknown public key")
         || r.includes("signature from") || r.includes("trust database")) {
         return {
-            title: "Security Key Issue",
-            description: "Package signatures could not be verified. Your security keys may need to be refreshed.",
+            title: "Updating Security Certificates",
+            description: "We are refreshing the system's security keys to ensure this package is safe. Please wait...",
             isTechnical: false,
             recoveryAction: 'repair_keyring',
-            recoveryLabel: 'Repair Keys & Retry'
+            recoveryLabel: 'Retry'
         };
     }
 
@@ -49,13 +54,13 @@ export function friendlyError(raw: string): FriendlyError {
         };
     }
 
-    // 4. Mirror/Network Issues
-    if (r.includes("failed retrieving file") || r.includes("failed to synchronize") 
-        || r.includes("could not resolve host") || r.includes("connection timed out")
-        || r.includes("error downloading") || r.includes("404")) {
+    // 4. Mirror/Network Issues (sync DB or package download)
+    if (r.includes("failed retrieving file") || r.includes("failed to retrieve")
+        || r.includes("failed to synchronize") || r.includes("could not resolve host")
+        || r.includes("connection timed out") || r.includes("error downloading") || r.includes("404")) {
         return {
             title: "Download Failed",
-            description: "Could not download packages. Check your internet connection or try again later.",
+            description: "Could not download repository databases or packages. Check your internet connection; if it persists, try running 'pacman -Syy' in a terminal to see which mirror fails.",
             isTechnical: false,
             recoveryAction: 'refresh_mirrors',
             recoveryLabel: 'Retry Download'
@@ -74,7 +79,7 @@ export function friendlyError(raw: string): FriendlyError {
     }
 
     // 6. Dependency Conflicts
-    if (r.includes("conflicting dependencies") || r.includes("breaks dependency") 
+    if (r.includes("conflicting dependencies") || r.includes("breaks dependency")
         || r.includes("unresolvable package conflicts")) {
         return {
             title: "Dependency Conflict",
@@ -148,6 +153,59 @@ export function friendlyError(raw: string): FriendlyError {
             isTechnical: true,
             recoveryAction: 'manual',
             recoveryLabel: 'View Details'
+        };
+    }
+
+    // 13. makepkg "An unknown error has occurred" — toolchain, permissions, or stale build cache
+    if (r.includes("unknown error has occurred") || r.includes("makepkg reported an unknown error") || r.includes("permission sanitizer")) {
+        return {
+            title: "AUR Build Failed (Unknown Error)",
+            description: "makepkg reported an unknown error. Ensure base-devel and git are installed; run scripts/monarch-permission-sanitizer.sh to fix build cache permissions.",
+            isTechnical: false,
+            recoveryAction: 'manual',
+            recoveryLabel: 'Run Permission Sanitizer'
+        };
+    }
+
+    // 14. Tauri/backend not available or invoke/connection failures
+    if ((r.includes("tauri") && (r.includes("not available") || r.includes("undefined") || r.includes("could not find")))
+        || r.includes("__tauri__") || (r.includes("invoke") && r.includes("not available"))
+        || r.includes("failed to fetch") || r.includes("fetch failed") || r.includes("load failed")
+        || r.includes("connection refused") || r.includes("econnrefused") || r.includes("networkerror")
+        || r.includes("unable to connect") || r.includes("could not connect") || r.includes("connection reset")
+        || r.includes("the operation was aborted") || r.includes("network request failed")) {
+        return {
+            title: "App Backend Unavailable",
+            description: "MonARCH must be run as a desktop app (npm run tauri dev). The backend is not connected.",
+            isTechnical: false,
+            recoveryAction: 'manual',
+            recoveryLabel: 'Run as Desktop App'
+        };
+    }
+
+    // 15. Invalid response from backend (decode/serialization failure)
+    if (r.includes("error decoding response body") || r.includes("decoding response body")
+        || r.includes("invalid json") || r.includes("unexpected end of") || r.includes("expected value")) {
+        const rawTrim = raw.trim();
+        return {
+            title: "Backend Response Error",
+            description: "The app received an invalid response from the backend. Try restarting the app; if it persists, a recent update may have broken compatibility. See Technical Details for the raw error.",
+            isTechnical: true,
+            recoveryAction: 'retry',
+            recoveryLabel: 'Restart App',
+            expertMessage: rawTrim
+        };
+    }
+
+    // 16. Generic "unknown" / "unexpected" from backend or JS
+    if (r.includes("unknown error") || r.includes("unexpected error") || r.includes("an error occurred")) {
+        return {
+            title: "Operation Failed",
+            description: raw.trim().length > 120 ? raw.trim().slice(0, 120) + "…" : raw.trim(),
+            isTechnical: true,
+            recoveryAction: 'retry',
+            recoveryLabel: 'Try Again',
+            expertMessage: raw.trim()
         };
     }
 

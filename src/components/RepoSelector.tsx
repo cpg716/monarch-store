@@ -52,7 +52,7 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
             case 'endeavour':
                 return { label: 'EndeavourOS', badge: 'ENDEAVOUR', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
             case 'official':
-                return { label: 'Official Arch', badge: 'OFFICIAL', icon: Server, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/20', recommended: true };
+                return { label: 'Official', badge: 'OFFICIAL', icon: Server, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/20', recommended: true };
             case 'aur':
                 return { label: 'AUR (Source Build)', badge: 'AUR', icon: Hammer, color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/20' };
             default:

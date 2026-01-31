@@ -1,6 +1,6 @@
 # System Architecture 🏗️
 
-**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+**Last updated:** 2025-01-31 (v0.3.5-alpha)
 
 MonARCH Store is built on **Tauri 2**, with a Rust workspace: **monarch-gui** (user process, read-only ALPM + orchestration) and **monarch-helper** (root via Polkit, ALPM write operations). The frontend is React 19 + TypeScript + Tailwind CSS 4 + Vite 7 + Zustand.
 
@@ -21,11 +21,11 @@ graph TD
 
 ### Workspace Layout
 - **`src-tauri/monarch-gui/`**: Tauri app (user process). Commands in `commands/`; `helper_client.rs` builds JSON command, writes to temp file, spawns `pkexec monarch-helper <cmd_file_path>`. Read-only ALPM in `alpm_read.rs`; AUR builds (unprivileged makepkg) then Helper installs built packages.
-- **`src-tauri/monarch-helper/`**: Privileged binary. Reads command from temp file, runs ALPM transactions (install, uninstall, sysupgrade, sync). Progress/result streamed via stdout; GUI emits `alpm-progress`, `install-complete`, etc.
+- **`src-tauri/monarch-helper/`**: Privileged binary. Reads command from temp file, runs ALPM transactions (install, uninstall, sysupgrade, sync). **`force_refresh_sync_dbs`** reads `/etc/pacman.conf` and `/etc/pacman.d/monarch/*.conf` directly so DB refresh works even when ALPM state is corrupt. Progress/result streamed via stdout; GUI emits `alpm-progress`, `install-complete`, etc.
 
 ### Key GUI Modules
 - **`lib.rs`**: Registers Tauri commands and plugins.
-- **`commands/`**: `package.rs` (install/uninstall), `search.rs`, `update.rs`, `system.rs`, `utils.rs`, `reviews.rs`.
+- **`commands/`**: `package.rs` (install/uninstall), `search.rs`, `update.rs`, `system.rs` (includes `test_mirrors(repo_key)` for per-repo mirror latency via rate-mirrors/reflector; `force_refresh_databases`, `rank_mirrors`; repair invokes accept optional password), `utils.rs`, `reviews.rs`.
 - **`models.rs`**: Shared types (e.g. `Package`). **`metadata.rs`** / **`flathub_api.rs`**: AppStream and Flathub API used for metadata only (icons, descriptions, reviews); we do not add Flatpak runtime or app support. **`odrs_api.rs`**: ODRS ratings. **`repo_manager.rs`**: Repo state and sync. **`error_classifier.rs`**: Classifies install errors for recovery UI.
 
 ### Search & Priority Logic
@@ -78,6 +78,12 @@ To support existing users, the app includes a mandatory initialization sequence:
 1.  **System Initialization**: Checks for essential directories and Polkit policies.
 2.  **Health Check**: Runs a broad diagnostic (`check_system_health`) to identify defects before the UI is interactive.
 3.  **Silent Repair**: If defects are found, the user is seamlessly routed to the Onboarding/Repair wizard to fix the system once and for all.
+
+### 4. Omni-User & Self-Healing (v0.3.5)
+- **Self-healing during install**: InstallMonitor detects "Unrecognized archive format" or "could not open database" and silently triggers `force_refresh_databases` (helper reads pacman.conf directly), shows "Repairing databases…", then retries—no error pop-up. On "Database Locked" it auto-unlocks and retries once ("Auto-unlocking…").
+- **Startup unlock**: The app calls `needs_startup_unlock()` first; if a stale lock exists and **Reduce password prompts** (Settings → Workflow & Interface) is on, the in-app password is passed to `unlock_pacman_if_stale` so the system prompt does not appear at launch.
+- **Glass Cockpit**: Settings → General: **Show Detailed Transaction Logs** (InstallMonitor shows real-time pacman/makepkg stdout). Settings → Maintenance: **Advanced Repair** (Unlock DB, Fix Keys, Refresh DBs, Clear Cache, Clean Orphans). Settings → Repositories: **Test Mirrors** per repo (`test_mirrors(repo_key)` → top 3 mirrors with latency; rate-mirrors/reflector, no system change).
+- **Friendly errors**: `friendlyError.ts` maps ALPM/DB errors to user-facing messages and optional expertMessage; repair invokes accept optional session password to reduce polkit prompts.
 
 ## Deployment (CI/CD)
 - **GitHub Actions**: Automated pipeline in `.github/workflows/release.yml`.

@@ -1,7 +1,7 @@
 use tauri::command;
 
 #[command]
-pub fn check_repo_status(name: &str) -> bool {
+pub fn check_repo_status(name: String) -> bool {
     let path = std::path::Path::new("/etc/pacman.d/monarch").join(format!("50-{}.conf", name));
     path.exists()
 }
@@ -163,18 +163,26 @@ pub async fn bootstrap_system(
         "auth_admin_keep"
     };
 
-    // Find helper source path
-    let exe_path = std::env::current_exe().unwrap_or_default();
-    let debug_helper = exe_path.parent().unwrap().join("monarch-helper");
-
-    let helper_source = if debug_helper.exists() {
-        debug_helper.to_string_lossy().to_string()
+    // Find helper source path for deployment to /usr/lib/monarch-store/monarch-helper.
+    // Single source of truth: same resolution as helper_client (utils::get_dev_helper_path) so we deploy the binary the app actually uses.
+    let exe_path_str = std::env::current_exe()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let helper_source = if exe_path_str.starts_with("/usr") {
+        // Installed app: only the package-installed helper exists; script will verify/copy (no upgrade until user reinstalls package)
+        "/usr/lib/monarch-store/monarch-helper".to_string()
+    } else if let Some(p) = crate::utils::get_dev_helper_path() {
+        // Development: deploy the same binary the app uses (e.g. src-tauri/target/debug/monarch-helper when npm run tauri dev)
+        p.to_string_lossy().to_string()
     } else {
-        // Fallback for different build layouts
-        format!(
-            "{}/../monarch-helper",
-            exe_path.parent().unwrap().to_string_lossy()
-        )
+        // Fallback: exe sibling (e.g. same dir as monarch-store binary)
+        std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.join("monarch-helper")))
+            .filter(|p| p.exists())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/usr/lib/monarch-store/monarch-helper".to_string())
     };
 
     let script = r##"
@@ -205,12 +213,31 @@ pub async fn bootstrap_system(
             chown root:root /usr/lib/monarch-store/monarch-helper
             chmod 755 /usr/lib/monarch-store/monarch-helper
             echo "✓ Helper deployed successfully."
+            
+            # Verify helper is executable and returns version
+            if [ -x /usr/lib/monarch-store/monarch-helper ]; then
+                if /usr/lib/monarch-store/monarch-helper --version >/dev/null 2>&1; then
+                    echo "✓ Helper version verified."
+                else
+                    echo "WARNING: Helper deployed but version check failed."
+                fi
+            else
+                echo "CRITICAL ERROR: Helper is not executable after deployment."
+                exit 1
+            fi
         else
             echo "WARNING: Could not find helper source at {{HELPER_SOURCE}}"
-            # If it already exists in target, maybe it's fine
-            if [ ! -f /usr/lib/monarch-store/monarch-helper ]; then
-               echo "CRITICAL ERROR: Helper missing and cannot be deployed."
-               # exit 1 
+            # If it already exists in target, verify it
+            if [ -f /usr/lib/monarch-store/monarch-helper ]; then
+                if [ -x /usr/lib/monarch-store/monarch-helper ]; then
+                    echo "Using existing helper at /usr/lib/monarch-store/monarch-helper"
+                else
+                    echo "CRITICAL ERROR: Existing helper is not executable."
+                    exit 1
+                fi
+            else
+                echo "CRITICAL ERROR: Helper missing and cannot be deployed."
+                exit 1
             fi
         fi
 
@@ -234,33 +261,34 @@ pub async fn bootstrap_system(
         pacman-key --populate archlinux
         
         # 2. Update Official Keyring Package (use -Syu to avoid partial upgrade)
-        echo "Syncing archlinux-keyring..."
-        pacman -Syu --noconfirm archlinux-keyring
+        # Note: We do this BEFORE adding repo configs, so we only sync base repos here
+        echo "Syncing archlinux-keyring (base repos only)..."
+        pacman -Syu --noconfirm archlinux-keyring || echo "WARNING: Keyring sync failed, continuing..."
 
-        # 2.5 Force Re-Import CachyOS Keys (Fix invalid signature)
+        # 3. Force Re-Import CachyOS Keys (Fix invalid signature)
         echo "Refreshing CachyOS Keys..."
-        pacman-key --recv-key F3B607488DB35A47 --keyserver keyserver.ubuntu.com
-        pacman-key --lsign-key F3B607488DB35A47
+        pacman-key --recv-key F3B607488DB35A47 --keyserver keyserver.ubuntu.com || echo "Note: CachyOS key may already be imported"
+        pacman-key --lsign-key F3B607488DB35A47 || true
         
-        # 3. Import Chaotic Keys
+        # 4. Import Chaotic Keys
         echo "Refreshing Chaotic Keys..."
-        pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com
-        pacman-key --lsign-key 3056513887B78AEB
+        pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com || echo "Note: Chaotic key may already be imported"
+        pacman-key --lsign-key 3056513887B78AEB || true
         
-        # 4. Cleanup old direct injections
+        # 5. Cleanup old direct injections
         sed -i '/\[cachyos/d' /etc/pacman.conf
         sed -i '/\[chaotic-aur/d' /etc/pacman.conf
         sed -i '/\[garuda/d' /etc/pacman.conf
         sed -i '/\[endeavouros/d' /etc/pacman.conf
         sed -i '/\[manjaro/d' /etc/pacman.conf
 
-        # 5. Add the Modular Include line
+        # 6. Add the Modular Include line
         if ! grep -q "/etc/pacman.d/monarch/\*.conf" /etc/pacman.conf; then
             # Insert before [core] for high priority
             sed -i '/\[core\]/i # MonARCH Managed Repositories\nInclude = /etc/pacman.d/monarch/*.conf\n' /etc/pacman.conf
         fi
 
-        # 6. Install MonARCH Polkit Policy
+        # 7. Install MonARCH Polkit Policy
         echo "Updating Seemless Auth Policy..."
         cat <<'EOF' > /usr/share/polkit-1/actions/com.monarch.store.policy
 <?xml version="1.0" encoding="UTF-8"?>
@@ -281,8 +309,27 @@ pub async fn bootstrap_system(
   </action>
 </policyconfig>
 EOF
-        echo "Final Database Sync..."
-        pacman -Syu --noconfirm
+        
+        # 8. Force refresh ALL sync databases AFTER repo configs are in place
+        # This happens after apply_os_config writes the monarch/*.conf files
+        # Note: apply_os_config is called separately from frontend, so this -Syy
+        # will sync base repos. Full sync with custom repos happens in apply_os_config.
+        echo "Force refreshing package databases (after repo configuration)..."
+        pacman -Syy --noconfirm || {
+            echo "WARNING: pacman -Syy failed, retrying..."
+            sleep 2
+            pacman -Syy --noconfirm || {
+                echo "ERROR: Could not refresh databases. Custom repos may need manual sync."
+            }
+        }
+        
+        # 9. Verification: Check that at least base repos are accessible
+        echo "Verifying database health..."
+        if pacman -Si pacman >/dev/null 2>&1; then
+            echo "✓ Base repositories verified."
+        else
+            echo "WARNING: Base repository verification failed."
+        fi
 
         echo "Bootstrap complete. Keys & Databases healthy ({{ALLOW_ACTIVE}})."
     "##

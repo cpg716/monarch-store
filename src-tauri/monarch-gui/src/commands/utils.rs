@@ -47,8 +47,10 @@ pub async fn launch_app(pkg_name: String) -> Result<(), String> {
         .arg(&pkg_name)
         .status();
 
-    if status.is_ok() && status.unwrap().success() {
-        return Ok(());
+    if let Ok(s) = status {
+        if s.success() {
+            return Ok(());
+        }
     }
 
     let search_paths = [
@@ -87,32 +89,30 @@ pub(crate) fn build_pacman_cmd(
     let helper_path = crate::utils::MONARCH_PK_HELPER;
 
     if password.is_none() && std::path::Path::new(wrapper_path).exists() {
-        // Phase 3: Branded Identity Refactor
-        // Use the shell wrapper proxy to trigger the branded Polkit identity (com.monarch.store.script)
+        // Phase 3: Branded Identity Refactor; --disable-internal-agent = DE agent = once-per-session
         (
             "/usr/bin/pkexec".to_string(),
-            std::iter::once(wrapper_path.to_string())
+            std::iter::once("--disable-internal-agent".to_string())
+                .chain(std::iter::once(wrapper_path.to_string()))
                 .chain(std::iter::once(pacman.to_string()))
                 .chain(action_args.iter().map(|s| s.to_string()))
                 .collect(),
         )
     } else if password.is_none() && std::path::Path::new(helper_path).exists() {
-        // Fallback to helper as Proxy for Polkit authorization (com.monarch.store.package-manage)
         let cmd = crate::helper_client::HelperCommand::RunCommand {
             binary: pacman.to_string(),
             args: action_args.iter().map(|s| s.to_string()).collect(),
         };
         let json = serde_json::to_string(&cmd).unwrap_or_default();
-
         (
             "/usr/bin/pkexec".to_string(),
-            vec![helper_path.to_string(), json],
+            vec!["--disable-internal-agent".to_string(), helper_path.to_string(), json],
         )
     } else if password.is_none() {
-        // Fallback to direct pkexec if no proxy installed (will prompt generically)
         (
             "/usr/bin/pkexec".to_string(),
-            std::iter::once(pacman.to_string())
+            std::iter::once("--disable-internal-agent".to_string())
+                .chain(std::iter::once(pacman.to_string()))
                 .chain(action_args.iter().map(|s| s.to_string()))
                 .collect(),
         )
@@ -128,6 +128,7 @@ pub(crate) fn build_pacman_cmd(
     }
 }
 
+/// Frontend-facing telemetry: gates by user consent (RepoManager) then forwards to Aptabase plugin.
 #[tauri::command]
 pub async fn track_event(app: tauri::AppHandle, event: String, payload: Option<serde_json::Value>) {
     crate::utils::track_event_safe(&app, &event, payload).await;

@@ -3,6 +3,63 @@ use tokio::io::AsyncWriteExt;
 
 pub const MONARCH_PK_HELPER: &str = "/usr/lib/monarch-store/monarch-helper";
 
+/// Single source of truth for the dev helper path. Same resolution order as helper_client so
+/// install/update and onboarding deployment always use the same binary (e.g. src-tauri/target/debug when npm run tauri dev).
+pub fn get_dev_helper_path() -> Option<std::path::PathBuf> {
+    // 1. CARGO_TARGET_DIR (set by npm run tauri dev) — may be relative or absolute
+    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+        let p = std::path::Path::new(&target_dir)
+            .join("debug")
+            .join("monarch-helper");
+        if p.exists() {
+            return Some(p.canonicalize().unwrap_or(p.to_path_buf()));
+        }
+        // If relative, try from cwd
+        if !target_dir.starts_with('/') {
+            if let Ok(cwd) = std::env::current_dir() {
+                let p = cwd.join(&target_dir).join("debug").join("monarch-helper");
+                if p.exists() {
+                    return Some(p.canonicalize().unwrap_or(p.to_path_buf()));
+                }
+            }
+        }
+    }
+    // 2. Same directory as this executable (works when both are in target/debug)
+    if let Ok(exe_path) = std::env::current_exe() {
+        let exe_canon = exe_path.canonicalize().unwrap_or(exe_path);
+        if let Some(parent) = exe_canon.parent() {
+            let p = parent.join("monarch-helper");
+            if p.exists() {
+                return Some(p.canonicalize().unwrap_or(p.to_path_buf()));
+            }
+        }
+    }
+    // 3. Relative fallbacks from cwd (project root when run via npm run tauri dev)
+    for path in &[
+        "src-tauri/target/debug/monarch-helper",
+        "./src-tauri/target/debug/monarch-helper",
+        "../target/debug/monarch-helper",
+        "./target/debug/monarch-helper",
+    ] {
+        let p = std::path::Path::new(path);
+        if p.exists() {
+            if let Ok(canon) = p.canonicalize() {
+                return Some(canon);
+            }
+        }
+    }
+    None
+}
+
+/// Returns true if the helper binary is available (production path or dev build path).
+/// Use this for health checks so dev builds (npm run tauri dev) don't report "helper missing" every launch.
+pub fn monarch_helper_available() -> bool {
+    if std::path::Path::new(MONARCH_PK_HELPER).exists() {
+        return true;
+    }
+    get_dev_helper_path().is_some()
+}
+
 lazy_static::lazy_static! {
     pub static ref PRIVILEGED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
 }
@@ -45,7 +102,7 @@ pub fn to_pretty_name(pkg_name: &str) -> String {
 }
 
 lazy_static::lazy_static! {
-    static ref VALIDATE_RE: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9@._+\-]+$").unwrap();
+    static ref VALIDATE_RE: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9@._+\-]+$").expect("valid package name regex");
 }
 
 static VALIDATE_CACHE: once_cell::sync::Lazy<moka::sync::Cache<String, Result<(), String>>> =
@@ -416,12 +473,18 @@ pub async fn run_privileged_script_with_progress(
     // Acquire global lock to serialize privileged prompts (prevents multiple dialogs)
     let _guard = PRIVILEGED_LOCK.lock().await;
 
+    let wrapper_path = "/usr/lib/monarch-store/monarch-wrapper";
+    let wrapper_exists = std::path::Path::new(wrapper_path).exists();
+
     let (program, args) = if let Some(_) = &password {
         ("sudo", vec!["-S", "bash", "-s"])
+    } else if wrapper_exists && !bypass_helper {
+        // Use wrapper so Polkit action com.monarch.store.script applies; DE agent = once-per-session.
+        ("pkexec", vec!["--disable-internal-agent", wrapper_path, "bash", "-s"])
     } else if helper_exists && !bypass_helper {
-        ("pkexec", vec![MONARCH_PK_HELPER, "bash", "-s"])
+        ("pkexec", vec!["--disable-internal-agent", MONARCH_PK_HELPER, "bash", "-s"])
     } else {
-        ("pkexec", vec!["/bin/bash", "-s"])
+        ("pkexec", vec!["--disable-internal-agent", "/bin/bash", "-s"])
     };
 
     let mut child = tokio::process::Command::new(program)
@@ -439,8 +502,14 @@ pub async fn run_privileged_script_with_progress(
         let _ = stdin.write_all(script.as_bytes()).await;
     }
 
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture stdout (was not piped)".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture stderr (was not piped)".to_string())?;
 
     let app_clone = app.clone();
     let event_name_clone = event_name.to_string();
@@ -479,6 +548,8 @@ pub async fn run_privileged_script(
     password: Option<String>,
     bypass_helper: bool,
 ) -> Result<String, String> {
+    let wrapper_path = "/usr/lib/monarch-store/monarch-wrapper";
+    let wrapper_exists = std::path::Path::new(wrapper_path).exists();
     let helper_exists = std::path::Path::new(MONARCH_PK_HELPER).exists();
 
     // Acquire global lock to serialize privileged prompts
@@ -486,10 +557,13 @@ pub async fn run_privileged_script(
 
     let (program, args) = if let Some(_) = &password {
         ("sudo", vec!["-S", "bash", "-s"])
+    } else if wrapper_exists && !bypass_helper {
+        // Use wrapper so Polkit action com.monarch.store.script applies; DE agent = once-per-session.
+        ("pkexec", vec!["--disable-internal-agent", wrapper_path, "bash", "-s"])
     } else if helper_exists && !bypass_helper {
-        ("pkexec", vec![MONARCH_PK_HELPER, "bash", "-s"])
+        ("pkexec", vec!["--disable-internal-agent", MONARCH_PK_HELPER, "bash", "-s"])
     } else {
-        ("pkexec", vec!["/bin/bash", "-s"])
+        ("pkexec", vec!["--disable-internal-agent", "/bin/bash", "-s"])
     };
 
     let mut child = tokio::process::Command::new(program)
@@ -555,28 +629,58 @@ pub fn get_install_mode() -> InstallMode {
     InstallMode::Portable
 }
 
+/// Maps event name to a category for Aptabase dashboard segmentation (filter/group by event_category).
+fn event_category_and_label(event: &str) -> (&'static str, &'static str) {
+    match event {
+        "app_started" => ("lifecycle", "App started"),
+        "search" | "search_query" => ("search", "Search"),
+        "onboarding_completed" => ("engagement", "Onboarding completed"),
+        "review_submitted" => ("engagement", "Review submitted"),
+        "install_package" => ("install", "Package installed"),
+        "uninstall_package" => ("install", "Package uninstalled"),
+        "error_reported" => ("error", "Error reported"),
+        "panic" => ("error", "App panic"),
+        _ => ("other", "other"),
+    }
+}
+
 /// Safely tracks an event ONLY if telemetry is enabled in configuration.
-/// This is the "Backend Gatekeeper" ensuring privacy compliance.
+/// Injects event_category and event_label into every payload so Aptabase dashboard can segment
+/// and display each event type as its own box with richer filtering.
 pub async fn track_event_safe(
     app: &tauri::AppHandle,
     event: &str,
     payload: Option<serde_json::Value>,
 ) {
     use crate::repo_manager::RepoManager;
+    use serde_json::Value;
     use tauri::Manager;
     use tauri_plugin_aptabase::EventTracker;
 
     let state = app.state::<RepoManager>();
     if state.is_telemetry_enabled().await {
-        // Log locally for debugging privacy
-        #[cfg(debug_assertions)]
-        println!("[Telemetry] Sending: {} {:?}", event, payload);
+        let (category, label) = event_category_and_label(event);
+        let mut map: serde_json::Map<String, Value> = match payload.as_ref() {
+            Some(Value::Object(m)) => m.clone(),
+            _ => serde_json::Map::new(),
+        };
+        map.insert(
+            "event_category".to_string(),
+            Value::String(category.to_string()),
+        );
+        map.insert(
+            "event_label".to_string(),
+            Value::String(label.to_string()),
+        );
+        let enriched = Value::Object(map);
 
-        // Send to Aptabase
-        let _ = app.track_event(event, payload);
+        #[cfg(debug_assertions)]
+        log::debug!("Telemetry sending: {} {:?}", event, enriched);
+
+        let _ = app.track_event(event, Some(enriched));
     } else {
         #[cfg(debug_assertions)]
-        println!("[Telemetry] BLOCKED (Consent Denied): {}", event);
+        log::debug!("Telemetry blocked (consent denied): {}", event);
     }
 }
 pub async fn run_pacman_command_transparent(
@@ -636,7 +740,10 @@ pub async fn run_pacman_command_transparent(
     let error_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     let app_clone = app.clone();
-    let stdout = child.stdout.take().unwrap();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture stdout (was not piped)".to_string())?;
     tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
@@ -645,7 +752,10 @@ pub async fn run_pacman_command_transparent(
     });
 
     let app_clone = app.clone();
-    let stderr = child.stderr.take().unwrap();
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture stderr (was not piped)".to_string())?;
     let error_buffer_clone = error_buffer.clone();
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();

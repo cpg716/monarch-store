@@ -12,9 +12,9 @@ use tauri::State;
 
 /*
 lazy_static! {
-    static ref RE_URL: Regex = Regex::new(r#"(?s)<url\b([^>]*)>(.*?)</url>"#).unwrap();
-    static ref RE_IMG: Regex = Regex::new(r#"(?s)<image\b([^>]*)>(.*?)</image>"#).unwrap();
-    static ref RE_ICON: Regex = Regex::new(r#"(?s)<icon\b([^>]*)>(.*?)</icon>"#).unwrap();
+    static ref RE_URL: Regex = Regex::new(r#"(?s)<url\b([^>]*)>(.*?)</url>"#).expect("valid regex RE_URL");
+    static ref RE_IMG: Regex = Regex::new(r#"(?s)<image\b([^>]*)>(.*?)</image>"#).expect("valid regex RE_IMG");
+    static ref RE_ICON: Regex = Regex::new(r#"(?s)<icon\b([^>]*)>(.*?)</icon>"#).expect("valid regex RE_ICON");
 }
 */
 
@@ -253,10 +253,8 @@ impl AppStreamLoader {
             }
         }
 
-        // println!("DEBUG: Looking for icon for pkg: '{}'", pkg_name);
         // 3. Search the icons directory for pattern match
         let icons_dir = get_icons_dir();
-        // println!("DEBUG: Checking icons dir: {:?}", icons_dir);
 
         // Helper to check a dir for the icon
         let check_dir = |dir: &PathBuf| -> Option<String> {
@@ -278,24 +276,12 @@ impl AppStreamLoader {
                                     "image/png"
                                 };
                                 let encoded = BASE64_STANDARD.encode(&bytes);
-                                // println!(
-                                //     "DEBUG: Found icon for '{}' at {:?} ({} bytes)",
-                                //     pkg_name,
-                                //     path,
-                                //     bytes.len()
-                                // );
                                 return Some(format!("data:{};base64,{}", mime, encoded));
-                            } else {
-                                // println!(
-                                //     "DEBUG: Failed to read file for '{}' at {:?}",
-                                //     pkg_name, path
-                                // );
                             }
                         }
                     }
                 }
             } else {
-                // println!("DEBUG: Failed to read_dir {:?}", dir);
             }
             None
         };
@@ -405,14 +391,6 @@ impl AppStreamLoader {
             _ => None,
         });
 
-        if let Some(pkg) = &component.pkgname {
-            if pkg.contains("brave") || pkg.contains("spotify") {
-                // println!(
-                //     "DEBUG: component_to_metadata '{}' -> Icon: {:?}",
-                //     pkg, icon_url
-                // );
-            }
-        }
 
         let screenshots = component
             .screenshots
@@ -479,11 +457,11 @@ impl AppStreamLoader {
 
 lazy_static! {
     static ref RE_URL: regex::Regex =
-        regex::Regex::new(r#"(?s)<url\b([^>]*)>(.*?)</url>"#).unwrap();
+        regex::Regex::new(r#"(?s)<url\b([^>]*)>(.*?)</url>"#).expect("valid regex RE_URL");
     static ref RE_IMG: regex::Regex =
-        regex::Regex::new(r#"(?s)<image\b([^>]*)>(.*?)</image>"#).unwrap();
+        regex::Regex::new(r#"(?s)<image\b([^>]*)>(.*?)</image>"#).expect("valid regex RE_IMG");
     static ref RE_ICON: regex::Regex =
-        regex::Regex::new(r#"(?s)<icon\b([^>]*)>(.*?)</icon>"#).unwrap();
+        regex::Regex::new(r#"(?s)<icon\b([^>]*)>(.*?)</icon>"#).expect("valid regex RE_ICON");
 }
 
 pub fn sanitize_xml(content: &str) -> String {
@@ -587,21 +565,21 @@ pub async fn download_and_cache_appstream(
             // Basic check if already sanitized or needs it
             if content.contains("type=\"service\"") || content.contains("type=\"web-application\"")
             {
-                println!("Sanitizing existing AppStream XML...");
+                log::info!("Sanitizing existing AppStream XML...");
                 let sanitized = sanitize_xml(&content);
                 std::fs::write(&target_path, sanitized).map_err(|e| e.to_string())?;
             }
 
             return Ok(target_path);
         } else {
-            println!(
-                "AppStream cache expired ({}h interval), re-downloading...",
+            log::info!(
+                "AppStream cache expired ({}h interval), re-downloading",
                 interval_hours
             );
         }
     }
 
-    println!("Downloading Arch AppStream data...");
+    log::info!("Downloading Arch AppStream data...");
     let url = "https://archlinux.org/packages/extra/any/archlinux-appstream-data/download/";
     let resp = reqwest::get(url).await.map_err(|e| e.to_string())?;
 
@@ -645,15 +623,15 @@ pub async fn download_and_cache_appstream(
             }
         }
     }
-    println!("Extracted {} icons to {:?}", extracted_count, icons_dir);
+    log::info!("Extracted {} icons to {:?}", extracted_count, icons_dir);
 
     if found_xml {
-        println!("Sanitizing AppStream XML (Scorched Earth Mode)...");
+        log::info!("Sanitizing AppStream XML (Scorched Earth Mode)...");
         let content = std::fs::read_to_string(&target_path).map_err(|e| e.to_string())?;
         let sanitized = sanitize_xml(&content);
         std::fs::write(&target_path, sanitized).map_err(|e| e.to_string())?;
 
-        println!(
+        log::info!(
             "Extracted, Decompressed and Sanitized AppStream data to {:?}",
             target_path
         );
@@ -680,19 +658,19 @@ impl MetadataState {
         // Run on all platforms (Linux/macOS) to ensure consistent cache
         let cache_dir = get_cache_dir();
         if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-            eprintln!("Failed to create cache dir: {}", e);
+            log::error!("Failed to create cache dir: {}", e);
             return;
         }
 
         match download_and_cache_appstream(interval_hours, &cache_dir).await {
             Ok(path) => match Collection::from_path(path.clone()) {
                 Ok(col) => {
-                    eprintln!("Loaded AppStream data from {:?}", path);
-                    let mut loader = self.0.lock().unwrap();
+                    log::info!("Loaded AppStream data from {:?}", path);
+                    let mut loader = self.0.lock().expect("MetadataState lock poisoned");
                     loader.set_collection(col);
                 }
                 Err(e) => {
-                    eprintln!(
+                    log::warn!(
                         "Failed to parse AppStream data: {}. Marking cache as invalid.",
                         e
                     );
@@ -705,7 +683,7 @@ impl MetadataState {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to download AppStream: {}", e);
+                log::error!("Failed to download AppStream: {}", e);
             }
         }
     }
@@ -810,12 +788,6 @@ pub async fn get_metadata_batch(
         }
     }
 
-    // println!(
-    //     "DEBUG: Backend Batch returning {} items. Keys: {:?}",
-    //     results.len(),
-    //     results.keys()
-    // );
-
     Ok(results)
 }
 
@@ -849,7 +821,7 @@ pub async fn get_metadata_core(
 ) -> Result<AppMetadata, ()> {
     // 1. Try AppStream Match
     let app_meta = {
-        let loader = state.0.lock().unwrap();
+        let loader = state.0.lock().expect("MetadataState lock poisoned");
         loader.find_package(&pkg_name).or_else(|| {
             // Heuristic stripper match
             let base_name = crate::utils::strip_package_suffix(&pkg_name);
@@ -922,7 +894,7 @@ pub async fn get_metadata_core(
     if final_meta.icon_url.is_none() {
         // A. Try Local Heuristics (Icons folder)
         let icon_heuristic = {
-            let loader = state.0.lock().unwrap();
+            let loader = state.0.lock().expect("MetadataState lock poisoned");
             loader.find_icon_heuristic(&pkg_name)
         };
 
@@ -953,13 +925,6 @@ pub async fn get_metadata_core(
             }
         }
     }
-    // Final Check: Log if icon is still missing for debugging
-    // if final_meta.icon_url.is_none() {
-    //     println!(
-    //         "DEBUG: No icon found for package '{}' after all fallbacks.",
-    //         pkg_name
-    //     );
-    // }
 
     Ok(final_meta)
 }

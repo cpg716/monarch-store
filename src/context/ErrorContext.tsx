@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useToast } from './ToastContext';
 import { friendlyError, FriendlyError } from '../utils/friendlyError';
@@ -46,7 +46,7 @@ export interface ErrorReport {
     timestamp: number;
 }
 
-interface ErrorContextType {
+export interface ErrorContextType {
     /**
      * Report an error with automatic severity detection
      */
@@ -85,11 +85,15 @@ interface ErrorContextType {
 
 const ErrorContext = createContext<ErrorContextType | undefined>(undefined);
 
+const TOAST_DEDUPE_MS = 4000;
+
 export function ErrorProvider({ children }: { children: ReactNode }) {
     const toast = useToast();
     const [criticalError, setCriticalError] = useState<ErrorReport | null>(null);
     // Error history for future features (logging, analytics, etc.)
     const [, setErrorHistory] = useState<ErrorReport[]>([]);
+    // Dedupe toasts: same message within window → show only once (stops startup spam)
+    const lastToastRef = useRef<{ key: string; at: number } | null>(null);
 
     /**
      * Normalize error input to a standardized format
@@ -155,6 +159,9 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
         recoveryAction?: { type: string; label: string; handler?: () => void | Promise<void> }
     ) => {
         const normalized = normalizeError(error);
+        if (normalized.title === 'Backend Response Error' && normalized.raw) {
+            console.error('[MonARCH] Backend Response Error (raw):', normalized.raw);
+        }
         const report: ErrorReport = {
             id: `error-${Date.now()}-${Math.random()}`,
             severity,
@@ -186,14 +193,27 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
         if (severity === 'critical') {
             setCriticalError(report);
         } else {
-            // Use toast for non-critical errors
-            const message = normalized.description || normalized.title;
-            if (severity === 'warning') {
-                toast.show(message, 'warning');
-            } else if (severity === 'info') {
-                toast.show(message, 'info');
+            // Dedupe: skip toast if same message was shown recently (e.g. many failed invokes at startup)
+            let message = normalized.description || normalized.title;
+            // When we hit the generic fallback, show the raw error so user (and we) see what actually failed
+            const isGenericFallback = message === 'An unexpected error occurred. Check the logs for details.';
+            if (isGenericFallback && normalized.raw?.trim()) {
+                message = `${message} (${normalized.raw.slice(0, 100).trim()}${normalized.raw.length > 100 ? '…' : ''})`;
+            }
+            const toastKey = `${severity}:${(normalized.raw ?? message).slice(0, 120)}`;
+            const now = Date.now();
+            const last = lastToastRef.current;
+            if (last && last.key === toastKey && now - last.at < TOAST_DEDUPE_MS) {
+                // Still log; only skip showing another toast
             } else {
-                toast.error(message);
+                lastToastRef.current = { key: toastKey, at: now };
+                if (severity === 'warning') {
+                    toast.show(message, 'warning');
+                } else if (severity === 'info') {
+                    toast.show(message, 'info');
+                } else {
+                    toast.error(message);
+                }
             }
         }
 

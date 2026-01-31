@@ -1,10 +1,12 @@
 # ErrorService - Centralized Error Handling
 
-**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+**Last updated:** 2025-01-31 (v0.3.5-alpha)
 
 ## Overview
 
 The `ErrorService` provides a unified API for handling and displaying errors throughout the MonARCH Store application. It replaces scattered error handling patterns with a single, consistent system.
+
+**Wired app-wide (2025-01-31):** `getErrorService()` is available for use outside the React tree (Zustand store, hooks, `main.tsx`). All critical paths use `reportError`/`reportWarning`/`reportCritical` instead of `console.error`: App, SettingsPage, OnboardingModal, SystemHealthSection, InstallMonitor, CategoryView, PackageDetailsFresh, ErrorModal, internal_store, useSettings, RepoStatusContext, and `window.onerror` in main.
 
 ## Features
 
@@ -214,6 +216,13 @@ interface ClassifiedError {
     raw_message: string;
 }
 ```
+
+### friendlyError() (Frontend)
+`src/utils/friendlyError.ts` mirrors backend classification for string errors. It maps raw messages (including install/AUR failures) to `FriendlyError` (title, description, recoveryAction). Supported patterns include:
+- Database lock, keyring, package not found, mirror failure, disk full, dependency/file conflict
+- **AUR build "unknown error"**: `unknown error has occurred`, `makepkg reported an unknown error`, or `permission sanitizer` → title "AUR Build Failed (Unknown Error)", recovery label "Run Permission Sanitizer"
+
+When the backend returns a string (e.g. from `build_aur_package_single`), `reportError(raw)` runs it through `friendlyError()`, so the user sees the mapped title/description and recovery hint.
 
 ## Architecture
 

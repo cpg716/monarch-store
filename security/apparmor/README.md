@@ -1,6 +1,6 @@
 # AppArmor profiles for MonARCH Store
 
-**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+**Last updated:** 2025-01-31 (v0.3.5-alpha)
 
 Outline profiles for confining the GUI and (optionally) the privileged helper. **Review and test in complain mode before enforcing.**
 

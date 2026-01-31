@@ -14,6 +14,8 @@ pkgbase = monarch-store
 	depends = polkit
 	depends = pacman-contrib
 	depends = git
+	optdepends = rate-mirrors: Test Mirrors with latency (Settings → Repositories)
+	optdepends = reflector: alternative for Test Mirrors / mirror ranking
 	source = git+https://github.com/cpg716/monarch-store.git
 	sha256sums = SKIP
 

@@ -1,4 +1,4 @@
-# MonARCH Store v0.3.5-alpha.1
+# MonARCH Store v0.3.5-alpha
 
 **The first Distro-Aware App Manager for Arch, Manjaro, and CachyOS.**
 
@@ -37,10 +37,10 @@ This alpha release focuses on **1% polish**, **system integrity**, and **communi
 ## Installation
 
 ### Pre-built package (recommended)
-Download `monarch-store-0.3.5_alpha.1-1-x86_64.pkg.tar.zst` (or current version) from the assets below, then:
+Download `monarch-store-0.3.5_alpha-1-x86_64.pkg.tar.zst` (or current version) from the assets below, then:
 
 ```bash
-sudo pacman -U monarch-store-0.3.5_alpha.1-1-x86_64.pkg.tar.zst
+sudo pacman -U monarch-store-0.3.5_alpha-1-x86_64.pkg.tar.zst
 ```
 
 ### From AUR
@@ -69,4 +69,4 @@ npm run tauri build
 ---
 
 ## Full Changelog
-See [RELEASE_NOTES.md](https://github.com/cpg716/monarch-store/blob/main/RELEASE_NOTES.md) and [docs/RELEASE_GATE_v0.3.5.md](https://github.com/cpg716/monarch-store/blob/main/docs/RELEASE_GATE_v0.3.5.md) for the release gate audit.
+See [RELEASE_NOTES.md](https://github.com/cpg716/monarch-store/blob/main/RELEASE_NOTES.md) and [docs/SECURITY_AUDIT_FORT_KNOX.md](https://github.com/cpg716/monarch-store/blob/main/docs/SECURITY_AUDIT_FORT_KNOX.md) for security and release context.

@@ -3,7 +3,7 @@
 
 **Author:** [cpg716](https://github.com/cpg716) — developer and creator of MonARCH Store, with the help of AI coding tools.
 
-**Last updated:** 2025-01-29 (v0.3.5-alpha.1)
+**Last updated:** 2025-01-31 (v0.3.5-alpha)
 
 A premium, distro-agnostic software center built with Tauri and React. MonARCH automatically detects your distribution and adapts its capabilities to ensure safety and performance.
 
@@ -38,11 +38,13 @@ MonARCH detects your CPU capabilities (AVX2, AVX-512) and automatically prioriti
 *   **10-20% Faster**: Python, compilers, and rendering apps run significantly faster.
 *   **Automatic**: No configuration needed. If your CPU supports it, we use it.
 
-### 🩺 Hardened System Health
-MonARCH includes the "Butterfly" system engine:
+### 🩺 Hardened System Health & Omni-User UX (v0.3.5)
+MonARCH includes the "Butterfly" system engine and a **dual-core** experience: simple for beginners, transparent for experts.
 *   **Intelligent Startup Probes**: Verifies `pkexec`, `git`, and `polkit` existence before the UI loads.
 *   **Distro-Aware Optimization**: Automatically applies safety guards for Manjaro and performance mirrors for CachyOS.
 *   **Unified Maintenance Wizard**: A single authorized repair flow for Keyring, Security Policies, and Repository synchronization.
+*   **Self-Healing**: If corrupt sync databases or a locked DB are detected during install, the app silently repairs (e.g. "Repairing databases…", "Auto-unlocking…") and retries—no error pop-up for common cases. At startup, the app checks for a stale pacman lock (`needs_startup_unlock`); if one exists it is cleared automatically (via Helper RemoveLock). If **Reduce password prompts** is on (Settings → Workflow & Interface), startup unlock uses the in-app password dialog so the system prompt does not appear at launch. Install can be cancelled (Cancel button or close-with-warning); the lock is cleared after cancel.
+*   **Glass Cockpit**: Settings → General offers **Show Detailed Transaction Logs**; Settings → Maintenance offers **Advanced Repair** (Unlock DB, Fix Keys, Refresh DBs, Clear Cache, Clean Orphans) and **Test Mirrors** per repo (latency in ms).
 
 ### 🛡️ Smart Repository Management
 *   **Soft Disable Architecture**: Disabling a repo hides clutter but keeps system updates secure in the background.
@@ -59,24 +61,26 @@ Stop guessing which "firefox" is the right one. MonARCH intelligently merges res
 *   **GPG Automator**: Missing keys are imported automatically during install.
 *   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
 *   **Polkit Integration**: Privileged operations use `monarch-helper` via `pkexec`; passwordless installs when Polkit rules are installed (see [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md)).
+*   **Optional single-password mode**: In Settings → Workflow & Interface, **Reduce password prompts** lets you enter your password once in MonARCH for the session (~15 min). The password is not stored. This sends the password to the app and is less secure than using the system prompt each time; you can always leave this off and use the system prompt every time.
 
 ### ⚙️ Repository Configuration
-You can personalize your store experience by toggling specific repositories (CachyOS, Manjaro, Chaotic-AUR) in the settings. MonArch uses a **"Soft Disable"** architecture: disabling a repository hides it from search but keeps it active in the background for system updates, ensuring your installed apps always remain secure and up-to-date.
+You can personalize your store experience by toggling specific repositories (CachyOS, Manjaro, Chaotic-AUR) in the settings. MonARCH uses a **"Soft Disable"** architecture: disabling a repository hides it from search but keeps it active in the background for system updates, ensuring your installed apps always remain secure and up-to-date. **Test Mirrors** (Settings → Repositories) runs `rate-mirrors` (or reflector) per repo and shows the top 3 mirrors with latency (ms) without changing system config.
 
 ## 📘 Documentation
+- [**Developer documentation**](docs/DEVELOPER.md) - Setup, architecture, code style, and critical rules for contributors.
 - [Full App Audit](docs/APP_AUDIT.md) - Exhaustive UI/UX, frontend, backend, and feature reference.
 - [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md) - Install/update flow, Polkit, and passwordless setup.
 - [Troubleshooting Guide](docs/TROUBLESHOOTING.md) - Fix GPG, lock files, and database issues.
-- [Security Policy](SECURITY.md) - How to report vulnerabilities.
+- [Security Policy](SECURITY.md) - How to report vulnerabilities; [Fort Knox Audit](docs/SECURITY_AUDIT_FORT_KNOX.md) - Security & Arch compliance.
 - [Architecture](docs/ARCHITECTURE.md) - Technical design.
 
 ## 🚀 Installation
 
 ### Option 1: Pre-built Binary (Recommended)
-Download the latest `monarch-store-0.3.5_alpha.1-x86_64.pkg.tar.zst` (or current version) from the [Releases Page](https://github.com/cpg716/monarch-store/releases).
+Download the latest `monarch-store-0.3.5_alpha-x86_64.pkg.tar.zst` (or current version) from the [Releases Page](https://github.com/cpg716/monarch-store/releases).
 
 ```bash
-sudo pacman -U monarch-store-0.3.5_alpha.1-1-x86_64.pkg.tar.zst
+sudo pacman -U monarch-store-0.3.5_alpha-1-x86_64.pkg.tar.zst
 ```
 
 ### Option 2: Build from Source

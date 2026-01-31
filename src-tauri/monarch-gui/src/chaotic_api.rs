@@ -205,7 +205,7 @@ impl ChaoticApiClient {
                 Ok(pkg) => packages.push(pkg),
                 Err(e) => {
                     // Log the error but don't fail the whole batch
-                    eprintln!("WARN: Failed to parse package at index {}: {}", i, e);
+                    log::warn!("Failed to parse package at index {}: {}", i, e);
                 }
             }
         }
@@ -240,6 +240,23 @@ impl ChaoticApiClient {
         }
 
         None
+    }
+
+    /// Look up multiple packages by name in one go (uses cached full list).
+    pub async fn get_packages_by_names(
+        &self,
+        names: &[String],
+    ) -> Result<std::collections::HashMap<String, ChaoticPackage>, String> {
+        let packages = self.fetch_packages().await?;
+        let name_set: std::collections::HashSet<&str> =
+            names.iter().map(String::as_str).collect();
+        let mut out = std::collections::HashMap::new();
+        for pkg in packages.iter() {
+            if name_set.contains(pkg.pkgname.as_str()) {
+                out.insert(pkg.pkgname.clone(), pkg.clone());
+            }
+        }
+        Ok(out)
     }
 
     pub async fn fetch_trending(&self) -> Result<Vec<TrendingPackage>, String> {
