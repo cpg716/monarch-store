@@ -30,6 +30,7 @@ export function SessionPasswordProvider({ children }: { children: ReactNode }) {
     const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
     const [showModal, setShowModal] = useState(false);
     const [inputValue, setInputValue] = useState('');
+    const inputValueRef = useRef(''); // Sync ref to avoid stale state in submit callback
     const resolveRef = useRef<((p: string | null) => void) | null>(null);
 
     const requestSessionPassword = useCallback((): Promise<string | null> => {
@@ -39,25 +40,29 @@ export function SessionPasswordProvider({ children }: { children: ReactNode }) {
         return new Promise((resolve) => {
             resolveRef.current = resolve;
             setInputValue('');
+            inputValueRef.current = '';
             setShowModal(true);
         });
     }, [reducePasswordPrompts]);
 
     const submit = useCallback((usePassword: boolean) => {
-        const p = usePassword ? inputValue.trim() || null : null;
+        // Use ref for immediate value access (fixes stale closure if Enter is pressed fast)
+        const val = inputValueRef.current;
+        const p = usePassword ? val.trim() || null : null;
         if (p) setCachedPassword(p);
         resolveRef.current?.(p);
         resolveRef.current = null;
         setInputValue('');
+        inputValueRef.current = '';
         setShowModal(false);
-    }, [inputValue]);
+    }, []); // No dependency on inputValue needed now
 
     return (
         <SessionPasswordContext.Provider value={{ requestSessionPassword }}>
             {children}
             {showModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-label="Session password">
-                    <div className="bg-app-card border border-app-border rounded-2xl shadow-2xl p-6 max-w-md w-full space-y-4">
+                    <div className="bg-app-card border border-app-border rounded-2xl shadow-2xl p-6 max-w-md w-full space-y-4 animate-in zoom-in-95 duration-200">
                         <div className="flex items-center gap-3">
                             <div className="p-2 bg-amber-500/20 rounded-xl">
                                 <Lock size={24} className="text-amber-500" />
@@ -71,7 +76,10 @@ export function SessionPasswordProvider({ children }: { children: ReactNode }) {
                             type="password"
                             placeholder="System password"
                             value={inputValue}
-                            onChange={(e) => setInputValue(e.target.value)}
+                            onChange={(e) => {
+                                setInputValue(e.target.value);
+                                inputValueRef.current = e.target.value;
+                            }}
                             onKeyDown={(e) => { if (e.key === 'Enter') submit(true); if (e.key === 'Escape') submit(false); }}
                             className="w-full bg-app-bg border border-app-border rounded-xl px-4 py-3 text-app-fg placeholder:text-app-muted focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                             autoFocus

@@ -10,6 +10,9 @@
 - **Security (Fort Knox):** Helper restricts `WriteFile`/`WriteFiles` to `/etc/pacman.d/monarch/` only; command file must be owned by invoking user when using pkexec; 800 ms debounce on helper invokes. See [SECURITY_AUDIT_FORT_KNOX](docs/SECURITY_AUDIT_FORT_KNOX.md).
 - **Telemetry:** Aptabase tracking verified; `onboarding_completed` and `uninstall_package` events added; privacy toggle correct in onboarding and settings; store `checkTelemetry` uses error service.
 - **Error reporting:** Error service used app-wide (App, Settings, Onboarding, InstallMonitor, store, hooks, RepoStatusContext, main); no `console.error` in critical paths.
+- **Double Password Prompt Fix:** Resolved a race condition in the session password dialog that caused the backend to receive an empty password, triggering an unnecessary system prompt.
+- **Installation Resilience:** Installation engine now gracefully handles missing sync databases (e.g. after a force refresh) by skipping pre-flight checks and letting the main sync transaction handle it.
+- **CI/CD Reliability:** Fixed the GitHub Action build pipeline (`tauri-action`) to correctly handle the nested project structure and ensure frontend assets are built before packaging.
 - **APIs & clean-up:** Typed `get_cache_size`/`get_orphans_with_size`; Rust logging and unwrap hardening; frontend `AppState` typing; docs cleaned and Fort Knox linked.
 
 ## v0.3.5-alpha (base)
