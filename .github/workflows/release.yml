@@ -51,6 +51,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_KEY_PASSWORD }}
         with:
+          projectPath: './src-tauri/monarch-gui'
           tagName: v__VERSION__
           releaseName: 'MonArch Store v__VERSION__'
           releaseBody: 'Experimental Alpha Release. See assets below for installation.'
