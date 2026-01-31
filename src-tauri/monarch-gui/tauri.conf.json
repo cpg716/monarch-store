@@ -4,9 +4,9 @@
   "version": "0.3.5-alpha",
   "identifier": "com.monarch.store",
   "build": {
-    "beforeDevCommand": "npm run dev || (cd ../.. && npm run dev)",
+    "beforeDevCommand": "cd $(git rev-parse --show-toplevel) && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build || (cd ../.. && npm run build)",
+    "beforeBuildCommand": "cd $(git rev-parse --show-toplevel) && npm run build",
     "frontendDist": "../../dist"
   },
   "app": {
