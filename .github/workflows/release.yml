@@ -39,6 +39,9 @@ jobs:
       - name: install frontend dependencies
         run: npm install
 
+      - name: build frontend
+        run: npm run build
+
       - name: build monarch-helper
         run: |
           cd src-tauri
