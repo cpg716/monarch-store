@@ -17,18 +17,21 @@ pub enum PackageSource {
     Endeavour,
     #[serde(rename = "manjaro")]
     Manjaro,
+    #[serde(rename = "local")]
+    Local,
 }
 
 impl PackageSource {
     pub fn priority(&self) -> u8 {
         match self {
+            PackageSource::Official => 1,
             PackageSource::Chaotic => 1,
-            PackageSource::Official => 2,
-            PackageSource::CachyOS => 3,
-            PackageSource::Manjaro => 4,
-            PackageSource::Garuda => 4,
-            PackageSource::Endeavour => 4,
-            PackageSource::Aur => 5,
+            PackageSource::CachyOS => 1,
+            PackageSource::Manjaro => 1,
+            PackageSource::Garuda => 1,
+            PackageSource::Endeavour => 1,
+            PackageSource::Aur => 2,
+            PackageSource::Local => 3,
         }
     }
 
@@ -37,6 +40,7 @@ impl PackageSource {
     pub fn from_repo_name(name: &str) -> Self {
         match name {
             "chaotic-aur" => PackageSource::Chaotic,
+            "monarch" => PackageSource::Official,
             n if n.starts_with("cachyos") => PackageSource::CachyOS,
             n if n.starts_with("manjaro") => PackageSource::Manjaro,
             n if n.starts_with("garuda") => PackageSource::Garuda,

@@ -1,4 +1,4 @@
-import { Zap } from 'lucide-react';
+import { Zap, AlertTriangle } from 'lucide-react';
 import TrendingSection from '../components/TrendingSection';
 import CategoryGrid from '../components/CategoryGrid';
 import { useSmartEssentials } from '../hooks/useSmartEssentials';
@@ -37,6 +37,20 @@ export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }
                     >
                         See All
                     </button>
+                </div>
+
+                {/* ALPHA WARNING BANNER */}
+                <div className="mx-2 mb-6 p-4 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-center gap-4 animate-in slide-in-from-top-2">
+                    <div className="p-2 bg-violet-500/20 rounded-full text-violet-500">
+                        <AlertTriangle size={20} />
+                    </div>
+                    <div>
+                        <h3 className="font-bold text-violet-500 text-sm">Experimental Alpha Release</h3>
+                        <p className="text-xs text-violet-500/80">
+                            MonARCH Store is in early Alpha. While it is functional, package installations and updates are experimental.
+                            Use with caution on production systems.
+                        </p>
+                    </div>
                 </div>
 
                 {/* VECTOR 4: OFFLINE BANNER */}

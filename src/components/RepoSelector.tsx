@@ -55,6 +55,8 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                 return { label: 'Official', badge: 'OFFICIAL', icon: Server, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/20', recommended: true };
             case 'aur':
                 return { label: 'AUR (Source Build)', badge: 'AUR', icon: Hammer, color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/20' };
+            case 'local':
+                return { label: 'Local (Manual Install)', badge: 'LOCAL', icon: Server, color: 'text-neutral-500', bg: 'bg-neutral-500/10 border-neutral-500/20' };
             default:
                 return { label: source, badge: source.toUpperCase(), icon: Server, color: 'text-slate-600 dark:text-app-muted', bg: 'bg-slate-100 dark:bg-app-subtle border-slate-200 dark:border-app-border' };
         }

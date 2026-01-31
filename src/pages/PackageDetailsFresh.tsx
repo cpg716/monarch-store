@@ -40,7 +40,7 @@ interface PackageDetailsProps {
 }
 
 interface PackageVariant {
-    source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour' | 'manjaro';
+    source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour' | 'manjaro' | 'local';
     version: string;
     repo_name?: string;
     pkg_name?: string;
@@ -75,6 +75,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
     const [reviewTitle, setReviewTitle] = useState('');
     const [reviewBody, setReviewBody] = useState('');
     const [reviewRating, setReviewRating] = useState(5);
+    const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 
     // Pagination for reviews
     const [visibleReviewsCount, setVisibleReviewsCount] = useState(5);
@@ -192,21 +193,43 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
     };
 
     const handleReviewSubmit = async () => {
+        if (!reviewBody.trim()) {
+            errorService.reportError("Please write a comment.");
+            return;
+        }
+
+        // Prevent duplicate (basic check)
+        const alreadyReviewed = reviews.some(r => r.source === 'monarch' && r.comment.includes(reviewBody) && r.rating === reviewRating);
+        if (alreadyReviewed) {
+            success("You already submitted this review.");
+            setShowReviewForm(false);
+            return;
+        }
+
+        setIsSubmittingReview(true);
         try {
-            await submitReview(pkg.name, reviewRating, reviewTitle + "\n\n" + reviewBody, "MonArch User");
+            // Note: We combine Title + Body because Supabase only has 'comment'. Ideally migration should separate them.
+            const fullComment = reviewTitle ? `${reviewTitle}\n\n${reviewBody}` : reviewBody;
+
+            await submitReview(pkg.name, reviewRating, fullComment, "MonArch User");
             setShowReviewForm(false);
             setReviewTitle(''); setReviewBody('');
-            refreshReviews();
+            await refreshReviews(); // Force refresh via hook wrapper
+
             invoke('track_event', {
-              event: 'review_submitted',
-              payload: {
-                package: pkg.name,
-                rating: reviewRating,
-                rating_bucket: reviewRating <= 2 ? '1-2' : reviewRating <= 3 ? '3' : '4-5',
-              },
+                event: 'review_submitted',
+                payload: {
+                    package: pkg.name,
+                    rating: reviewRating,
+                    rating_bucket: reviewRating <= 2 ? '1-2' : reviewRating <= 3 ? '3' : '4-5',
+                },
             });
             success("Review submitted!");
-        } catch (e) { errorService.reportError(e as Error | string); }
+        } catch (e) {
+            errorService.reportError(e as Error | string);
+        } finally {
+            setIsSubmittingReview(false);
+        }
     };
 
     const fetchPkgbuild = async () => {
@@ -225,12 +248,27 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
 
     // --- Computed ---
 
+    // Review Filtering & Sorting State
+    const [sortOrder, setSortOrder] = useState<'newest' | 'oldest' | 'highest' | 'lowest'>('newest');
+    const [filterRating, setFilterRating] = useState<number | null>(null);
+
     const screenshots = (fullMeta?.screenshots && fullMeta.screenshots.length > 0)
         ? fullMeta.screenshots
         : (pkg.screenshots && pkg.screenshots.length > 0) ? pkg.screenshots : [];
 
-    const displayedReviews = reviews.slice(0, visibleReviewsCount);
-    const hasMoreReviews = reviews.length > visibleReviewsCount;
+    // Filter and Sort Logic
+    const processedReviews = reviews
+        .filter(r => filterRating === null || Math.round(r.rating) === filterRating)
+        .sort((a, b) => {
+            if (sortOrder === 'newest') return b.date.getTime() - a.date.getTime();
+            if (sortOrder === 'oldest') return a.date.getTime() - b.date.getTime();
+            if (sortOrder === 'highest') return b.rating - a.rating;
+            if (sortOrder === 'lowest') return a.rating - b.rating;
+            return 0;
+        });
+
+    const displayedReviews = processedReviews.slice(0, visibleReviewsCount);
+    const hasMoreReviews = processedReviews.length > visibleReviewsCount;
 
     return (
         <motion.div
@@ -634,10 +672,40 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                             </section>
 
                             {/* REVIEWS TAB - Attached reviewsRef for autoscroll */}
+                            {/* REVIEWS TAB - Attached reviewsRef for autoscroll */}
                             <section ref={reviewsRef}>
-                                <div className="flex items-center justify-between mb-8">
+                                <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
                                     <h3 className="text-xl font-bold text-white">User Reviews ({reviews.length})</h3>
-                                    <button onClick={() => setShowReviewForm(true)} className="px-4 py-2 bg-blue-600/10 text-blue-400 rounded-lg hover:bg-blue-600/20 font-bold transition-colors">Write a Review</button>
+
+                                    <div className="flex items-center gap-3">
+                                        {/* Sort Control */}
+                                        <select
+                                            value={sortOrder}
+                                            onChange={(e) => setSortOrder(e.target.value as any)}
+                                            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-blue-500 transition-colors"
+                                        >
+                                            <option value="newest" className="bg-gray-800 text-white">Newest First</option>
+                                            <option value="oldest" className="bg-gray-800 text-white">Oldest First</option>
+                                            <option value="highest" className="bg-gray-800 text-white">Highest Rated</option>
+                                            <option value="lowest" className="bg-gray-800 text-white">Lowest Rated</option>
+                                        </select>
+
+                                        {/* Filter Control */}
+                                        <select
+                                            value={filterRating || ''}
+                                            onChange={(e) => setFilterRating(e.target.value ? Number(e.target.value) : null)}
+                                            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-blue-500 transition-colors"
+                                        >
+                                            <option value="" className="bg-gray-800 text-white">All Stars</option>
+                                            <option value="5" className="bg-gray-800 text-white">5 Stars</option>
+                                            <option value="4" className="bg-gray-800 text-white">4 Stars</option>
+                                            <option value="3" className="bg-gray-800 text-white">3 Stars</option>
+                                            <option value="2" className="bg-gray-800 text-white">2 Stars</option>
+                                            <option value="1" className="bg-gray-800 text-white">1 Star</option>
+                                        </select>
+
+                                        <button onClick={() => setShowReviewForm(true)} className="px-4 py-2 bg-blue-600/10 text-blue-400 rounded-lg hover:bg-blue-600/20 font-bold transition-colors whitespace-nowrap">Write a Review</button>
+                                    </div>
                                 </div>
 
                                 {/* Review Form */}
@@ -651,7 +719,14 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                         <textarea value={reviewBody} onChange={e => setReviewBody(e.target.value)} placeholder="Share your experience..." className="w-full bg-black/20 border border-white/10 rounded-xl p-4 mb-3 text-white focus:border-blue-500 outline-none transition-colors" rows={4} />
                                         <div className="flex justify-end gap-3">
                                             <button onClick={() => setShowReviewForm(false)} className="px-6 py-2 text-zinc-400 hover:text-white transition-colors">Cancel</button>
-                                            <button onClick={handleReviewSubmit} className="px-8 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold shadow-lg shadow-blue-600/20">Submit</button>
+                                            <button
+                                                onClick={handleReviewSubmit}
+                                                disabled={isSubmittingReview}
+                                                className="px-8 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-bold shadow-lg shadow-blue-600/20 flex items-center gap-2"
+                                            >
+                                                {isSubmittingReview ? <Loader2 size={16} className="animate-spin" /> : null}
+                                                {isSubmittingReview ? "Submitting..." : "Submit"}
+                                            </button>
                                         </div>
                                     </div>
                                 )}
@@ -666,19 +741,28 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                         displayedReviews.map((review, idx) => (
                                             <div key={idx} className="p-6 bg-app-card rounded-2xl border border-white/5 hover:border-white/10 transition-colors">
                                                 <div className="flex justify-between items-start mb-2">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white shadow-lg shrink-0">
                                                             {review.userName.charAt(0)}
                                                         </div>
-                                                        <span className="font-bold text-white">{review.userName}</span>
-                                                        <span className="text-xs text-app-muted">• {review.date ? new Date(review.date).toLocaleDateString() : 'Unknown Date'}</span>
+                                                        <div className="flex flex-col">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="font-bold text-white text-sm">{review.userName}</span>
+                                                                {review.source === 'monarch' ? (
+                                                                    <span className="px-1.5 py-0.5 rounded-md bg-purple-500/20 text-purple-300 text-[10px] font-bold border border-purple-500/30 uppercase tracking-wide">MonArch</span>
+                                                                ) : (
+                                                                    <span className="px-1.5 py-0.5 rounded-md bg-blue-500/20 text-blue-300 text-[10px] font-bold border border-blue-500/30 uppercase tracking-wide">ODRS</span>
+                                                                )}
+                                                            </div>
+                                                            <span className="text-[10px] text-app-muted">{review.date ? new Date(review.date).toLocaleDateString() : 'Unknown Date'}</span>
+                                                        </div>
                                                     </div>
                                                     <div className="flex gap-0.5">
                                                         {[1, 2, 3, 4, 5].map(s => <Star key={s} size={14} fill={s <= review.rating ? "#fbbf24" : "none"} className={s <= review.rating ? "text-amber-400" : "text-zinc-700"} />)}
                                                     </div>
                                                 </div>
                                                 {/* We don't have a distinct separate title field in the interface unless we parse it. For now, showing comment. */}
-                                                <p className="text-app-muted text-sm leading-relaxed whitespace-pre-line mt-2">{review.comment}</p>
+                                                <p className="text-app-fg/80 text-sm leading-relaxed whitespace-pre-line mt-3 pl-11">{review.comment}</p>
                                             </div>
                                         ))
                                     )}

@@ -4,6 +4,9 @@
 
 Common issues users encounter when using MonARCH Store.
 
+> [!CAUTION]
+> **MonARCH Store is in ALPHA.** Installation and update operations are experimental. If you encounter persistent failures, please use the standard terminal tools (`pacman`, `yay`, etc.) and report the issue.
+
 **Install/Update not working or password prompts:** See [Install & Update Audit](INSTALL_UPDATE_AUDIT.md) for the full flow, Polkit setup, and passwordless configuration (Polkit rules, helper path, policy).
 
 ## 🖥️ "I don't see the latest Settings / UI changes"

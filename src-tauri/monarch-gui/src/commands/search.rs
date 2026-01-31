@@ -41,12 +41,52 @@ pub async fn search_packages(
         .await;
     });
 
-    // 1. Concurrent Search: ALPM (Local/Repo) + AUR (Web)
+    // 1. Concurrent Search: ALPM (Local/Repo) + Monarch Cache + AUR (Web)
     let aur_enabled = state_repo.inner().is_aur_enabled().await;
     let query_cloned = query.clone();
 
     let alpm_handle =
         tokio::task::spawn_blocking(move || crate::alpm_read::search_local_dbs(&query_cloned));
+
+    // Monarch Cache Search (Backing Store for synced 3rd party repos)
+    let repo_manager = state_repo.inner().clone();
+    let query_parts: Vec<String> = query.split_whitespace().map(|s| s.to_string()).collect();
+    let cache_handle = tokio::spawn(async move {
+        let query_regexes: Vec<regex::Regex> = query_parts
+            .iter()
+            .filter_map(|p| {
+                regex::RegexBuilder::new(&regex::escape(p))
+                    .case_insensitive(true)
+                    .build()
+                    .ok()
+            })
+            .collect();
+
+        if query_regexes.is_empty() {
+            return Vec::new();
+        }
+
+        let cache = repo_manager.cache.read().await;
+        let mut results = Vec::new();
+        for (repo_name, pkgs) in cache.iter() {
+            for pkg in pkgs {
+                let mut all_match = true;
+                for re in &query_regexes {
+                    if !re.is_match(&pkg.name) && !re.is_match(&pkg.description) {
+                        all_match = false;
+                        break;
+                    }
+                }
+
+                if all_match {
+                    let mut p = pkg.clone();
+                    p.source = models::PackageSource::from_repo_name(repo_name);
+                    results.push(p);
+                }
+            }
+        }
+        results
+    });
 
     let aur_handle = async {
         if aur_enabled && query.len() >= 2 {
@@ -56,13 +96,27 @@ pub async fn search_packages(
         }
     };
 
-    let (alpm_res, aur_pkgs) = tokio::join!(alpm_handle, aur_handle);
+    let (alpm_res, cache_res, aur_pkgs) = tokio::join!(alpm_handle, cache_handle, aur_handle);
     let mut packages = alpm_res.map_err(|e| e.to_string())?;
+    let cache_pkgs = cache_res.map_err(|e| e.to_string())?;
+
+    // Merge ALPM and Cache first
+    packages.extend(cache_pkgs);
 
     // 2. Integration & Hydration
     for pkg in aur_pkgs {
         // Hydrate AUR results if they exist in ALPM (already installed or in chaotic)
-        if !packages.iter().any(|p| p.name == pkg.name) {
+        if let Some(existing) = packages.iter_mut().find(|p| p.name == pkg.name) {
+            if existing.source == models::PackageSource::Local {
+                existing.source = models::PackageSource::Aur;
+                // Hydrate metadata from AUR if strictly better?
+                existing.maintainer = pkg.maintainer.clone();
+                existing.num_votes = pkg.num_votes;
+                existing.out_of_date = pkg.out_of_date;
+                existing.first_submitted = pkg.first_submitted;
+                existing.last_modified = pkg.last_modified;
+            }
+        } else {
             packages.push(pkg);
         }
     }
@@ -83,22 +137,14 @@ pub async fn search_packages(
     // 4. Prioritization & Deduplication
     utils::sort_packages_by_relevance(&mut packages, &query);
 
-    // Custom priority: Installed > Official > AUR
+    // Custom priority: Installed to Top.
+    // We use a stable sort and return Equal for same-status to preserve the
+    // relevance ranking from sort_packages_by_relevance.
     packages.sort_by(|a, b| {
         if a.installed != b.installed {
             return b.installed.cmp(&a.installed);
         }
-        let a_prio = match a.source {
-            models::PackageSource::Official | models::PackageSource::Chaotic => 0,
-            models::PackageSource::Aur => 1,
-            _ => 2,
-        };
-        let b_prio = match b.source {
-            models::PackageSource::Official | models::PackageSource::Chaotic => 0,
-            models::PackageSource::Aur => 1,
-            _ => 2,
-        };
-        a_prio.cmp(&b_prio)
+        std::cmp::Ordering::Equal
     });
 
     Ok(utils::merge_and_deduplicate(Vec::new(), packages))
@@ -199,25 +245,55 @@ pub async fn get_packages_by_names(
         packages.push(pkg);
     }
 
-    // 3. AUR Fallback (Crucial for Essentials like -bin packages)
+    // 3. AUR Fallback & Local Enhancement (Crucial for Essentials and accurate labeling of foreign pkgs)
     let aur_enabled = state_repo.inner().is_aur_enabled().await;
     if aur_enabled {
         let existing_names: std::collections::HashSet<String> =
             packages.iter().map(|p| p.name.clone()).collect();
-        let missing_names: Vec<&str> = names
+        let missing_names: Vec<String> = names
             .iter()
             .filter(|n| !existing_names.contains(*n))
-            .map(|s| s.as_str())
+            .cloned()
             .collect();
 
-        if !missing_names.is_empty() {
-            if let Ok(aur_results) = aur_api::get_multi_info(&missing_names).await {
+        // Also identify 'Local' packages that we should check against AUR to see if they are actually from AUR
+        let local_names: Vec<String> = packages
+            .iter()
+            .filter(|p| p.source == models::PackageSource::Local)
+            .map(|p| p.name.clone())
+            .collect();
+
+        // Combine missing and local for a single batch query
+        let mut query_names = missing_names;
+        query_names.extend(local_names);
+        query_names.sort();
+        query_names.dedup();
+
+        if !query_names.is_empty() {
+            let query_refs: Vec<&str> = query_names.iter().map(|s| s.as_str()).collect();
+            if let Ok(aur_results) = aur_api::get_multi_info(&query_refs).await {
                 for mut pkg in aur_results {
-                    if let Ok(loader) = state_meta.inner().0.lock() {
-                        pkg.app_id = loader.find_app_id(&pkg.name);
+                    if let Some(existing) = packages.iter_mut().find(|p| p.name == pkg.name) {
+                        // If it was labeled Local, but we found it in AUR, upgrade it
+                        if existing.source == models::PackageSource::Local {
+                            existing.source = models::PackageSource::Aur;
+                            existing.maintainer = pkg.maintainer;
+                            existing.num_votes = pkg.num_votes;
+                            existing.out_of_date = pkg.out_of_date;
+                            existing.first_submitted = pkg.first_submitted;
+                            existing.last_modified = pkg.last_modified;
+                            if existing.url.is_none() {
+                                existing.url = pkg.url;
+                            }
+                        }
+                    } else {
+                        // It's a missing package
+                        if let Ok(loader) = state_meta.inner().0.lock() {
+                            pkg.app_id = loader.find_app_id(&pkg.name);
+                        }
+                        pkg.display_name = Some(crate::utils::to_pretty_name(&pkg.name));
+                        packages.push(pkg);
                     }
-                    pkg.display_name = Some(crate::utils::to_pretty_name(&pkg.name));
-                    packages.push(pkg);
                 }
             }
         }
@@ -827,6 +903,7 @@ pub async fn get_category_packages_paginated(
                     models::PackageSource::Garuda => "garuda",
                     models::PackageSource::Endeavour => "endeavour",
                     models::PackageSource::Manjaro => "manjaro",
+                    models::PackageSource::Local => "local",
                 };
 
                 if p_source == "chaotic-aur"

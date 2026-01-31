@@ -34,6 +34,7 @@ pub struct Review {
     pub date_created: Option<f64>,
     pub version: Option<String>,
     pub distro: Option<String>,
+    pub locale: Option<String>,
 }
 
 // Fetch basic rating summary

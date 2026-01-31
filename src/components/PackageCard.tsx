@@ -12,7 +12,7 @@ export interface Package {
     display_name?: string;
     description: string;
     version: string;
-    source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour' | 'manjaro';
+    source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour' | 'manjaro' | 'local';
     maintainer?: string;
     votes?: number;
     url?: string; // Upstream URL

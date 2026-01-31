@@ -44,7 +44,7 @@ fn default_notifications_enabled() -> bool {
 #[derive(Clone)]
 pub struct RepoManager {
     // Map RepoName -> List of Packages
-    cache: Arc<RwLock<HashMap<String, Vec<Package>>>>,
+    pub cache: Arc<RwLock<HashMap<String, Vec<Package>>>>,
     repos: Arc<RwLock<Vec<RepoConfig>>>,
     pub aur_enabled: Arc<RwLock<bool>>,
     pub one_click_enabled: Arc<RwLock<bool>>,
@@ -61,7 +61,7 @@ pub fn calculate_package_rank(pkg: &Package, opt_level: u8, distro: &crate::dist
     if distro.capabilities.default_search_sort == "source_first" {
          match pkg.source {
             PackageSource::Official | PackageSource::Manjaro => 0, // Highest Priority
-            PackageSource::Aur => 2,
+            PackageSource::Aur | PackageSource::Local => 2,
             PackageSource::Chaotic | PackageSource::CachyOS | PackageSource::Garuda | PackageSource::Endeavour => {
                  // Deprioritize unofficial binaries massively to warn user
                 10 
@@ -563,14 +563,22 @@ impl RepoManager {
         }
 
         // 3. Execute Batches
+        let mut changed = false;
         if !files_to_write.is_empty() {
             let _ = invoke_helper(app, HelperCommand::WriteFiles { files: files_to_write }, password.clone()).await?.recv().await;
+            changed = true;
         }
         if !paths_to_remove.is_empty() {
             let _ = invoke_helper(app, HelperCommand::RemoveFiles { paths: paths_to_remove }, password.clone()).await?.recv().await;
+            changed = true;
         }
 
-        // 4. Force refresh sync databases after writing repo configs (Apple Store–like: must succeed so install/update works)
+        // 4. Force refresh sync databases after writing repo configs (Apple Store–like: must succeed)
+        // Optimization: only sync if we actually changed something on disk.
+        if !changed {
+            return Ok(());
+        }
+
         let run_sync = || async {
             let mut rx = invoke_helper(app, HelperCommand::ForceRefreshDb, password.clone()).await?;
             let mut last_msg: Option<String> = None;

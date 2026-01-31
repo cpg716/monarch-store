@@ -4,6 +4,9 @@
 
 This document audits the install and update flows, root causes of failures, and how to make installs/updates work **without** a password prompt when Polkit is configured.
 
+> [!CAUTION]
+> **ALPHA RELEASE NOTICE**: The installation and update engine described herein is in an **Experimental Alpha** state. While the architecture is designed for robustness, users may encounter synchronization failures or transaction errors. Please use with caution on production systems.
+
 ---
 
 ## 1. Architecture Overview

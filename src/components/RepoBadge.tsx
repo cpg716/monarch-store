@@ -26,7 +26,9 @@ export default function RepoBadge({ repo, className }: RepoBadgeProps) {
             ? ['Optimized', 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200']
             : isCommunity
                 ? ['AUR', 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200']
-                : [s || 'Repo', 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'];
+                : s === 'local'
+                    ? ['Local', 'bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-300']
+                    : [s || 'Repo', 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'];
 
     return (
         <span

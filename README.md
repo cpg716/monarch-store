@@ -5,6 +5,17 @@
 
 **Last updated:** 2025-01-31 (v0.3.5-alpha)
 
+## ⚠️ Alpha Disclaimer
+
+**MonARCH Store is currently in early ALPHA.** 
+
+While the core discovery and browsing experience is stable, the underlying **installation and update engine is experimental.** Users may encounter edge cases or failures depending on their specific system configuration, mirror health, or distribution. 
+
+> [!WARNING]
+> Use this software with caution on production systems. Always ensure you have a backup of your important data and be prepared to use the terminal (`pacman`) if a GUI operation fails.
+
+---
+
 A premium, distro-agnostic software center built with Tauri and React. MonARCH automatically detects your distribution and adapts its capabilities to ensure safety and performance.
 
 ![MonARCH Store Dashboard](screenshots/home.png)
@@ -62,6 +73,14 @@ Stop guessing which "firefox" is the right one. MonARCH intelligently merges res
 *   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
 *   **Polkit Integration**: Privileged operations use `monarch-helper` via `pkexec`; passwordless installs when Polkit rules are installed (see [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md)).
 *   **Optional single-password mode**: In Settings → Workflow & Interface, **Reduce password prompts** lets you enter your password once in MonARCH for the session (~15 min). The password is not stored. This sends the password to the app and is less secure than using the system prompt each time; you can always leave this off and use the system prompt every time.
+65: 
+66: ### ⭐ Hybrid Reviews & Rich Metadata
+67: MonARCH combines the best of the web with the power of Arch:
+68: *   **Smart Composition**: Automatically finds high-res icons and screenshots from Flathub even for native packages (without installing Flatpak).
+69: *   **Hybrid Ratings**: Merges global ratings from **ODRS** (Gnome/KDE users) with local ratings from **MonARCH** users into a single score.
+70: *   **365-Day Currency**: Ratings are strictly filtered to the last year so you always see the *current* state of the software.
+71: *   **Source Badges**: Clearly see if a review comes from the global Linux community (Blue Badge) or a fellow MonARCH user (Purple Badge).
+72: *   [Learn more about the Review System](docs/REVIEWS.md)
 
 ### ⚙️ Repository Configuration
 You can personalize your store experience by toggling specific repositories (CachyOS, Manjaro, Chaotic-AUR) in the settings. MonARCH uses a **"Soft Disable"** architecture: disabling a repository hides it from search but keeps it active in the background for system updates, ensuring your installed apps always remain secure and up-to-date. **Test Mirrors** (Settings → Repositories) runs `rate-mirrors` (or reflector) per repo and shows the top 3 mirrors with latency (ms) without changing system config.

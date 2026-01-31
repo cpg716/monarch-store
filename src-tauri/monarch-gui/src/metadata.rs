@@ -391,7 +391,6 @@ impl AppStreamLoader {
             _ => None,
         });
 
-
         let screenshots = component
             .screenshots
             .iter()
@@ -851,6 +850,12 @@ pub async fn get_metadata_core(
         // Merge Flathub enhancements into AppStream base
         if let Some(f_meta) = flathub_meta {
             let enriched = crate::flathub_api::flathub_to_app_metadata(&f_meta, &pkg_name);
+
+            // CRITICAL: Upgrade the App ID if Flathub provides a canonical one (e.g. org.foo.Bar)
+            // This ensures ODRS reviews work even if local AppStream only had "foo" as ID.
+            if enriched.app_id.contains('.') && !base.app_id.contains('.') {
+                base.app_id = enriched.app_id.clone();
+            }
 
             if base.icon_url.is_none() {
                 base.icon_url = enriched.icon_url;

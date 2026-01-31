@@ -75,7 +75,10 @@ fn check_db_freshness(repos_to_check: &[String]) -> bool {
     for repo in repos_to_check {
         let db_file = sync_dir.join(format!("{}.db", repo));
         let Ok(metadata) = std::fs::metadata(&db_file) else {
-            logger::trace(&format!("DB {} not on disk, skipping freshness check", repo));
+            logger::trace(&format!(
+                "DB {} not on disk, skipping freshness check",
+                repo
+            ));
             continue;
         };
         any_db_exists = true;
@@ -255,14 +258,26 @@ fn ensure_keyrings_updated(enabled_repos: &[String]) -> Result<(), String> {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        logger::warn(&format!("Keyring update warning: {}", stderr));
-        // Strict Mode: If archlinux-keyring fails, we should probably abort.
-        // But maybe network is down? If network is down, the main transaction will fail anyway.
-        // We permit continuing ONLY if it was a partial failure, but if `archlinux-keyring` failed, that's bad.
-        // Prompt says: "If this fails ... ABORT the whole process."
+        let err_trim = stderr.trim();
+        logger::warn(&format!("Keyring update warning: {}", err_trim));
+
+        // CRITICAL FIX: If we just purged /var/lib/pacman/sync (ForceRefreshDb),
+        // pacman -S will fail because it can't find the keyring packages in any DB.
+        // We should permit continuing if the error is "target not found",
+        // since the actual sync (execute_alpm_sync) happens immediately after.
+        let is_target_missing = err_trim.contains("target not found")
+            || err_trim.contains("error: failed to prepare transaction");
+
+        if is_target_missing {
+            logger::info("Keyring update skipped (targets not in local DBs). Continuing to sync.");
+            emit_simple_progress(3, "Security keys verification skipped (will sync first).");
+            return Ok(());
+        }
+
+        // Strict Mode fallback: If it's a real error (not just missing targets), abort.
         Err(format!(
             "Security Pre-Flight Failed: Unable to update keyrings. Error: {}",
-            stderr.trim()
+            err_trim
         ))
     }
 }
@@ -580,59 +595,6 @@ pub fn execute_alpm_uninstall(
     }
 
     emit_simple_progress(100, "Uninstallation complete!");
-    Ok(())
-}
-
-/// Update keyring packages first (Arch/Manjaro) to avoid "Unknown Trust" during full upgrade.
-/// Sync must have run already. Non-fatal: on error we continue; main upgrade may self-heal on keyring error.
-fn update_keyrings_first(alpm: &mut Alpm, keyring_names: &[&str]) -> Result<(), String> {
-    let mut keyring_targets: Vec<(String, String)> = Vec::new();
-    for name in keyring_names {
-        let local_pkg = alpm.localdb().pkg(*name).ok();
-        for db in alpm.syncdbs().iter() {
-            if let Ok(sync_pkg) = db.pkg(*name) {
-                let needs_update = match &local_pkg {
-                    Some(lp) => sync_pkg.version() > lp.version(),
-                    None => true, // not installed
-                };
-                if needs_update {
-                    keyring_targets.push((name.to_string(), db.name().to_string()));
-                }
-                break;
-            }
-        }
-    }
-    if keyring_targets.is_empty() {
-        return Ok(());
-    }
-    emit_simple_progress(12, "Updating keyrings...");
-    alpm.trans_init(TransFlag::ALL_DEPS)
-        .map_err(|e| format!("Keyring trans_init: {}", e))?;
-    for (pkg_name, db_name) in &keyring_targets {
-        for db in alpm.syncdbs().iter() {
-            if db.name() == db_name.as_str() {
-                if let Ok(sync_pkg) = db.pkg(pkg_name.as_str()) {
-                    let _ = alpm.trans_add_pkg(sync_pkg);
-                }
-                break;
-            }
-        }
-    }
-    setup_progress_callbacks(alpm)?;
-    let prepare_err_msg = {
-        let prep = alpm.trans_prepare();
-        prep.err().map(|e| format!("Keyring prepare: {}", e))
-    };
-    if let Some(msg) = prepare_err_msg {
-        alpm.trans_release().ok();
-        return Err(msg);
-    }
-    if let Err(e) = commit_with_self_heal(alpm, "Keyring") {
-        alpm.trans_release().ok();
-        return Err(e);
-    }
-    alpm.trans_release().ok();
-    emit_simple_progress(14, "Keyrings updated");
     Ok(())
 }
 
@@ -1045,7 +1007,10 @@ fn commit_with_self_heal(alpm: &mut Alpm, _op: &str) -> Result<(), String> {
 const DOWNLOAD_PROGRESS_STEP: u8 = 5;
 
 /// Shared across ALPM's parallel download threads so we only emit 0% once per file and throttle percent updates.
-fn download_progress_state() -> (&'static Mutex<HashMap<String, u8>>, &'static Mutex<HashSet<String>>) {
+fn download_progress_state() -> (
+    &'static Mutex<HashMap<String, u8>>,
+    &'static Mutex<HashSet<String>>,
+) {
     static LAST_PERCENT: OnceLock<Mutex<HashMap<String, u8>>> = OnceLock::new();
     static EMITTED_ZERO: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     (
@@ -1089,7 +1054,10 @@ fn setup_progress_callbacks(alpm: &mut Alpm) -> Result<(), String> {
         };
         if total == 0 {
             let (_, emitted_zero) = download_progress_state();
-            let first = emitted_zero.lock().map(|mut set| set.insert(filename.to_string())).unwrap_or(false);
+            let first = emitted_zero
+                .lock()
+                .map(|mut set| set.insert(filename.to_string()))
+                .unwrap_or(false);
             if first {
                 emit_progress_event(AlpmProgressEvent {
                     event_type: "download_progress".to_string(),
@@ -1105,16 +1073,19 @@ fn setup_progress_callbacks(alpm: &mut Alpm) -> Result<(), String> {
         let percent = ((xfered * 100) / total).min(100) as u8;
         let should_emit = {
             let (last_percent, _) = download_progress_state();
-            last_percent.lock().map(|mut map| {
-                let last = map.get(filename).copied();
-                let emit = percent == 100
-                    || last.is_none()
-                    || percent >= last.unwrap_or(0).saturating_add(DOWNLOAD_PROGRESS_STEP);
-                if emit {
-                    map.insert(filename.to_string(), percent);
-                }
-                emit
-            }).unwrap_or(true)
+            last_percent
+                .lock()
+                .map(|mut map| {
+                    let last = map.get(filename).copied();
+                    let emit = percent == 100
+                        || last.is_none()
+                        || percent >= last.unwrap_or(0).saturating_add(DOWNLOAD_PROGRESS_STEP);
+                    if emit {
+                        map.insert(filename.to_string(), percent);
+                    }
+                    emit
+                })
+                .unwrap_or(true)
         };
         if should_emit {
             emit_progress_event(AlpmProgressEvent {

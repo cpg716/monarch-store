@@ -27,7 +27,9 @@ fn collect_repo_sections_from_conf(conf_path: &str) -> Vec<String> {
             continue;
         }
         if line.to_lowercase().starts_with("include") {
-            let rest = line[6..].trim_start_matches(|c: char| c == '=' || c == ' ').trim();
+            let rest = line[6..]
+                .trim_start_matches(|c: char| c == '=' || c == ' ')
+                .trim();
             let path = rest.trim_matches(|c| c == '"' || c == '\'');
             let full = if path.starts_with('/') {
                 path.to_string()
@@ -57,7 +59,10 @@ fn glob_includes(pattern: &str) -> Vec<String> {
     }
     let dir = path.parent().unwrap_or_else(|| Path::new("/"));
     let file_pattern = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let suffix = file_pattern.find('*').map(|i| &file_pattern[i + 1..]).unwrap_or("");
+    let suffix = file_pattern
+        .find('*')
+        .map(|i| &file_pattern[i + 1..])
+        .unwrap_or("");
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
@@ -113,23 +118,43 @@ pub fn search_local_dbs(query: &str) -> Vec<Package> {
     register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
 
     let mut results = Vec::new();
-    let query_lower = query.to_lowercase();
+    let query_parts: Vec<String> = query.split_whitespace().map(|s| s.to_string()).collect();
+    let query_regexes: Vec<regex::Regex> = query_parts
+        .iter()
+        .filter_map(|p| {
+            regex::RegexBuilder::new(&regex::escape(p))
+                .case_insensitive(true)
+                .build()
+                .ok()
+        })
+        .collect();
+
+    if query_regexes.is_empty() {
+        return Vec::new();
+    }
 
     for db in alpm.syncdbs() {
+        let db_name = db.name();
         for pkg in db.pkgs() {
-            if pkg.name().contains(&query_lower)
-                || pkg
-                    .desc()
-                    .map(|d| d.contains(&query_lower))
-                    .unwrap_or(false)
-            {
+            let n = pkg.name();
+            let d = pkg.desc().unwrap_or("");
+
+            let mut all_match = true;
+            for re in &query_regexes {
+                if !re.is_match(n) && !re.is_match(d) {
+                    all_match = false;
+                    break;
+                }
+            }
+
+            if all_match {
                 let is_installed = alpm.localdb().pkg(pkg.name()).is_ok();
                 results.push(Package {
                     name: pkg.name().to_string(),
                     display_name: Some(crate::utils::to_pretty_name(pkg.name())),
                     description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
                     version: pkg.version().to_string(),
-                    source: PackageSource::from_repo_name(db.name()),
+                    source: PackageSource::from_repo_name(db_name),
                     installed: is_installed,
                     download_size: Some(pkg.download_size() as u64),
                     installed_size: Some(pkg.isize() as u64),
@@ -142,18 +167,24 @@ pub fn search_local_dbs(query: &str) -> Vec<Package> {
     // Also search localdb directly for packages not in syncdbs (e.g. custom AUR builds)
     for pkg in alpm.localdb().pkgs() {
         if !results.iter().any(|r| r.name == pkg.name()) {
-            if pkg.name().contains(&query_lower)
-                || pkg
-                    .desc()
-                    .map(|d| d.contains(&query_lower))
-                    .unwrap_or(false)
-            {
+            let n = pkg.name();
+            let d = pkg.desc().unwrap_or("");
+
+            let mut all_match = true;
+            for re in &query_regexes {
+                if !re.is_match(n) && !re.is_match(d) {
+                    all_match = false;
+                    break;
+                }
+            }
+
+            if all_match {
                 results.push(Package {
                     name: pkg.name().to_string(),
                     display_name: Some(crate::utils::to_pretty_name(pkg.name())),
                     description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
                     version: pkg.version().to_string(),
-                    source: PackageSource::Aur, // Default source for local-only if we don't know better
+                    source: PackageSource::Local, // Default source for local-only if we don't know better
                     installed: true,
                     download_size: Some(pkg.download_size() as u64),
                     installed_size: Some(pkg.isize() as u64),
@@ -193,7 +224,7 @@ pub fn get_package_native(name: &str) -> Option<Package> {
             name: pkg.name().to_string(),
             version: pkg.version().to_string(),
             description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-            source: PackageSource::Aur,
+            source: PackageSource::Local,
             installed: true,
             installed_size: Some(pkg.isize() as u64),
             ..Default::default()
@@ -271,7 +302,7 @@ pub fn get_packages_batch(names: &[String], enabled_repos: &[String]) -> Vec<Pac
                 display_name: Some(crate::utils::to_pretty_name(pkg.name())),
                 description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
                 version: pkg.version().to_string(),
-                source: PackageSource::Aur,
+                source: PackageSource::Local,
                 installed: true,
                 installed_size: Some(pkg.isize() as u64),
                 ..Default::default()
