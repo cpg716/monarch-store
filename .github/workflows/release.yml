@@ -25,7 +25,7 @@ jobs:
       - name: install build dependencies (Arch)
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm git base-devel nodejs npm rustup webkit2gtk-4.1 libappindicator-gtk3 librsvg patchelf mold clang xdg-utils libsoup3 cairo pango gdk-pixbuf2 openssl
+          pacman -S --noconfirm git base-devel nodejs npm rustup webkit2gtk-4.1 libappindicator-gtk3 librsvg patchelf mold clang xdg-utils libsoup3 cairo pango gdk-pixbuf2 openssl fuse2
 
       - uses: actions/checkout@v4
 
@@ -55,6 +55,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_KEY_PASSWORD }}
+          APPIMAGE_EXTRACT_AND_RUN: 1
         with:
           projectPath: './src-tauri/monarch-gui'
           tagName: v0.3.6-alpha
