@@ -1,5 +1,5 @@
 use crate::models::{Package, PackageSource};
-use alpm::{Alpm, SigLevel};
+use alpm::{Alpm, PackageReason, SigLevel};
 use std::path::Path;
 
 /// Collect all repository section names from pacman.conf and any Include'd files
@@ -311,4 +311,102 @@ pub fn get_packages_batch(names: &[String], enabled_repos: &[String]) -> Vec<Pac
     }
 
     results
+}
+
+/// Returns true if a package of the given name is installed (localdb).
+/// Replaces read-only `pacman -Q <name>` checks.
+pub fn is_package_installed(name: &str) -> bool {
+    let alpm = match Alpm::new("/", "/var/lib/pacman") {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    alpm.localdb().pkg(name).is_ok()
+}
+
+/// Returns true if the package exists in any sync database (official or enabled repos).
+/// Replaces read-only `pacman -Si <name>` for "in repo" checks.
+pub fn is_package_in_syncdb(name: &str) -> bool {
+    let alpm = match Alpm::new("/", "/var/lib/pacman") {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
+    for db in alpm.syncdbs() {
+        if db.pkg(name).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns true if the dependency `name` is satisfied: installed or provided by some installed package.
+/// Replaces read-only `pacman -T <name>` for dependency checks.
+pub fn is_dep_satisfied(name: &str) -> bool {
+    let alpm = match Alpm::new("/", "/var/lib/pacman") {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    if alpm.localdb().pkg(name).is_ok() {
+        return true;
+    }
+    for pkg in alpm.localdb().pkgs() {
+        for provide in pkg.provides() {
+            let prov_name = provide.name().split('=').next().unwrap_or(provide.name());
+            if prov_name == name {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns (name, version) of installed packages that are not in any sync DB (foreign/AUR).
+/// Replaces read-only `pacman -Qm`.
+pub fn get_foreign_installed_packages() -> Vec<(String, String)> {
+    let alpm = match Alpm::new("/", "/var/lib/pacman") {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+    register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
+    let in_sync = |n: &str| {
+        for db in alpm.syncdbs() {
+            if db.pkg(n).is_ok() {
+                return true;
+            }
+        }
+        false
+    };
+    alpm.localdb()
+        .pkgs()
+        .iter()
+        .filter(|pkg| !in_sync(pkg.name()))
+        .map(|pkg| (pkg.name().to_string(), pkg.version().to_string()))
+        .collect()
+}
+
+/// Returns names of orphan packages (installed as dependency but no longer required by any package).
+/// Replaces read-only `pacman -Qtdq`.
+pub fn get_orphans_native() -> Vec<String> {
+    let alpm = match Alpm::new("/", "/var/lib/pacman") {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+    let mut required = std::collections::HashSet::new();
+    for pkg in alpm.localdb().pkgs() {
+        for dep in pkg.depends() {
+            required.insert(dep.name().to_string());
+        }
+        for provide in pkg.provides() {
+            let name = provide.name().split('=').next().unwrap_or(provide.name());
+            required.insert(name.to_string());
+        }
+    }
+    alpm.localdb()
+        .pkgs()
+        .iter()
+        .filter(|pkg| {
+            pkg.reason() == PackageReason::Depend && !required.contains(pkg.name())
+        })
+        .map(|pkg| pkg.name().to_string())
+        .collect()
 }

@@ -4,6 +4,24 @@ use crate::repo_manager::RepoManager;
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter, State};
 
+/// Command and label for "Update in terminal" (Apdatifier-style transparency).
+#[derive(Clone, serde::Serialize)]
+pub struct SystemUpdateCommandPayload {
+    pub command: String,
+    pub description: String,
+}
+
+/// Returns the exact command we conceptually run for a full system upgrade.
+/// Use for "Update in terminal": copy to clipboard or open user's terminal.
+/// Always full -Syu (sync + upgrade) — never -Sy alone.
+#[tauri::command]
+pub fn get_system_update_command() -> SystemUpdateCommandPayload {
+    SystemUpdateCommandPayload {
+        command: "sudo pacman -Syu".to_string(),
+        description: "Full system upgrade (sync databases + upgrade all packages)".to_string(),
+    }
+}
+
 /// Payload for update-complete event so the UI can stop spinning and show result without blocking.
 #[derive(Clone, serde::Serialize)]
 pub struct UpdateCompletePayload {
@@ -73,7 +91,10 @@ async fn run_system_update_impl(
     }
 
     // Phase 2: Full System Upgrade (SINGLE TRANSACTION via ALPM)
-    let _ = app.emit("update-status", "Synchronizing databases and upgrading system...");
+    let _ = app.emit(
+        "update-status",
+        "Synchronizing databases and upgrading system...",
+    );
     let _ = app.emit(
         "update-progress",
         UpdateProgressPayload {
@@ -96,14 +117,33 @@ async fn run_system_update_impl(
     let _ = app.emit("update-status", "Waiting for authentication...");
 
     // Use timeout so we can remind the user every 45s if still waiting (e.g. password dialog behind other windows).
+    let mut sysupgrade_failed = false;
     loop {
         match tokio::time::timeout(std::time::Duration::from_secs(45), rx.recv()).await {
             Ok(Some(msg)) => {
                 let _ = app.emit("update-status", &msg.message);
-                let _ = app.emit("install-output", &msg.message);
-                let phase = if msg.message.to_lowercase().contains("sync") || msg.message.to_lowercase().contains("database") {
+
+                // Detect critical failure messages (helper sends "Error: ..." via progress message)
+                if msg.message.starts_with("Error:")
+                    || msg.message.contains("Transaction preparation failed")
+                {
+                    sysupgrade_failed = true;
+                    let _ = app.emit(
+                        "install-output",
+                        &format!("CRITICAL: System update failed: {}", msg.message),
+                    );
+                } else {
+                    let _ = app.emit("install-output", &msg.message);
+                }
+
+                let phase = if msg.message.to_lowercase().contains("sync")
+                    || msg.message.to_lowercase().contains("database")
+                {
                     "refresh"
-                } else if msg.message.to_lowercase().contains("download") || msg.message.to_lowercase().contains("install") || msg.message.to_lowercase().contains("upgrade") {
+                } else if msg.message.to_lowercase().contains("download")
+                    || msg.message.to_lowercase().contains("install")
+                    || msg.message.to_lowercase().contains("upgrade")
+                {
                     "upgrade"
                 } else {
                     "upgrade"
@@ -126,6 +166,21 @@ async fn run_system_update_impl(
                 );
             }
         }
+    }
+
+    if sysupgrade_failed {
+        let msg = "System update failed. Aborting AUR updates to prevent partial upgrade state.";
+        let _ = app.emit("update-status", msg);
+        let _ = app.emit("install-output", msg);
+        let _ = app.emit(
+            "update-progress",
+            UpdateProgressPayload {
+                phase: "error".to_string(),
+                progress: 0,
+                message: msg.to_string(),
+            },
+        );
+        return Err(msg.to_string());
     }
 
     // Phase 3: AUR Batch
@@ -193,25 +248,15 @@ async fn run_system_update_impl(
 }
 
 async fn check_aur_updates() -> Result<Vec<PendingUpdate>, String> {
-    let output = tokio::process::Command::new("pacman")
-        .args(["-Qm"])
-        .output()
+    let foreign = tokio::task::spawn_blocking(crate::alpm_read::get_foreign_installed_packages)
         .await
-        .map_err(|e| e.to_string())?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+        .map_err(|e| format!("Task join error: {}", e))?;
     let mut installed_aur = std::collections::HashMap::new();
     let mut names = Vec::new();
-
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() == 2 {
-            let name = parts[0];
-            installed_aur.insert(name.to_string(), parts[1].to_string());
-            names.push(name.to_string());
-        }
+    for (name, version) in foreign {
+        installed_aur.insert(name.clone(), version);
+        names.push(name);
     }
-
     if names.is_empty() {
         return Ok(vec![]);
     }

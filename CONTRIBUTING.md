@@ -1,6 +1,6 @@
 # Contributing to MonARCH Store 🦋
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha). Doc and feature updates (Omni-User, self-healing, Test Mirrors, Advanced Repair) reflected in README, DOCUMENTATION, PROGRESS, RELEASE_NOTES, AGENTS, and docs (TROUBLESHOOTING, ARCHITECTURE).
+**Last updated:** 2026-02-01 (v0.3.6-alpha). Doc and feature updates (**Iron Core**, **The Chameleon**, native portals, **SafeUpdateTransaction**) reflected in README, DOCUMENTATION, PROGRESS, RELEASE_NOTES, AGENTS, and docs (TROUBLESHOOTING, ARCHITECTURE, DEVELOPER).
 
 First off, thanks for taking the time to contribute! 🎉
 
@@ -41,7 +41,7 @@ This section guides you through submitting an enhancement suggestion, including 
 
 - **No Arbitrary Command Execution:** Never construct shell commands from unsanitized user input. Validate package names with `utils::validate_package_name()` before shell ops.
 - **Root Privileges:** Privileged operations go through **monarch-helper** via `pkexec`; command passed via temp file (path only in argv).
-- **Partial Upgrades:** **NEVER** run `pacman -Sy` alone. Repo installs use `pacman -Syu --needed` in one transaction; system updates use one full upgrade. AUR: unprivileged makepkg; only `pacman -U` is privileged (via Helper).
+- **Partial Upgrades:** **NEVER** run `pacman -Sy` alone. All sync operations MUST use **SafeUpdateTransaction** (Iron Core) which enforces `-Syu` at the Rust level.
 
 Violating these rules will result in immediate PR closure.
 
@@ -69,7 +69,7 @@ Violating these rules will result in immediate PR closure.
 1.  **Prerequisites**:
     *   Rust (latest stable)
     *   Node.js (LTS) & NPM
-    *   System dependencies: `webkit2gtk`, `base-devel`, `curl`, `wget`, `file`, `openssl`, `appmenu-gtk-module`, `gtk3`, `libappindicator-gtk3`, `librsvg`, `libvips`
+    *   System dependencies: `webkit2gtk`, `base-devel`, `curl`, `wget`, `file`, `openssl`, `appmenu-gtk-module`, `gtk3`, `libappindicator-gtk3`, `librsvg`, `libvips`, `xdg-desktop-portal` (for native dark mode & dialogs)
     *   **Faster linking** (recommended): `mold` and `clang` for up to 7x faster development builds:
       ```bash
       sudo pacman -S mold clang

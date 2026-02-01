@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw, ArrowRight, CheckCircle2, Download, AlertCircle, Unlock, Loader2 } from 'lucide-react';
+import { RefreshCw, ArrowRight, CheckCircle2, Download, AlertCircle, Unlock, Loader2, Terminal } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ConfirmationModal from '../components/ConfirmationModal';
 import { clsx } from 'clsx';
@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../store/internal_store';
 import { useErrorService } from '../context/ErrorContext';
+import { useToast } from '../context/ToastContext';
 import { useSessionPassword } from '../context/useSessionPassword';
 import { friendlyError } from '../utils/friendlyError';
 
@@ -48,6 +49,7 @@ const AppIcon = ({ pkgId }: { pkgId: string }) => {
 
 export default function UpdatesPage() {
     const errorService = useErrorService();
+    const { success: toastSuccess } = useToast();
     const { requestSessionPassword } = useSessionPassword();
     const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
     const {
@@ -192,7 +194,7 @@ export default function UpdatesPage() {
                         </p>
                     </div>
 
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 flex-wrap">
                         <button
                             onClick={checkForUpdates}
                             disabled={isChecking || isUpdating}
@@ -201,7 +203,22 @@ export default function UpdatesPage() {
                             <RefreshCw size={18} className={isChecking ? "animate-spin" : ""} />
                             Check Now
                         </button>
-
+                        <button
+                            onClick={async () => {
+                                try {
+                                    const { command } = await invoke<{ command: string; description: string }>('get_system_update_command');
+                                    await navigator.clipboard.writeText(command);
+                                    toastSuccess('Command copied. Paste in your terminal to run.');
+                                } catch (e) {
+                                    errorService.reportError(e as Error | string);
+                                }
+                            }}
+                            disabled={isUpdating}
+                            className="px-6 py-3 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-slate-900 dark:text-white font-bold text-sm border border-black/10 dark:border-white/10 transition-all disabled:opacity-50 flex items-center gap-2 active:scale-95"
+                            title="Copy full system upgrade command (sudo pacman -Syu) to run in your terminal"
+                        >
+                            <Terminal size={18} /> Update in terminal
+                        </button>
                         {updates.length > 0 && !isUpdating && (
                             <button
                                 onClick={handleUpdateAll}

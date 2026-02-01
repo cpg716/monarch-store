@@ -1,4 +1,4 @@
-# Hybrid Review System
+# Hybrid Review System (v0.3.6)
 
 MonARCH Store uses a unique **Hybrid Review System** to provide the best possible coverage of Linux applications.
 
@@ -26,7 +26,7 @@ To ensure ratings reflect the *current* state of software, MonARCH enforces a st
 ## 3. Metadata Intelligence
 The system uses "Smart Composition" to find the correct App ID for reviews:
 1.  **Native AppStream:** Checks `/usr/share/app-info`.
-2.  **Flathub Consensus:** If native metadata is sparse, we query Flathub to find the canonical ID (e.g. mapping `firefox` -> `org.mozilla.firefox`).
+2.  **Flathub/Portal Consensus:** If native metadata is sparse, we query Flathub or XDG Portals (v0.3.6) to find the canonical ID (e.g. mapping `firefox` -> `org.mozilla.firefox`).
 3.  **Result:** This allows us to show ODRS reviews even if the user installed the raw `pacman` package.
 
 ## 4. Submission

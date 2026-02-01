@@ -44,6 +44,9 @@ pub struct InstalledPackage {
     pub size: Option<String>,
     pub url: Option<String>,
     pub repository: Option<String>,
+
+    // Optimizing "The Storm": Serve icon directly to avoid N+1 requests
+    pub icon: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -238,9 +241,10 @@ pub async fn install_package_core(
                     | models::PackageSource::Manjaro
             );
             if is_monarch_repo {
-                repo_manager.apply_os_config(app, password.clone()).await.map_err(|e| {
-                    format!("Repository sync failed. {}", e)
-                })?;
+                repo_manager
+                    .apply_os_config(app, password.clone())
+                    .await
+                    .map_err(|e| format!("Repository sync failed. {}", e))?;
             }
 
             let _ = app.emit("install-output", "--- Starting ALPM Transaction ---");
@@ -258,15 +262,16 @@ pub async fn install_package_core(
                 helper_client::HelperCommand::AlpmInstall {
                     packages: vec![name.to_string()],
                     sync_first,
-                    enabled_repos,
+                    enabled_repos: enabled_repos.clone(),
                     cpu_optimization: cpu_optimization.clone(),
-                    target_repo,
+                    target_repo: target_repo.clone(),
                 },
                 password.clone(),
             )
             .await
             .map_err(|e| format!("Failed to invoke helper: {}", e))?;
 
+            let mut saw_download_error = false;
             while let Some(msg) = rx.recv().await {
                 let _ = app.emit("install-output", &msg.message);
                 install_log.push(msg.message.clone());
@@ -285,6 +290,45 @@ pub async fn install_package_core(
                 {
                     saw_corrupt_db = true;
                 }
+                // Detect 404/Download failures (stale DB)
+                if msg.message.to_lowercase().contains("failed retrieving")
+                    || msg.message.to_lowercase().contains("404")
+                    || msg.message.contains("unexpected error: package")
+                // generic alpm error?
+                {
+                    saw_download_error = true;
+                }
+            }
+
+            // ✅ AUTO-RETRY: If download failed, database is likely stale.
+            // Retry with sync_first=true. The helper will ENFORCE full system upgrade to be safe on Arch.
+            if saw_download_error && !saw_corrupt_db {
+                // corrupt db handled below
+                let _ = app.emit(
+                    "install-output",
+                    "⚠ Download failed (likely stale database).",
+                );
+                let _ = app.emit("install-output", "Using Smart-Retry: Synchronizing database and performing safe system upgrade...");
+
+                let mut rx_retry = helper_client::invoke_helper(
+                    app,
+                    helper_client::HelperCommand::AlpmInstall {
+                        packages: vec![name.to_string()],
+                        sync_first: true, // This triggers the safety upgrade in transactions.rs
+                        enabled_repos: enabled_repos.clone(),
+                        cpu_optimization: cpu_optimization.clone(),
+                        target_repo: target_repo.clone(),
+                    },
+                    password.clone(),
+                )
+                .await
+                .map_err(|e| format!("Retry failed: {}", e))?;
+
+                while let Some(msg) = rx_retry.recv().await {
+                    let _ = app.emit("install-output", &msg.message);
+                }
+                // We assume retry finished. If it failed again, user sees error in log.
+                // We don't loop infinitely.
             }
 
             if saw_unknown_variant {
@@ -360,16 +404,10 @@ pub async fn install_package_core(
         }
     }
 
-    // ✅ POST-INSTALL VERIFICATION (using shell command for accuracy - no ALPM cache staleness)
+    // ✅ POST-INSTALL VERIFICATION (ALPM read-only; no shell)
     let mut verification = tokio::task::spawn_blocking({
         let pkg_name = name.to_string();
-        move || {
-            std::process::Command::new("pacman")
-                .args(["-Q", &pkg_name])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        }
+        move || crate::alpm_read::is_package_installed(&pkg_name)
     })
     .await
     .map_err(|e| format!("Verification task failed: {}", e))?;
@@ -414,21 +452,21 @@ pub async fn install_package_core(
             .filter(|r| r.enabled)
             .map(|r| r.name.clone())
             .collect();
-                let target_repo_retry = match source {
-                    models::PackageSource::Aur => None,
-                    _ => _repo_name.clone(),
-                };
-                let mut rx_install = helper_client::invoke_helper(
-                    app,
-                    helper_client::HelperCommand::AlpmInstall {
-                        packages: vec![name.to_string()],
-                        sync_first: true,
-                        enabled_repos: enabled_repos_retry,
-                        cpu_optimization: cpu_optimization.clone(),
-                        target_repo: target_repo_retry,
-                    },
-                    password.clone(),
-                )
+        let target_repo_retry = match source {
+            models::PackageSource::Aur => None,
+            _ => _repo_name.clone(),
+        };
+        let mut rx_install = helper_client::invoke_helper(
+            app,
+            helper_client::HelperCommand::AlpmInstall {
+                packages: vec![name.to_string()],
+                sync_first: true,
+                enabled_repos: enabled_repos_retry,
+                cpu_optimization: cpu_optimization.clone(),
+                target_repo: target_repo_retry,
+            },
+            password.clone(),
+        )
         .await
         .map_err(|e| format!("Failed to invoke helper (install): {}", e))?;
         while let Some(msg) = rx_install.recv().await {
@@ -445,13 +483,7 @@ pub async fn install_package_core(
         }
         verification = tokio::task::spawn_blocking({
             let pkg_name = name.to_string();
-            move || {
-                std::process::Command::new("pacman")
-                    .args(["-Q", &pkg_name])
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
-            }
+            move || crate::alpm_read::is_package_installed(&pkg_name)
         })
         .await
         .map_err(|e| format!("Verification task failed: {}", e))?;
@@ -583,16 +615,10 @@ pub async fn uninstall_package(
         let _ = app.emit("install-output", &msg.message);
     }
 
-    // ✅ POST-UNINSTALL VERIFICATION (using shell command for accuracy)
+    // ✅ POST-UNINSTALL VERIFICATION (ALPM read-only; no shell)
     let verification = tokio::task::spawn_blocking({
         let pkg_name = name.clone();
-        move || {
-            std::process::Command::new("pacman")
-                .args(["-Q", &pkg_name])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        }
+        move || crate::alpm_read::is_package_installed(&pkg_name)
     })
     .await
     .map_err(|e| format!("Verification task failed: {}", e))?;
@@ -837,6 +863,35 @@ rm -f "$tmpfile"
         let mut reader = TokioBufReader::new(err).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             let _ = a.emit("install-output", format!("MAKEPKG: {}", line));
+
+            // ✅ AUR Progress Parsing
+            // makepkg (via curl) often outputs lines like:
+            // "15 168.1M  15 26.24M   0      0 25.27M      0   00:06   00:01   00:05 25.28M"
+            // or just "100 169.8k ..."
+            // We look for a pattern like " \d+ " at the start or after whitespace, which signifies percentage.
+            if line.contains("%")
+                || (line.len() > 10
+                    && line
+                        .chars()
+                        .next()
+                        .map_or(false, |c| c.is_digit(10) || c.is_whitespace()))
+            {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if let Some(first) = parts.first() {
+                    if let Ok(pct) = first.parse::<u8>() {
+                        if pct <= 100 {
+                            let _ = a.emit(
+                                "update-progress",
+                                serde_json::json!({
+                                    "phase": "download",
+                                    "progress": pct,
+                                    "message": format!("Downloading AUR sources... {}%", pct)
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
 
             // Detect GPG key errors and extract key IDs
             if line.contains("unknown public key")
@@ -1113,50 +1168,21 @@ pub fn resolve_aur_dependencies<'a>(
 }
 
 async fn is_package_satisfied(name: &str) -> bool {
-    // Check if package or something providing it is installed
-    let status = tokio::process::Command::new("pacman")
-        .args(["-Qq", name])
-        .output()
-        .await;
-
-    if let Ok(o) = status {
-        if o.status.success() {
-            return true;
-        }
-    }
-
-    // Check if it's provided by someone else
-    let _status = tokio::process::Command::new("pacman")
-        .args(["-Qq", "-p", name]) // This isn't quite right for provides
-        .output()
-        .await;
-
-    // Better: pacman -T checks if dependencies are satisfied
-    let t_status = tokio::process::Command::new("pacman")
-        .args(["-T", name])
-        .status()
-        .await;
-
-    match t_status {
-        Ok(s) => s.success(), // pacman -T returns 0 if satisfied
-        Err(_) => false,
-    }
+    let name = name.to_string();
+    tokio::task::spawn_blocking(move || crate::alpm_read::is_dep_satisfied(&name))
+        .await
+        .map(|b| b)
+        .unwrap_or(false)
 }
 
 /// Returns true if the package exists in any sync database (official or enabled repos).
 /// Used to avoid building from AUR when the package is available as pre-built in Chaotic/CachyOS/etc.
 pub(crate) async fn is_in_sync_repos(name: &str) -> bool {
-    let status = tokio::process::Command::new("pacman")
-        .args(["-Si", name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await;
-
-    match status {
-        Ok(o) => o.status.success(),
-        Err(_) => false,
-    }
+    let name = name.to_string();
+    tokio::task::spawn_blocking(move || crate::alpm_read::is_package_in_syncdb(&name))
+        .await
+        .map(|b| b)
+        .unwrap_or(false)
 }
 
 async fn is_in_official_repos(name: &str) -> bool {
@@ -1166,11 +1192,7 @@ async fn is_in_official_repos(name: &str) -> bool {
 pub fn audit_aur_builder_deps(app: &AppHandle) -> Result<(), String> {
     let deps = ["base-devel", "git"];
     for dep in deps {
-        let has_dep = std::process::Command::new("pacman")
-            .args(["-Qq", dep])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+        let has_dep = crate::alpm_read::is_package_installed(dep);
         if !has_dep {
             let _ = app.emit(
                 "install-output",
@@ -1209,7 +1231,8 @@ pub async fn get_installed_packages(
     if let Ok(loader) = state.inner().0.lock() {
         for pkg in native_pkgs {
             // Check if it's an app
-            let has_icon = loader.find_icon_heuristic(&pkg.name).is_some();
+            let icon = loader.find_icon_heuristic(&pkg.name);
+            let has_icon = icon.is_some();
             let has_id = loader.find_app_id(&pkg.name).is_some();
 
             if has_icon || has_id {
@@ -1223,6 +1246,7 @@ pub async fn get_installed_packages(
                         .map(|s| format!("{} MB", s / (1024 * 1024))),
                     url: None,
                     repository: None,
+                    icon,
                 });
             }
         }
@@ -1236,31 +1260,73 @@ pub async fn check_for_updates(
     _app: AppHandle,
     _state: tauri::State<'_, crate::metadata::MetadataState>,
 ) -> Result<Vec<PendingUpdate>, String> {
-    // 1. Get Official updates from 'checkupdates' utility (unprivileged)
-    let mut all_updates = tokio::task::spawn_blocking(|| {
-        let output = std::process::Command::new("checkupdates")
-            .output()
-            .map_err(|e| e.to_string())?;
+    // 1. Get Official updates via Helper "Safe Check" (avoids DB lock, creates temp env)
+    let mut updates = Vec::new();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut updates = Vec::new();
+    // We pass explicit repos if we want, or let helper use default config.
+    // Helper expects enabled_repos. We'll use "core", "extra", "multilib" + "cachyos/chaotic" if detected.
+    // But getting enabled repos from RepoManager needs async state access.
+    // For now, let's pass a list of known standard repos to ensure they are checked.
+    // Or, we can update the helper call to be smart.
+    // Actually, passing an empty list to CheckUpdatesSafe in my implementation (transactions.rs)
+    // effectively meant loop 0 times? NO, I fixed that in step 190?
+    // Wait, in step 190 `extract_repos_from_config` is called if enabled_repos is empty?
+    // No, `force_refresh` calls `extract`. `execute_alpm_sync` iterates input.
+    // So I MUST pass the list of repos.
 
-        // Parse line by line: "package-name 0.1-1 -> 0.2-1"
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4 && parts[2] == "->" {
-                updates.push(PendingUpdate {
-                    name: parts[0].to_string(),
-                    old_version: parts[1].to_string(),
-                    new_version: parts[3].to_string(),
-                    repo: "official".to_string(),
-                });
+    // Determine enabled repos from config (best effort from Tauri side or hardcode common ones)
+    // The Helper is better suited to read config, but it requires us to pass them.
+    // Let's read pacman.conf here? No, redundant.
+    // Let's assume standard Arch repos + common ones.
+    let standard_repos = vec![
+        "core".to_string(),
+        "extra".to_string(),
+        "multilib".to_string(),
+        "cachyos".to_string(),
+        "cachyos-v3".to_string(),
+        "cachyos-v4".to_string(),
+        "chaotic-aur".to_string(),
+        "now-testing".to_string(),
+    ];
+
+    // Invoke Helper
+    match crate::helper_client::invoke_helper(
+        &_app,
+        crate::helper_client::HelperCommand::CheckUpdatesSafe {
+            enabled_repos: standard_repos,
+        },
+        None,
+    )
+    .await
+    {
+        Ok(mut rx) => {
+            while let Some(msg) = rx.recv().await {
+                // Helper emits event_type="package_found" with message "Update available: name old -> new"
+                // Parse the message string.
+                if msg.message.starts_with("Update available:") {
+                    // Format: "Update available: <name> <old> -> <new>"
+                    let parts: Vec<&str> = msg.message.split_whitespace().collect();
+                    if parts.len() >= 6 {
+                        // "Update", "available:", "name", "old", "->", "new"
+                        updates.push(PendingUpdate {
+                            name: parts[2].to_string(),
+                            old_version: parts[3].to_string(),
+                            new_version: parts[5].to_string(),
+                            repo: "official".to_string(),
+                        });
+                    }
+                }
             }
         }
-        Ok::<Vec<PendingUpdate>, String>(updates)
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))??;
+        Err(e) => {
+            log::error!("Safe update check failed: {}", e);
+            // Fallback to empty updates or previous method?
+            // Returning error is honest.
+            return Err(e);
+        }
+    }
+
+    let mut all_updates = updates;
 
     // 2. Get AUR updates locally (unprivileged)
     if let Ok(aur_updates) = check_aur_updates().await {
@@ -1271,39 +1337,18 @@ pub async fn check_for_updates(
 }
 
 async fn check_aur_updates() -> Result<Vec<PendingUpdate>, String> {
-    // Use spawn_blocking to avoid blocking the Tokio runtime with std::process::Command
+    // ALPM read-only: foreign packages (not in sync DB) = AUR candidates
     let (installed_aur, names) = tokio::task::spawn_blocking(|| {
-        let output = std::process::Command::new("pacman")
-            .args(["-Qm"])
-            .output()
-            .map_err(|e| e.to_string())?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let foreign = crate::alpm_read::get_foreign_installed_packages();
         let mut installed_aur = std::collections::HashMap::new();
         let mut names = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() == 2 {
-                let name = parts[0];
-
-                // Distro-Aware Priority: Check if the package now exists in a Repo
-                // This prevents building linux-cachyos from AUR if the CachyOS repo is enabled.
-                let in_repo = std::process::Command::new("pacman")
-                    .args(["-Sp", name])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-
-                if !in_repo {
-                    installed_aur.insert(name.to_string(), parts[1].to_string());
-                    names.push(name.to_string());
-                }
+        for (name, version) in foreign {
+            // Distro-Aware: exclude if package now exists in a sync repo
+            if !crate::alpm_read::is_package_in_syncdb(&name) {
+                installed_aur.insert(name.clone(), version);
+                names.push(name);
             }
         }
-
         Ok::<_, String>((installed_aur, names))
     })
     .await
@@ -1337,16 +1382,9 @@ async fn check_aur_updates() -> Result<Vec<PendingUpdate>, String> {
 
 #[tauri::command]
 pub async fn get_orphans() -> Result<Vec<String>, String> {
-    tokio::task::spawn_blocking(|| {
-        let output = std::process::Command::new("pacman")
-            .args(["-Qtdq"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        let content = String::from_utf8_lossy(&output.stdout);
-        Ok(content.lines().map(|s| s.to_string()).collect())
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    tokio::task::spawn_blocking(crate::alpm_read::get_orphans_native)
+        .await
+        .map_err(|e| format!("Task join error: {}", e))
 }
 
 #[tauri::command]

@@ -1,6 +1,6 @@
 [package]
 name = "monarch-store"
-version = "0.3.5-alpha"
+version = "0.3.6-alpha"
 description = "MonARCH Store - A premium software store for Arch Linux"
 authors = ["MonARCH Store Contributors"]
 license = "MIT"
@@ -51,6 +51,9 @@ cpufeatures = "0.2.12"
 which = "8.0.0"
 num_cpus = "1.16.0"
 log = "0.4"
+raur = "8.0.0"
+ashpd = "0.10" # Settings portal (theme) only; no gtk4 feature to avoid mixing GTK3 (Tauri/WebKit) and GTK4
+rfd = "0.15" # Native file dialogs via Portals
 
 [dev-dependencies]
 tempfile = "3.24.0"

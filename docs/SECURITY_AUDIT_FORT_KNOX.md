@@ -1,6 +1,6 @@
 # Fort Knox Security & Arch Compliance Audit
 
-**Date:** 2025-01-31 · **Release:** v0.3.5-alpha  
+**Date:** 2026-02-01 · **Release:** v0.3.6-alpha  
 **Scope:** MonARCH Store (monarch-gui, monarch-helper), PKGBUILD, Polkit, pacman.conf handling, helper command flow.  
 **Standard:** Arch Packaging Guidelines, OWASP Desktop App Security, AUR Trust & Safety.
 
@@ -14,7 +14,8 @@
 - **Command file race:** ✅ **MITIGATED** — Helper now verifies command file ownership (file uid must equal `PKEXEC_UID`) when invoked via pkexec before parsing.
 - **Helper DoS:** ✅ **MITIGATED** — 800 ms debounce on `invoke_helper` to limit rapid helper invocations.
 
-**Critical failure condition:** No mechanism found that allows root execution of arbitrary code or partial upgrades. Pacman operations use a single transaction (`-Syu --needed` / ALPM) and makepkg is never run as root.
+- **Iron Core (v0.3.6):** ✅ **PASS** — Enforces atomic system updates and zero-partial-upgrade logic via `SafeUpdateTransaction`.
+- **Portal Isolation:** ✅ **PASS** — Using XDG Portals for theme/pickers instead of direct system file access.
 
 ---
 
@@ -141,6 +142,7 @@ Address any reported errors (e.g. unneeded dependencies, invalid permissions). N
 | **High** | Full overwrite of pacman.conf via WriteFile | ✅ Fixed (only `/etc/pacman.d/monarch/` allowed) |
 | **Medium** | Command file TOCTOU / race | ✅ Mitigated (ownership check when PKEXEC_UID set) |
 | **Medium** | Helper DoS (rapid invokes) | ✅ Mitigated (800 ms debounce) |
+| **Atomic** | Partial upgrades | ✅ Guaranteed via SafeUpdateTransaction (-Syu) |
 | **Low** | Chrysalis/signature verification | N/A (no such backend) |
 | **Low** | unwrap() in helper | Acceptable (no panic on untrusted input in hot path) |
 

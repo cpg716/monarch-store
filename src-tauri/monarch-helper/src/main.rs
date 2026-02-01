@@ -1,6 +1,7 @@
 mod alpm_errors;
 mod logger;
 mod progress;
+mod safe_transaction;
 mod self_healer;
 mod transactions;
 
@@ -143,6 +144,9 @@ pub enum HelperCommand {
         cpu_optimization: Option<String>,
         target_repo: Option<String>,
     },
+    CheckUpdatesSafe {
+        enabled_repos: Vec<String>,
+    },
     AlpmUninstall {
         packages: Vec<String>,
         remove_deps: bool,
@@ -216,6 +220,23 @@ fn emit_progress(progress: u32, message: &str) {
     }
 }
 
+/// Emit a structured error event so the GUI can show recovery actions (Unlock, Repair Keys, etc.).
+fn emit_classified_error(e: &str) {
+    let classified = alpm_errors::classify_alpm_error(e);
+    let message = serde_json::to_string(&classified).unwrap_or_else(|_| e.to_string());
+    let event = transactions::AlpmProgressEvent {
+        event_type: "error".to_string(),
+        package: None,
+        percent: None,
+        downloaded: None,
+        total: None,
+        message,
+    };
+    if let Ok(json) = serde_json::to_string(&event) {
+        progress::send_progress_line(json);
+    }
+}
+
 // Top-level callbacks to ensure 'static lifetime
 // ALPM helpers remain for read-only queries if needed.
 
@@ -257,6 +278,47 @@ fn spawn_cancel_watcher() {
     });
 }
 
+use std::os::unix::io::FromRawFd;
+
+fn redirect_streams() -> Result<std::fs::File, String> {
+    use std::os::unix::io::AsRawFd;
+
+    // 1. Prepare log directory and file
+    let log_path = std::path::Path::new("/var/log/monarch/helper.log");
+    if let Some(parent) = log_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create log dir: {}", e))?;
+        }
+    }
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|e| format!("Failed to open log file: {}", e))?;
+
+    // 2. Duplicate stdout (FD 1) to a new FD. This new FD will be our IPC channel.
+    // We must do this BEFORE redirecting stdout.
+    let ipc_fd = unsafe { libc::dup(1) };
+    if ipc_fd < 0 {
+        return Err("Failed to duplicate stdout for IPC channel".to_string());
+    }
+
+    // 3. Create a File from the duplicated FD so we can write to it nicely.
+    let ipc_pipe = unsafe { std::fs::File::from_raw_fd(ipc_fd) };
+
+    // 4. Redirect stdout (1) and stderr (2) to the log file.
+    // This ensures any "noise" from pacman loops/hooks goes to the log, not the pipe.
+    let fd = log_file.as_raw_fd();
+    unsafe {
+        libc::dup2(fd, 1); // stdout -> log
+        libc::dup2(fd, 2); // stderr -> log
+    }
+
+    Ok(ipc_pipe)
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Effective UID check: helper must run as root. Exit before touching ALPM.
     #[cfg(unix)]
@@ -271,6 +333,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(125);
         }
     }
+
+    // STREAM SEGREGATION:
+    // Redirect stdout/stderr to log file so ALPM hooks don't corrupt the JSON IPC pipe.
+    // We keep the original stdout as 'ipc_pipe' for progress updates.
+    let ipc_pipe = redirect_streams()?;
+    progress::init(ipc_pipe);
 
     if let Some(uid) = calling_uid() {
         logger::info(&format!("monarch-helper starting (invoker UID={})", uid));
@@ -322,15 +390,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 e
             ),
         );
-        // Fallback: re-parse pacman.conf with server lines (avoids "no servers configured")
-        if let Ok(conf) = std::fs::read_to_string("/etc/pacman.conf") {
-            let _ = parse_and_register_conf(
-                &mut alpm,
-                &conf,
-                None,
-                Some(std::path::Path::new("/etc/pacman.conf")),
-            );
-        }
+        // Fail gracefully if pacman-conf fails
     }
     // Remove any syncdb that has no servers (avoids "no servers configured for repository" during sync)
     remove_syncdbs_with_no_servers(&mut alpm);
@@ -756,21 +816,22 @@ where
 
             if let Err(heal_err) = heal_res {
                 emit_progress(0, &format!("Self-repair failed: {}", heal_err));
-                // Verify if we should still return the original error?
-                // Yes, fall through to emit the original failure or a new one.
+            // Verify if we should still return the original error?
+            // Yes, fall through to emit the original failure or a new one.
             } else {
                 emit_progress(10, "Keys reset. Retrying operation...");
-                // Attempt 2
                 if let Err(retry_e) = action() {
+                    emit_classified_error(&retry_e);
                     emit_progress(0, &format!("Error (Persistent): {}", retry_e));
                 } else {
                     emit_progress(100, "Recovered successfully!");
                 }
-                return; // already handled
+                return;
             }
         }
 
-        // If not sig error or repair failed/didn't help
+        // If not sig error or repair failed/didn't help: emit both legacy line and structured error for GUI recovery UI
+        emit_classified_error(&e);
         emit_progress(0, &format!("Error: {}", e));
     }
 }
@@ -799,6 +860,11 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 )
             });
         }
+        HelperCommand::CheckUpdatesSafe { enabled_repos } => {
+            // Safe Check: Does NOT require ensure_db_ready() because it uses a temp DB path
+            // and does not lock the main pacman lock.
+            transactions::execute_alpm_check_updates_safe(enabled_repos, alpm);
+        }
         HelperCommand::AlpmUninstall {
             packages,
             remove_deps,
@@ -807,22 +873,28 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             // We can use simple execution or healing if we suspect DB lock issues?
             // Prompt only requested self-healing for "Invalid Signature". Uninstall won't verify sigs.
             if let Err(e) = ensure_db_ready() {
+                emit_classified_error(&e);
                 emit_progress(0, &e);
                 return;
             }
             if let Err(e) = transactions::execute_alpm_uninstall(packages, remove_deps, alpm) {
+                emit_classified_error(&e);
                 emit_progress(0, &format!("Error: {}", e));
             }
         }
         HelperCommand::AlpmUpgrade {
             packages,
-            enabled_repos,
+            enabled_repos: _,
         } => {
             execute_with_healing(|| {
                 if let Err(e) = ensure_db_ready() {
                     return Err(e);
                 }
-                transactions::execute_alpm_upgrade(packages.clone(), enabled_repos.clone(), alpm)
+                let mut trans = safe_transaction::SafeUpdateTransaction::new(alpm);
+                if let Some(targets) = packages.clone() {
+                    trans = trans.with_targets(targets);
+                }
+                trans.execute()
             });
         }
         HelperCommand::AlpmSync { enabled_repos } => {
@@ -862,23 +934,21 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
         // Legacy commands (deprecated but kept for compatibility — must still work for old GUI or fallback path)
         HelperCommand::InstallTargets { packages } => {
             if let Err(e) = ensure_db_ready() {
+                emit_classified_error(&e);
                 emit_progress(0, &e);
                 return;
             }
-            // Same resilience as AlpmInstall: repos from config (works when DBs are corrupt), sync_first, corruption detection + retry inside execute_alpm_install
             let enabled_repos = transactions::get_enabled_repos_from_config();
             if enabled_repos.is_empty() {
-                emit_progress(0, "Error: No repositories found in pacman.conf. Run onboarding or add repos first.");
+                let msg = "Error: No repositories found in pacman.conf. Run onboarding or add repos first.";
+                emit_classified_error(msg);
+                emit_progress(0, msg);
                 return;
             }
-            if let Err(e) = transactions::execute_alpm_install(
-                packages,
-                true, // sync_first — same as AlpmInstall
-                enabled_repos,
-                None, // cpu_optimization not passed from legacy path
-                None, // target_repo
-                alpm,
-            ) {
+            if let Err(e) =
+                transactions::execute_alpm_install(packages, true, enabled_repos, None, None, alpm)
+            {
+                emit_classified_error(&e);
                 emit_progress(0, &format!("Error: {}", e));
             }
         }
@@ -1058,29 +1128,6 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
     }
 }
 
-fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Error>> {
-    let conf_path = "/etc/pacman.conf";
-    if !std::path::Path::new(conf_path).exists() {
-        return Err("pacman.conf not found".into());
-    }
-
-    // 1. Register base pacman.conf
-    let conf = std::fs::read_to_string(conf_path)?;
-    parse_and_register_conf(alpm, &conf, None, Some(std::path::Path::new(conf_path)))?;
-
-    // 2. Register MonARCH modular configs (Hardcoded sync dir)
-    if let Ok(entries) = std::fs::read_dir("/etc/pacman.d/monarch") {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                parse_and_register_conf(alpm, &content, None, Some(&path))?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// Remove any registered syncdb that has no Server URLs. Such dbs cause "no servers configured for repository" during sync.
 fn remove_syncdbs_with_no_servers(alpm: &mut Alpm) {
     loop {
@@ -1106,146 +1153,114 @@ fn remove_syncdbs_with_no_servers(alpm: &mut Alpm) {
     }
 }
 
-/// Resolve Include path: if relative, try config dir, then /etc/pacman.d, then /etc/pacman.d/monarch.
-fn resolve_include_path(
-    path: &str,
-    config_file: Option<&std::path::Path>,
-) -> Vec<std::path::PathBuf> {
-    let path = path.trim();
-    if path.is_empty() {
-        return Vec::new();
-    }
-    if path.contains('*') {
-        return Vec::new(); // Caller handles glob
-    }
-    let mut candidates = Vec::new();
-    if path.starts_with('/') {
-        candidates.push(std::path::PathBuf::from(path));
-        return candidates;
-    }
-    if let Some(cfg) = config_file {
-        if let Some(parent) = cfg.parent() {
-            candidates.push(parent.join(path));
-        }
-    }
-    candidates.push(std::path::Path::new("/etc/pacman.d").join(path));
-    candidates.push(std::path::Path::new("/etc/pacman.d/monarch").join(path));
-    candidates
-}
+/// Use `pacman-conf` to retrieve the list of configured repositories and their servers.
+/// This avoids manual parsing of `pacman.conf` and `Include` directives, ensuring we see exactly what pacman sees.
+fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
 
-fn parse_and_register_conf(
-    alpm: &mut Alpm,
-    content: &str,
-    current_repo_name: Option<String>,
-    config_file: Option<&std::path::Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut current_repo_name = current_repo_name;
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+    // 1. Get list of repo names
+    let output = Command::new("pacman-conf").arg("--repo-list").output()?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "pacman-conf failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    let repo_list_str = String::from_utf8_lossy(&output.stdout);
+    let repo_names: Vec<&str> = repo_list_str
+        .lines()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for repo_name in repo_names {
+        // 2. Get details for each repo
+        let details_out = Command::new("pacman-conf")
+            .arg("--repo")
+            .arg(repo_name)
+            .output()?;
+
+        if !details_out.status.success() {
+            logger::warn(&format!("Failed to get details for repo '{}'", repo_name));
             continue;
         }
 
-        if line.starts_with('[') && line.ends_with(']') {
-            let section = &line[1..line.len() - 1];
-            if section != "options" {
-                current_repo_name = Some(section.to_string());
-                // Do NOT register_syncdb here: sections without Server cause "no servers configured" during sync.
-                // We register only when we see "Server = " below.
-            } else {
-                current_repo_name = None;
-            }
-        } else if line.contains("Include =") {
-            if let Some(path) = line.split('=').nth(1) {
-                let path = path.trim();
-                let read_ok = if path.contains('*') {
-                    // Glob include (e.g. /etc/pacman.d/monarch/*.conf): process even when current_repo_name is None
-                    // so monarch repos are loaded when Include appears before [core] in pacman.conf.
-                    let (dir, pattern) = path
-                        .split_once('*')
-                        .map(|(d, p)| (d, p))
-                        .unwrap_or((path, ""));
-                    let dir = dir.trim_end_matches('/');
-                    let mut ok = false;
-                    if let Ok(entries) = std::fs::read_dir(dir) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if p.is_file() {
-                                let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                                if pattern.is_empty()
-                                    || s.ends_with(pattern.trim_start_matches('*'))
-                                {
-                                    if let Ok(include_content) = std::fs::read_to_string(&p) {
-                                        let _ = parse_and_register_conf(
-                                            alpm,
-                                            &include_content,
-                                            None,
-                                            Some(&p),
-                                        );
-                                        ok = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    ok
-                } else if let Some(repo_name) = &current_repo_name {
-                    let mut read_ok = false;
-                    for full in resolve_include_path(path, config_file) {
-                        if let Ok(include_content) = std::fs::read_to_string(&full) {
-                            let _ = parse_and_register_conf(
-                                alpm,
-                                &include_content,
-                                Some(repo_name.clone()),
-                                Some(&full),
-                            );
-                            read_ok = true;
-                            break;
-                        }
-                    }
-                    if !read_ok {
-                        logger::warn(&format!("Could not read Include file {} (tried relative to config, /etc/pacman.d, /etc/pacman.d/monarch); repo {} may have no servers", path, repo_name));
-                    }
-                    read_ok
-                } else {
-                    false
-                };
-                if !read_ok && !path.contains('*') {
-                    logger::warn(&format!(
-                        "Include file {} failed; repo may have no servers",
-                        path
-                    ));
+        let details_str = String::from_utf8_lossy(&details_out.stdout);
+        let mut servers = Vec::new();
+        let mut siglevel = SigLevel::USE_DEFAULT;
+        let mut usage = alpm::Usage::ALL; // Default
+
+        for line in details_str.lines() {
+            let line = line.trim();
+            if let Some(val) = line.strip_prefix("Server = ") {
+                // pacman-conf expands $repo and $arch, which is great.
+                // But libalpm also handles them. passing expanded is fine.
+                let server = val.split('#').next().unwrap_or(val).trim();
+                if !server.is_empty() {
+                    servers.push(server.to_string());
+                }
+            } else if let Some(val) = line.strip_prefix("SigLevel = ") {
+                // Basic mapping. Real mapping is complex bitflags.
+                // If it contains "Never", disable verification.
+                // If it contains "Optional", make it optional.
+                // If "Required", make required.
+                // Default to USE_DEFAULT if complex.
+                let val_lower = val.to_lowercase();
+                if val_lower.contains("never") {
+                    siglevel = SigLevel::NONE;
+                } else if val_lower.contains("taroptional") || val_lower.contains("packageoptional")
+                {
+                    siglevel = SigLevel::PACKAGE_OPTIONAL;
+                } else if val_lower.contains("required") {
+                    siglevel = SigLevel::USE_DEFAULT; // Safe fallback as PACKAGE_REQUIRED is not direct const
+                }
+            } else if let Some(val) = line.strip_prefix("Usage = ") {
+                // Map usage if needed (Sync/Search/Install/Upgrade/All)
+                // libalpm doesn't easily expose Usage parsing from string, keeping default ALL is usually safe for helper.
+                // We could parse it but typically it's specific.
+                if val.contains("Sync") {
+                    usage |= alpm::Usage::SYNC;
+                }
+                if val.contains("Search") {
+                    usage |= alpm::Usage::SEARCH;
+                }
+                if val.contains("Install") {
+                    usage |= alpm::Usage::INSTALL;
+                }
+                if val.contains("Upgrade") {
+                    usage |= alpm::Usage::UPGRADE;
+                }
+                if val.contains("All") {
+                    usage = alpm::Usage::ALL;
                 }
             }
-        } else if let Some(repo_name) = &current_repo_name {
-            // Accept "Server = url" or "Server=url" (pacman format)
-            let is_server_line = line.trim_start().starts_with("Server") && line.contains('=');
-            if is_server_line {
-                if let Some(server) = line.split('=').nth(1) {
-                    let server = server.split('#').next().unwrap_or(server).trim();
-                    if !server.is_empty() {
-                        // Register syncdb only when we have at least one Server (avoids "no servers configured")
-                        let already_registered = alpm
-                            .syncdbs()
-                            .iter()
-                            .any(|db| db.name() == repo_name.as_str());
-                        if !already_registered {
-                            let _ = alpm.register_syncdb(
-                                repo_name.as_bytes().to_vec(),
-                                SigLevel::PACKAGE_OPTIONAL,
-                            );
-                        }
-                        for db in alpm.syncdbs_mut() {
-                            if db.name() == repo_name.as_str() {
-                                let _ = db.add_server(server);
-                                break;
-                            }
-                        }
+        }
+
+        if !servers.is_empty() {
+            // Check if already registered (shouldn't be, unless register_repositories called twice)
+            let already_exists = alpm.syncdbs().iter().any(|db| db.name() == repo_name);
+
+            if !already_exists {
+                // Register
+                let _ = alpm.register_syncdb(repo_name.to_string(), siglevel)?;
+            }
+
+            // Add servers and usage (retrieve mutably to ensure access)
+            for db in alpm.syncdbs_mut() {
+                if db.name() == repo_name {
+                    let _ = db.set_usage(usage);
+                    for server in servers {
+                        let _ = db.add_server(server);
                     }
+                    break;
                 }
             }
         }
     }
+
     Ok(())
 }
 

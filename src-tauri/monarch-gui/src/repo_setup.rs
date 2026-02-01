@@ -408,9 +408,10 @@ fn get_repo_script(name: &str) -> String {
             "#
         }
         "aur" => {
+            // Use -Syu --needed to sync DBs first (Arch: no partial upgrade)
             r#"
             echo "--- AUR Build Environment Setup ---"
-            pacman -S --needed base-devel git --noconfirm
+            pacman -Syu --needed base-devel git --noconfirm
             "#
         }
         _ => "",

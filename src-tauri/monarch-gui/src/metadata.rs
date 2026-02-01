@@ -39,6 +39,8 @@ pub struct AppStreamLoader {
     category_index: HashMap<String, Vec<AppMetadata>>,
     icon_index: HashMap<String, String>,
     pkg_index: HashMap<String, AppMetadata>,
+    // Optimizing "The Storm": Cache local filesystem icons to avoid 1500+ disk scans
+    local_icon_index: HashMap<String, String>,
 }
 
 impl Default for AppStreamLoader {
@@ -54,7 +56,11 @@ impl AppStreamLoader {
             category_index: HashMap::new(),
             icon_index: HashMap::new(),
             pkg_index: HashMap::new(),
+            local_icon_index: HashMap::new(),
         };
+
+        // Pre-scan local icons (O(N) once, instead of O(N) * Requests)
+        loader.refresh_local_icon_index();
 
         // Initial load try local (linux)
         let collection =
@@ -75,6 +81,35 @@ impl AppStreamLoader {
     pub fn set_collection(&mut self, col: Collection) {
         self.collection = Some(col.clone());
         self.rebuild_indices(&col);
+    }
+
+    pub fn refresh_local_icon_index(&mut self) {
+        let icons_dir = get_icons_dir();
+        let mut index = HashMap::new();
+        log::info!("Building Local Icon Index from {:?}", icons_dir);
+
+        if let Ok(entries) = std::fs::read_dir(&icons_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name_os) = path.file_name() {
+                    let name = name_os.to_string_lossy().to_string();
+                    if name.ends_with(".png") || name.ends_with(".svg") {
+                        // Store full filename as key? No, we need to match by package name efficiently.
+                        // We store the filename, but keyed by... what?
+                        // `find_icon_heuristic` does prefix matching.
+                        // We scan for:
+                        // 1. exact pkg_name.png
+                        // 2. pkg_name.svg
+                        // 3. pkg_name_*.png
+
+                        // Simplest: just store the valid icon filenames in a HashMap<String, PathBuf>
+                        // Key = Filename
+                        index.insert(name, path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        self.local_icon_index = index;
     }
 
     fn rebuild_indices(&mut self, col: &Collection) {
@@ -206,14 +241,12 @@ impl AppStreamLoader {
         }
 
         // 4. SMART FALLBACK (User's Strategy: "Check the installed section")
-        // If we still don't know, we scan installed packages to see if any claim this App ID.
-        if let Ok(output) = std::process::Command::new("pacman").arg("-Qq").output() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for pkg_name in stdout.lines() {
-                if let Some(found_id) = self.find_app_id(pkg_name) {
-                    if found_id.to_lowercase() == input_lower {
-                        return pkg_name.to_string();
-                    }
+        // ALPM read-only: scan installed packages to see if any claim this App ID.
+        for pkg in crate::alpm_read::get_installed_packages_native() {
+            let pkg_name = &pkg.name;
+            if let Some(found_id) = self.find_app_id(pkg_name) {
+                if found_id.to_lowercase() == input_lower {
+                    return pkg_name.to_string();
                 }
             }
         }
@@ -253,10 +286,39 @@ impl AppStreamLoader {
             }
         }
 
-        // 3. Search the icons directory for pattern match
-        let icons_dir = get_icons_dir();
+        // 3. Check Cache (Now O(1) Memory Lookup instead of Disk Scan)
+        let exact_png = format!("{}.png", pkg_name);
+        let exact_svg = format!("{}.svg", pkg_name);
 
-        // Helper to check a dir for the icon
+        // Check if exact matches exist in our index
+        let found_path = if let Some(p) = self.local_icon_index.get(&exact_png) {
+            Some(p.clone())
+        } else if let Some(p) = self.local_icon_index.get(&exact_svg) {
+            Some(p.clone())
+        } else {
+            // Heuristic prefix scan (slower, but memory-only now)
+            // Optimization: Only scan if we have to.
+            self.local_icon_index
+                .iter()
+                .find(|(k, _)| k.starts_with(&format!("{}_", pkg_name)))
+                .map(|(_, v)| v.clone())
+        };
+
+        if let Some(path_str) = found_path {
+            let path = std::path::PathBuf::from(path_str);
+            if let Ok(bytes) = std::fs::read(&path) {
+                let mime = if path.extension().is_some_and(|e| e == "svg") {
+                    "image/svg+xml"
+                } else {
+                    "image/png"
+                };
+                let encoded = BASE64_STANDARD.encode(&bytes);
+                return Some(format!("data:{};base64,{}", mime, encoded));
+            }
+        }
+
+        // 3b. Check System Search Paths (Linux)
+        // Optimize: Define helper for system path scanning (fallback only)
         let check_dir = |dir: &PathBuf| -> Option<String> {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
@@ -281,17 +343,10 @@ impl AppStreamLoader {
                         }
                     }
                 }
-            } else {
             }
             None
         };
 
-        // 3a. Check Cache
-        if let Some(res) = check_dir(&icons_dir) {
-            return Some(res);
-        }
-
-        // 3b. Check System Search Paths (Linux)
         let system_paths = [
             PathBuf::from("/usr/share/pixmaps"),
             PathBuf::from("/usr/share/icons/hicolor/128x128/apps"),

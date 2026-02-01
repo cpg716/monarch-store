@@ -1,11 +1,12 @@
 # Security Policy
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Last updated:** 2026-02-01 (v0.3.6-alpha)
 
 ## Supported Versions
 
 | Version   | Supported          |
 | --------- | ------------------ |
+| 0.3.6.x   | :white_check_mark: |
 | 0.3.5.x   | :white_check_mark: |
 | 0.3.x     | :white_check_mark: |
 | 1.0.x     | :white_check_mark: (when released) |
@@ -34,7 +35,7 @@ Examples of vulnerabilities we are interested in:
 - Repo Database Spoofing
 - Arbitrary Code Execution during installation (privileged operations go through monarch-helper; command is passed via temp file)
 
-**Current architecture:** Privileged operations use **monarch-helper** (invoked via `pkexec`); the GUI writes the JSON command to a temp file and passes only the file path. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md) and [Architecture](docs/ARCHITECTURE.md).
+**Current architecture:** Privileged operations use **monarch-helper** (invoked via `pkexec`); the GUI writes the JSON command to a temp file and passes only the file path. v0.3.6 introduces **The Iron Core** (`SafeUpdateTransaction`) to guarantee atomic operations even on unstable connections. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md) and [Architecture](docs/ARCHITECTURE.md).
 
 **Full audit:** For the latest security and Arch compliance audit (makepkg root barrier, helper input sanitization, pacman.conf integrity, command-file race mitigation), see [Fort Knox Security Audit](docs/SECURITY_AUDIT_FORT_KNOX.md).
 

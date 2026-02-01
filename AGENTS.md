@@ -1,6 +1,6 @@
 # AGENTS.md - MonARCH Store
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Last updated:** 2026-02-01 (v0.3.6-alpha)
 
 ## Build Commands
 
@@ -33,7 +33,8 @@
 ## Architecture
 - **Frontend**: React 19 + TypeScript + Tailwind CSS 4 + Vite 7 + Zustand (state). Key dirs: `src/components/`, `src/pages/`, `src/hooks/`, `src/store/`, `src/services/`, `src/context/`, `src/utils/`. Full reference: [docs/APP_AUDIT.md](docs/APP_AUDIT.md).
 - **Backend (GUI)**: `src-tauri/monarch-gui/`. Runs as **USER**. Read-only ALPM, config, AUR builds, IPC to Helper. Key: `commands/`, `helper_client.rs` (writes command to temp file, passes path to helper), `alpm_read.rs`, `error_classifier.rs`.
-- **Backend (Helper)**: `src-tauri/monarch-helper/`. Runs as **ROOT** (Polkit/pkexec). Reads command from temp file; write ALPM only (install/update/remove). Helper restricts `WriteFile`/`WriteFiles` to `/etc/pacman.d/monarch/` only; command file ownership checked (PKEXEC_UID) when reading from path. Key: `transactions.rs` (`force_refresh_sync_dbs` reads `/etc/pacman.conf` and monarch includes directly for blind recovery), `main.rs`, `self_healer.rs`, `alpm_errors.rs`, `logger.rs`. Install/update flow: [docs/INSTALL_UPDATE_AUDIT.md](docs/INSTALL_UPDATE_AUDIT.md). GUI: `commands/system.rs` has `test_mirrors(repo_key)` (rate-mirrors/reflector, top 3 with latency); repair invokes accept optional password. Security: [docs/SECURITY_AUDIT_FORT_KNOX.md](docs/SECURITY_AUDIT_FORT_KNOX.md).
+- **Backend (Helper)**: `src-tauri/monarch-helper/`. Runs as **ROOT** (Polkit/pkexec). v0.3.6 introduces **The Iron Core** (`SafeUpdateTransaction.rs`), which enforces the Atomic Update Protocol (strict `-Syu`). Helper restricts `WriteFile`/`WriteFiles` to `/etc/pacman.d/monarch/` only. Key: `safe_transaction.rs`, `transactions.rs`. Security: [docs/SECURITY_AUDIT_FORT_KNOX.md](docs/SECURITY_AUDIT_FORT_KNOX.md).
+- **The Chameleon (v0.3.6)**: Native desktop integration via **XDG Portals** (`ashpd`) and **Wayland Ghost Protocol** for flicker-free window rendering on modern desktops.
 - **Purpose**: Arch Linux package manager GUI with "Soft Disable" repos and Chaotic-AUR priority.
 
 ### Why onboarding UI changes didn’t show (testing)
@@ -69,9 +70,8 @@
 
 ## Critical Package Management Rules
 - **NEVER run `pacman -Sy` separately from `-Syu`** - causes partial upgrades
-- Repo installs/updates go through **Helper ALPM** (`monarch-helper/transactions.rs`); single transaction, never split -Sy and -Syu
-- System updates: GUI sends `Sysupgrade` to Helper (repos); then AUR updates only for packages **not** in any sync repo (`is_in_sync_repos` via `pacman -Si`). Helper checks `db.lck`, then runs ALPM upgrade (sync + trans).
-- Error classification: **Helper** `alpm_errors.rs` (classify + self-heal), **GUI** `error_classifier.rs`, **Frontend** `src/utils/friendlyError.ts` (ALPM_ERR_DB_WRITE / DB locked → "Auto-unlocking…" with expertMessage). InstallMonitor self-heals: corrupt DB or locked DB during install triggers silent repair + retry (no error pop-up).
+- **The Iron Core (v0.3.6)**: All sync-related transactions MUST use `SafeUpdateTransaction`. It enforces `db.lck` checks and manual full upgrade logic to prevent partial upgrades.
+- Error classification: **Helper** `alpm_errors.rs` (classify + self-heal), **GUI** `error_classifier.rs`, **Frontend** `src/utils/friendlyError.ts`.
 - **AUR**: Build in GUI (unprivileged `makepkg`). Copy built `.pkg.tar.zst` to `/tmp/monarch-install/`, then Helper `AlpmInstallFiles`. Never run makepkg in Helper. AUR build failures (e.g. "unknown error"): run `scripts/monarch-permission-sanitizer.sh` (see [TROUBLESHOOTING](docs/TROUBLESHOOTING.md)).
 - **Error reporting:** `ErrorContext` / `getErrorService()` used app-wide; no `console.error` in critical paths.
 - **Helper invoke:** 800 ms debounce in `helper_client::invoke_helper` to limit rapid invocations.

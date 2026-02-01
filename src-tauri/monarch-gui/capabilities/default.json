@@ -11,6 +11,14 @@
     "app-commands",
     "notification:default",
     "aptabase:default",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "store:allow-load",
+    "store:allow-save",
+    "store:allow-has",
     {
       "identifier": "fs:allow-read",
       "allow": [

@@ -1,6 +1,6 @@
 # MonARCH Store — Full App Audit
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Last updated:** 2026-02-01 (v0.3.6-alpha)
 
 Exhaustive review of UI/UX, frontend, backend, and every feature area. Reference for understanding the app to the smallest details.
 
@@ -12,7 +12,7 @@ Exhaustive review of UI/UX, frontend, backend, and every feature area. Reference
 |-------|--------|-----------|
 | **Frontend** | React 19, TypeScript, Tailwind CSS 4, Vite 7, Zustand, Framer Motion | `src/App.tsx`, `src/pages/`, `src/components/`, `src/hooks/`, `src/store/` |
 | **Backend (GUI)** | Tauri 2, Rust workspace | `src-tauri/monarch-gui/` |
-| **Helper** | Rust binary (privileged) | `src-tauri/monarch-helper/` |
+| **Helper** | Rust binary: Uses **SafeUpdateTransaction** (Iron Core) | `src-tauri/monarch-helper/` |
 | **IPC** | `invoke()` from `@tauri-apps/api/core`; events via `listen()` | Commands in `src-tauri/monarch-gui/src/commands/` |
 
 **Routing:** SPA with local state. No URL router; `activeTab` + `selectedPackage` / `selectedCategory` / `viewAll` drive the main content. "Search" tab is a special case: it sets `activeTab` to `explore` and focuses the search input.
@@ -30,7 +30,7 @@ Exhaustive review of UI/UX, frontend, backend, and every feature area. Reference
 
 ### 2.2 Theming & Accessibility
 
-- **Theme:** `useTheme()` — `themeMode` (system/light/dark), `accentColor` (hex). Stored via Tauri store / persistence.
+- **Theme (v0.3.6):** Uses **Chameleon Theme Engine** (`src-tauri/monarch-gui/src/lib.rs`). Spawns an async task to query XDG Portals (`ashpd`) for `org.freedesktop.appearance/color-scheme`. Emits `system-theme-changed` to frontend.
 - **Selection:** `--tw-selection-bg` set from accent in `App.tsx`.
 - **CSS:** `App.css` + Tailwind; `app-bg`, `app-fg`, `app-muted`, `app-card`, `app-border`, `app-subtle`, `app-accent` for consistency.
 - **Icons:** `lucide-react` throughout; `clsx` for conditional classes.
@@ -62,7 +62,8 @@ Exhaustive review of UI/UX, frontend, backend, and every feature area. Reference
 **Key effects:**
 
 1. **Update listeners:** `update-progress`, `install-output`, `update-status` → store progress/phase/logs; on `phase === 'complete'` runs delayed post-update checks (`check_reboot_required`, `get_pacnew_warnings`).
-2. **Startup:** `initializeStartup()` — (0) `needs_startup_unlock()`; if true and **Reduce password prompts** is on, request session password then `unlock_pacman_if_stale({ password })`, else `unlock_pacman_if_stale()`. (1) Parallel: `fetchInfraStats`, `checkTelemetry`, `get_repo_states`. (2) `check_initialization_status`. Onboarding vs normal: if unhealthy or first run → onboarding; else optional sync at launch (when "Sync on startup" and DB stale or refresh requested: `apply_os_config`, `sync_system_databases`, `trigger_repo_sync`), then pre-warm (ESSENTIAL_IDS, get_trending, prewarmRatings).
+2. **Startup (v0.3.6):** Includes **Wayland Ghost Protocol** check. Detects `WAYLAND_DISPLAY` and disables transparency/shadows to prevent artifacts.
+3. **Iron Core:** `SafeUpdateTransaction` enforces `-Syu` for all sessions, ensuring zero partial upgrades.
 3. **Search:** Debounced 300ms; `invoke('search_packages', { query })`; request ID used to ignore stale responses; results → `setPackages`, `addSearch`, optional `track_event`.
 4. **Tab change:** "search" → focus input, clear selection; "settings" → scroll to `#system-health` after 100ms.
 

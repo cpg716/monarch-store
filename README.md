@@ -67,12 +67,18 @@ Stop guessing which "firefox" is the right one. MonARCH intelligently merges res
 *   **Unified Search**: Official, Chaotic, and AUR results in one card.
 *   **De-Duplication**: We show you the *best* version by default.
 
-### 🛡️ Safety First
-*   **No Partial Upgrades**: All repo installs use a single transaction (`pacman -Syu --needed`); system updates use one full upgrade. We never run `pacman -Sy` alone.
+### 🛡️ Safety First (Iron Core)
+*   **Atomic Update Protocol**: All repo installs use a single transaction (`pacman -Syu --needed`) enforced by our **SafeUpdateTransaction** struct. We never run `pacman -Sy` alone.
+*   **Lock Guard**: Atomic checks prevent operations when `/var/lib/pacman/db.lck` is present.
 *   **GPG Automator**: Missing keys are imported automatically during install.
 *   **PKGBUILD Inspector**: Review build scripts before installing from AUR.
-*   **Polkit Integration**: Privileged operations use `monarch-helper` via `pkexec`; passwordless installs when Polkit rules are installed (see [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md)).
-*   **Optional single-password mode**: In Settings → Workflow & Interface, **Reduce password prompts** lets you enter your password once in MonARCH for the session (~15 min). The password is not stored. This sends the password to the app and is less secure than using the system prompt each time; you can always leave this off and use the system prompt every time.
+*   **Polkit Integration**: Privileged operations use `monarch-helper` via `pkexec`; passwordless installs when Polkit rules are installed.
+
+### 🦎 Native Desktop Integration (v0.3.6)
+*   **The Chameleon**: Uses **XDG Portals** to accurately detect your system theme (Dark/Light) across all desktops (GNOME, KDE, Hyprland, Sway) without relying on legacy GTK signals.
+*   **Wayland Ghost Protocol**: Automatically detects Wayland sessions and adjusts window rendering to prevent flickering and transparency artifacts (especially on Nvidia/KDE).
+*   **Native Dialogs**: Portal-based file pickers (`rfd`) are planned; ensure `xdg-desktop-portal` is installed for theme detection and future native dialogs.
+*   **Optional single-password mode**: In Settings → Workflow & Interface, **Reduce password prompts** lets you enter your password once in MonARCH for the session (~15 min).
 65: 
 66: ### ⭐ Hybrid Reviews & Rich Metadata
 67: MonARCH combines the best of the web with the power of Arch:

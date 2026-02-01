@@ -16,34 +16,28 @@ interface InstalledApp {
     size: string | null;
     install_date: string | null;
     description: string;
+    icon: string | null;
 }
 
 // Helper component for Icon
 import archLogo from '../assets/arch-logo.png';
 
-const AppIcon = ({ pkgId }: { pkgId: string }) => {
-    const [icon, setIcon] = useState<string | null>(null);
+const AppIcon = ({ appName, appIcon }: { appName: string; appIcon: string | null }) => {
+    const [icon, setIcon] = useState<string | null>(appIcon);
 
     useEffect(() => {
-        if (!pkgId) return;
-        invoke<string | null>('get_package_icon', { pkgName: pkgId })
-            .then(localIcon => {
-                if (localIcon) {
-                    setIcon(localIcon);
-                } else {
-                    invoke<any>('get_metadata', { pkgName: pkgId, upstreamUrl: null })
-                        .then(meta => {
-                            if (meta && meta.icon_url) setIcon(meta.icon_url);
-                        })
-                        .catch(() => { });
-                }
-            })
-            .catch(() => { });
-    }, [pkgId]);
+        // Optimizing "The Storm": Disable client-side fetch loop entirely. 
+        // We rely on the backend batch fetch.
+        if (appIcon) {
+            setIcon(appIcon);
+        } else {
+            setIcon(null);
+        }
+    }, [appName, appIcon]);
 
     const displayIcon = icon || archLogo;
 
-    return <img src={displayIcon} alt={pkgId} className={clsx("w-full h-full object-contain", !icon && "opacity-50 grayscale")} />;
+    return <img src={displayIcon} alt={appName} className={clsx("w-full h-full object-contain", !icon && "opacity-50 grayscale")} />;
 };
 
 export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (pkg: Package) => void }) {
@@ -188,7 +182,7 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
                                 >
                                     {/* Icon */}
                                     <div className="w-11 h-11 rounded-xl bg-slate-50 dark:bg-black/20 border border-black/5 dark:border-white/5 flex items-center justify-center shrink-0 overflow-hidden relative shadow-inner p-1.5">
-                                        <AppIcon pkgId={app.name} />
+                                        <AppIcon appName={app.name} appIcon={app.icon} />
                                     </div>
 
                                     {/* Info — min-w-0 so text truncates instead of overflowing */}

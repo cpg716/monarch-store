@@ -1,6 +1,6 @@
 # Troubleshooting Guide 🛟
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Last updated:** 2026-02-01 (v0.3.6-alpha)
 
 Common issues users encounter when using MonARCH Store.
 
@@ -8,6 +8,28 @@ Common issues users encounter when using MonARCH Store.
 > **MonARCH Store is in ALPHA.** Installation and update operations are experimental. If you encounter persistent failures, please use the standard terminal tools (`pacman`, `yay`, etc.) and report the issue.
 
 **Install/Update not working or password prompts:** See [Install & Update Audit](INSTALL_UPDATE_AUDIT.md) for the full flow, Polkit setup, and passwordless configuration (Polkit rules, helper path, policy).
+
+## 📦 Install or Update does nothing / fails silently (v0.3.6 fix)
+
+**Symptom:** Clicking Install or Update All starts, then nothing happens (no error, no progress).
+
+**Cause (fixed in v0.3.6):** The command was sent to the helper on **stdin**, but **pkexec does not reliably forward stdin** to the child process. The helper never received the command.
+
+**Fix (current):** The GUI now **always** writes the command to a temp file in `/var/tmp` and passes the file path as the helper’s first argument. Install and Update use this path for both pkexec and sudo -S.
+
+**If it still fails:**
+1. **Polkit policy:** Ensure the policy is installed so pkexec can run the helper:
+   ```bash
+   ls /usr/share/polkit-1/actions/com.monarch.store.policy
+   ```
+   If missing, reinstall the package: `pacman -S monarch-store` (or install from AUR/source so the policy is placed).
+2. **Helper path:** The policy allows only `/usr/lib/monarch-store/monarch-helper`. When the package is installed, the app uses that path so Polkit matches. If you run from source without the package installed, use **Settings → Workflow & Interface → Reduce password prompts** and enter your password once so we use sudo and the same file-based command.
+3. **Logs:** Check **Settings → General → Show Detailed Transaction Logs**, then retry; look for `[Client]: Helper: ... | Command file: ...` and any `[Helper Error]:` lines.
+4. **CachyOS-style fallback:** Like [CachyOS packageinstaller](https://github.com/CachyOS/packageinstaller), you can run pacman directly with pkexec. For a **single package** install, open a terminal and run:
+   ```bash
+   pkexec pacman -S --noconfirm <package-name>
+   ```
+   For **full system update**, use **Updates → Update in terminal** (copies `sudo pacman -Syu`) and paste in your terminal. That bypasses the helper entirely and always works if pkexec/pacman are installed.
 
 ## 🖥️ "I don't see the latest Settings / UI changes"
 
@@ -162,3 +184,57 @@ sudo reflector --latest 5 --sort rate --save /etc/pacman.d/mirrorlist
 **Cause:** The frontend invokes these Tauri commands; they must be implemented in Rust and registered in `lib.rs` `invoke_handler`. In v0.3.5-alpha these were added.
 
 **Fix:** Ensure you are on a version that includes `get_chaotic_package_info` and `get_chaotic_packages_batch` in `commands::search` and in the handler list in `monarch-gui/src/lib.rs`. If you still see the error after pulling, run `npm run tauri dev` (or rebuild) so the backend is up to date.
+## 🦎 Wayland Artifacts / Flickering (v0.3.6)
+
+**Symptom:** Black squares, flickering transparency, or shadow artifacts on KDE Plasma + Nvidia using Wayland.
+
+**Fix:** MonARCH v0.3.6 includes the **Wayland Ghost Protocol**, which automatically detects `WAYLAND_DISPLAY` and disables problematic window effects. If artifacts persist, ensure `xdg-desktop-portal-kde` (or your DE's equivalent) is installed, as it helps identify the session correctly.
+
+## 🌓 Theme Detection (Dark Mode)
+
+**Symptom:** App stays in Light Mode even when the system is in Dark Mode (or vice versa).
+
+**Cause (v0.3.6+):** MonARCH now uses **XDG Portals** (`ashpd`) for theme detection to ensure compatibility with GNOME, KDE, and Hyprland. If you lack the required portal packages, the app may fall back to default styling.
+
+**Fix:**
+Ensure your portal implementation is installed:
+- GNOME: `xdg-desktop-portal-gnome`
+- KDE: `xdg-desktop-portal-kde`
+- Others (Sway/Hyprland): `xdg-desktop-portal-gtk` or `xdg-desktop-portal-wlr`
+
+Logs will show `Portal Theme Detected: dark` on successful detection.
+
+## 📁 File Pickers are "GTK" in KDE
+
+**Current:** File pickers use the default system chooser. Native Portal-based dialogs (`rfd`) are planned for a future release. Ensure `xdg-desktop-portal-kde` is installed for theme detection; when Portal file pickers are implemented, the same package will provide native KDE dialogs.
+
+## 🔄 Update "Stalled" on AUR Build (e.g. Cloning element-web)
+
+**Symptom:** The update log stops at a line like `Cloning into bare repository '.../element-web'...` or "Retrieving sources..." and appears frozen.
+
+**Cause:** Some AUR packages (e.g. element-desktop-git) clone very large git repos. The same package would take just as long in a terminal (`yay -Syu` or `paru -Syu`)—it's the package, not MonARCH. In the app it looks like a stall; you should not have to wait indefinitely.
+
+**What you can do now:**
+- **Cancel:** Use the Cancel button to stop the update. Repo packages that already updated are done; remaining AUR builds are skipped. You can run Updates again later or update heavy AUR packages from the terminal when convenient (`yay -S element-desktop-git`).
+- **Retry later:** If you want that specific package, run Updates again or install it from the terminal so you can see progress. If the same package always "hangs," consider skipping it in MonARCH and updating it manually when you have time.
+
+**Note:** We intend to improve this (e.g. per-package skip, timeouts, or background AUR updates) so you are not left waiting on a single heavy build.
+
+## 📦 "Transaction Commit failed: failed to retrieve some files"
+
+**Symptom:** During the repo (Phase 2) upgrade you see: `Error: Transaction Commit failed: failed to retrieve some files`.
+
+**Cause:** Pacman could not download one or more package files (mirror down, network issue, or transient error).
+
+**Fix:**
+1. Refresh and retry: **Settings → Maintenance → Advanced Repair → Refresh Databases**, then run **Updates** again.
+2. If it persists: try a different mirror (e.g. `sudo reflector --latest 5 --sort rate --save /etc/pacman.d/mirrorlist`) or run `sudo pacman -Syu` in a terminal to see the exact failing package/mirror.
+3. After the repo phase fails, MonARCH may still continue to AUR updates; the repo upgrade did not complete until the error is resolved.
+
+## ⚠️ "libfakeroot.so" / "libfakeroot internal error: payload not recognized"
+
+**Symptom:** During AUR build you see: `ld.so: object 'libfakeroot.so' from LD_PRELOAD cannot be preloaded` or `libfakeroot internal error: payload not recognized!`.
+
+**Cause:** Makepkg runs in a fakeroot environment; in some run environments the fakeroot library path is not visible to child processes. This is a known quirk when invoking makepkg from certain contexts.
+
+**Fix:** Usually **no action needed**—the package often completes anyway ("Finished making"). If builds consistently fail, ensure `fakeroot` is installed (it is part of `base-devel`). Run the AUR setup again if needed (Onboarding or Settings → Repositories → AUR → install base-devel).

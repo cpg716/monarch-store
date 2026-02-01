@@ -1,6 +1,7 @@
 # MonARCH Helper: Full Issues Report and Resolution
 
-**Date:** 2025-01-31  
+**Date:** 2026-02-01 (v0.3.6-alpha)
+  
 **Scope:** `monarch-helper` binary path, build layout, install/update failures, download progress, cancel flow, and startup unlock.  
 **Status:** All identified issues resolved.
 
@@ -8,7 +9,7 @@
 
 ## Executive Summary
 
-Installs and updates were failing or stalling because **the application was not running the helper binary that was being built**. A Cargo config override caused the helper to be compiled into a different directory than the one the GUI used at runtime. We also fixed download progress (blocking callbacks, cross-thread state), keyring pre-flight strictness, duplicated path logic, **App Store–style cancel flow** (helper PID + cancel file, GUI `cancel_install` + RemoveLock), and **startup unlock** (`unlock_pacman_if_stale` at app launch so a stale `db.lck` from cancel/crash doesn't break install/sync). This document describes every issue and the corresponding fix.
+Installs and updates were failing or stalling because **the application was not running the helper binary that was being built**. v0.3.6 introduces **The Iron Core** (`SafeUpdateTransaction`) to ensure that all sync operations are atomic and follow strict `-Syu` logic. This prevents partial upgrades and provides a robust state machine for ALPM transactions.
 
 ---
 
@@ -471,3 +472,14 @@ So the workflow is not broken after a previous cancel or crash, the app clears a
 - When **Reduce password prompts** is enabled (Settings → Workflow & Interface), the in-app password is used for startup unlock so the user does not see a system prompt at launch.
 
 **Files:** `monarch-gui/src/repair.rs` (`needs_startup_unlock`, `unlock_pacman_if_stale`), `src/App.tsx` (await `invoke('needs_startup_unlock')` then, if true, optional `requestSessionPassword()` and `invoke('unlock_pacman_if_stale', { password })` at start of `initializeStartup`).
+## Part 14: The Iron Core — SafeUpdateTransaction (v0.3.6)
+
+### 14.1 Issue
+Previous versions relied on complex manual logic in `transactions.rs` to enforce full upgrades during individual package installs. This led to potential borrow checker issues and brittle code.
+
+### 14.2 Resolution
+Implemented `SafeUpdateTransaction` in `safe_transaction.rs`. This new "Iron Core" logic:
+- Aborts early if `/var/lib/pacman/db.lck` is found.
+- Forces a manual iteration of all local packages to resolve updates from sync DBs.
+- Enforces a single `alpm.trans_commit()` call to ensure atomicity.
+- Returns clean, owned `String` errors to avoid lifetime conflicts with the GUI's error service.

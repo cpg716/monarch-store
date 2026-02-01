@@ -17,15 +17,13 @@ interface InstallMonitorProps {
     onSuccess?: () => void;
 }
 
-// Matches the Rust ClassifiedError structure
+// Matches the Rust AlpmClassifiedError (helper) and GUI error_classifier
 interface ClassifiedError {
     kind: string;
     title: string;
     description: string;
-    recovery_action?: {
-        type: string;
-        payload?: string;
-    };
+    /** Helper sends string (e.g. "UnlockDatabase"); GUI classifier may send object */
+    recovery_action?: string | { type: string; payload?: string };
     raw_message: string;
 }
 
@@ -909,8 +907,11 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                             <span>Status: {status === 'running' ? 'Working...' : status.toUpperCase()}</span>
                                             <span>{Math.round(visualProgress)}%</span>
                                         </div>
-                                        {pkg.source === 'aur' && status === 'running' && (detailedStatus.includes('Building') || detailedStatus.includes('Compiling') || (visualProgress >= 25 && visualProgress <= 85)) && (
-                                            <div className="text-xs text-blue-400 font-bold animate-pulse mb-2">Building from source…</div>
+                                        {pkg.source === 'aur' && status === 'running' && (detailedStatus.includes('Building') || detailedStatus.includes('Compiling') || detailedStatus.includes('Cloning') || detailedStatus.includes('Downloading Source') || (visualProgress >= 25 && visualProgress <= 85)) && (
+                                            <>
+                                                <div className="text-xs text-blue-400 font-bold animate-pulse mb-1">Building from source…</div>
+                                                <div className="text-[10px] text-app-muted mb-2">Large packages can take several minutes. You can cancel to skip the rest.</div>
+                                            </>
                                         )}
                                         <div className="w-full bg-app-fg/10 h-2 rounded-full overflow-hidden">
                                             {/* Progress Steps for AUR */}
@@ -1003,9 +1004,13 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                         {(() => {
                                             const config = getRecoveryConfig(classifiedError.kind);
                                             const RecoveryIcon = config.icon;
+                                            // Use recovery_action (e.g. "UnlockDatabase") when backend sends it; else kind for retry
+                                            const action = typeof classifiedError.recovery_action === 'string'
+                                                ? classifiedError.recovery_action
+                                                : classifiedError.kind;
                                             return (
                                                 <button
-                                                    onClick={() => handleRecoveryAction(classifiedError.kind)}
+                                                    onClick={() => handleRecoveryAction(action)}
                                                     disabled={isRecovering}
                                                     className={clsx(
                                                         "flex-1 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 shadow-lg transition-all active:scale-95",

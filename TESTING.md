@@ -1,6 +1,6 @@
 # Testing Guide for MonARCH Store
 
-**Release:** v0.3.5-alpha
+**Release:** v0.3.6-alpha
 
 ## ⚠️ Important: What Tests Actually Prove
 
@@ -11,7 +11,7 @@ These tests verify **command serialization/parsing**:
 - JSON format matches helper expectations ✅
 - File/env var formats are correct ✅
 
-**These catch the "raw string bug" but DO NOT test actual installs/updates.**
+**These catch the "raw string bug" but DO NOT test actual installs/updates.** Full system upgrade uses `SafeUpdateTransaction` in the helper; no separate unit tests for it yet.
 
 ### ❌ What's Missing (Full Integration Tests)
 To **actually prove** install/update works, we need:

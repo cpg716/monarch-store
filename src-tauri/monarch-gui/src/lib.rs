@@ -1,5 +1,5 @@
-pub(crate) mod alpm_read;
 pub(crate) mod alpm_progress;
+pub(crate) mod alpm_read;
 pub(crate) mod aur_api;
 pub(crate) mod chaotic_api;
 pub(crate) mod commands;
@@ -23,7 +23,7 @@ mod tests;
 
 use chaotic_api::ChaoticApiClient;
 use repo_manager::RepoManager;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 pub struct ScmState(pub scm_api::ScmClient);
 
@@ -90,6 +90,55 @@ pub fn run() {
                 let state_meta = handle.state::<metadata::MetadataState>();
                 state_meta.init(24).await;
             });
+
+            // Phase 2: The Chameleon (Cross-DE GUI)
+            // 2. Ghost Protocol: Wayland Detection
+            if std::env::var("WAYLAND_DISPLAY").is_ok() {
+                log::info!(
+                    "Wayland Detected (Ghost Protocol): Disabling transparency specific artifacts."
+                );
+                if let Some(window) = app.get_webview_window("main") {
+                    // On Wayland (+Nvidia/KDE), transparency can cause black flickering.
+                    // We forcibly disable it to ensure solidity.
+                    // Note: set_shadow(false) often helps too.
+                    let _ = window.set_shadow(false);
+                    // Verify if set_transparent is exposed/needed.
+                    // Usually handled by config, but explicit disable is safe.
+                    // window.set_transparent(false) // API check needed.
+                }
+            }
+
+            // 1. Native Dark Mode (Portals)
+            let handle_theme = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                #[cfg(target_os = "linux")]
+                {
+                    use ashpd::desktop::settings::Settings;
+                    log::info!("Initializing Portal Theme Detection...");
+                    match Settings::new().await {
+                        Ok(proxy) => {
+                            // namespace: org.freedesktop.appearance, key: color-scheme
+                            // 0: No pref, 1: Dark, 2: Light
+                            match proxy
+                                .read::<u8>("org.freedesktop.appearance", "color-scheme")
+                                .await
+                            {
+                                Ok(scheme) => {
+                                    let mode = match scheme {
+                                        1 => "dark",
+                                        2 => "light",
+                                        _ => "auto",
+                                    };
+                                    log::info!("Portal Theme Detected: {}", mode);
+                                    let _ = handle_theme.emit("system-theme-changed", mode);
+                                }
+                                Err(e) => log::warn!("Failed to read Portal theme: {}", e),
+                            }
+                        }
+                        Err(e) => log::warn!("Failed to connect to Settings Portal: {}", e),
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -109,6 +158,7 @@ pub fn run() {
             commands::package::abort_installation,
             commands::package::check_installed_status,
             commands::update::perform_system_update,
+            commands::update::get_system_update_command,
             commands::package::fetch_pkgbuild,
             commands::package::get_installed_packages,
             commands::package::check_for_updates,
@@ -201,37 +251,40 @@ pub fn run() {
             use std::sync::Mutex;
             use tauri::RunEvent;
             use tauri::WindowEvent;
-            let windows_icon_set: Mutex<std::collections::HashSet<String>> = Mutex::new(std::collections::HashSet::new());
-            move |app_handle, event| {
-                match &event {
-                    RunEvent::Ready => {
-                        if let Some(icon) = app_handle.default_window_icon() {
-                            for (label, win) in app_handle.webview_windows() {
-                                let _ = win.set_icon(icon.clone());
-                                let _ = windows_icon_set.lock().map(|mut s| s.insert(label.to_string()));
-                            }
+            let windows_icon_set: Mutex<std::collections::HashSet<String>> =
+                Mutex::new(std::collections::HashSet::new());
+            move |app_handle, event| match &event {
+                RunEvent::Ready => {
+                    if let Some(icon) = app_handle.default_window_icon() {
+                        for (label, win) in app_handle.webview_windows() {
+                            let _ = win.set_icon(icon.clone());
+                            let _ = windows_icon_set
+                                .lock()
+                                .map(|mut s| s.insert(label.to_string()));
                         }
                     }
-                    RunEvent::WindowEvent { label, event, .. } => {
-                        if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
-                            if let Ok(set) = windows_icon_set.lock() {
-                                if !set.contains(label) {
-                                    drop(set);
-                                    if let Some(icon) = app_handle.default_window_icon() {
-                                        if let Some(win) = app_handle.get_webview_window(label) {
-                                            let _ = win.set_icon(icon.clone());
-                                            let _ = windows_icon_set.lock().map(|mut s| s.insert(label.to_string()));
-                                        }
+                }
+                RunEvent::WindowEvent { label, event, .. } => {
+                    if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
+                        if let Ok(set) = windows_icon_set.lock() {
+                            if !set.contains(label) {
+                                drop(set);
+                                if let Some(icon) = app_handle.default_window_icon() {
+                                    if let Some(win) = app_handle.get_webview_window(label) {
+                                        let _ = win.set_icon(icon.clone());
+                                        let _ = windows_icon_set
+                                            .lock()
+                                            .map(|mut s| s.insert(label.to_string()));
                                     }
                                 }
                             }
                         }
                     }
-                    RunEvent::Exit => {
-                        log::info!("App exiting");
-                    }
-                    _ => {}
                 }
+                RunEvent::Exit => {
+                    log::info!("App exiting");
+                }
+                _ => {}
             }
         });
 }

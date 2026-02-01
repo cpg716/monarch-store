@@ -1,6 +1,6 @@
 # ErrorService - Centralized Error Handling
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Last updated:** 2026-02-01 (v0.3.6-alpha)
 
 ## Overview
 
@@ -73,6 +73,9 @@ errorService.reportCritical(
     }
 );
 ```
+
+### v0.3.6 Iron Core Synergy
+The `ErrorService` is now tightly integrated with `SafeUpdateTransaction`. When a transaction is aborted due to a pre-existing lock, the backend emits a `ClassifiedError` which `ErrorService` captures to show the specialized "Package Manager Busy" recovery modal.
 
 ### Backend ClassifiedError
 

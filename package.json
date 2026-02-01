@@ -3,7 +3,7 @@
   "private": false,
   "license": "MIT",
   "author": "cpg716 (https://github.com/cpg716) — developer and creator, with the help of AI coding tools",
-  "version": "0.3.5-alpha",
+  "version": "0.3.6-alpha",
   "type": "module",
   "scripts": {
     "dev": "vite --configLoader runner",
@@ -15,7 +15,7 @@
     "tauri build": "CARGO_TARGET_DIR=\"${PWD}/src-tauri/target\" (cd src-tauri && cargo build --release -p monarch-helper) && tauri build"
   },
   "dependencies": {
-    "@aptabase/tauri": "file:src-tauri/plugins/tauri-plugin-aptabase",
+    "@aptabase/tauri": "file:src-tauri/monarch-gui/plugins/tauri-plugin-aptabase",
     "@supabase/supabase-js": "^2.91.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@tauri-apps/api": "^2",

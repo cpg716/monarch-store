@@ -51,10 +51,7 @@ pub fn is_db_lock_stale() -> bool {
         Ok(t) => t,
         Err(_) => return false,
     };
-    let age_secs = modified
-        .elapsed()
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let age_secs = modified.elapsed().map(|d| d.as_secs()).unwrap_or(0);
     if age_secs >= STALE_LOCK_AGE_SECS && !is_pacman_running() {
         return true;
     }
@@ -75,10 +72,12 @@ pub fn remove_stale_db_lock() -> Result<(), String> {
 }
 
 /// Max time to wait for pacman-key --refresh-keys (keyservers can hang for minutes).
+#[allow(dead_code)]
 const KEYRING_REFRESH_TIMEOUT_SECS: u64 = 90;
 
 /// Run pacman-key --refresh-keys (as root) with a timeout so installs don't hang indefinitely.
 /// If keyservers are slow or unreachable, we fail after KEYRING_REFRESH_TIMEOUT_SECS and the user can retry or fix keys manually.
+#[allow(dead_code)]
 pub fn refresh_keyring() -> Result<(), String> {
     use std::io::Read;
     use std::process::Stdio;
@@ -143,6 +142,7 @@ pub fn refresh_keyring() -> Result<(), String> {
 }
 
 /// User-facing message for keyring refresh.
+#[allow(dead_code)]
 pub fn keyring_refresh_message() -> &'static str {
     "We're refreshing security keys. Hang tight..."
 }

@@ -1,7 +1,7 @@
 # Lock Safety Audit — MonARCH Store
 
-**Date:** 2025-01-31 · **Release:** v0.3.5-alpha  
-**Objective:** Verify GUI (monarch-gui) adheres to Lock Safety so the Helper has exclusive ALPM access during transactions.
+**Date:** 2026-02-01 · **Release:** v0.3.6-alpha  
+**Objective:** Verify GUI adheres to Lock Safety and that **Iron Core** ensures exclusive ALPM access.
 
 ---
 
@@ -20,8 +20,8 @@
 - **Create/drop per request.** Every ALPM use is a local variable, used synchronously, then dropped when the function returns. No handle is held across an `await` or across an `invoke_helper` call.
 - **Bad pattern not present.** There is no `let db = state.alpm.lock(); …; helper.install();` — the GUI never holds an ALPM lock while calling the helper.
 
-**Caveat (concurrent read + helper):**  
-`search_local_dbs` and `get_packages_batch` are invoked from `commands/search.rs` inside `tokio::task::spawn_blocking`. If a user runs a search (blocking thread holds ALPM for the duration of the search) and at the same time starts an install (invoke_helper), the Helper process will try to acquire `db.lck` and may block until the GUI’s blocking task finishes and drops its Alpm handle. This is a theoretical race; in practice reads are short and the Helper would wait. No code change recommended unless lock contention is observed.
+**Iron Core Safety (v0.3.6):**  
+The `SafeUpdateTransaction` struct in `monarch-helper` explicitly checks for `/var/lib/pacman/db.lck` as its first step. If the lock exists, it aborts the transaction before initializing ALPM, providing a hard barrier against concurrent writes even if Polkit allows execution.
 
 ---
 

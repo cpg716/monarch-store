@@ -48,6 +48,11 @@
     <content_attribute id="money-gambling">none</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.3.6-alpha" date="2026-02-01">
+      <description>
+        <p>Reliability &amp; Polish Update: Integrated "Iron Core" atomic upgrade protocol, fixed unclickable title bar controls, updated Tauri capabilities for window/store plugins, and conducted a comprehensive documentation audit.</p>
+      </description>
+    </release>
     <release version="0.3.5-alpha" date="2025-01-29">
       <description>
         <p>Alpha release: AppStream metainfo, focus trap and Escape on all modals, atomic sync proofing, PKGBUILD and distribution metadata ready for tag.</p>

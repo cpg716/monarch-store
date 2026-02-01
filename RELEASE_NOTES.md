@@ -4,7 +4,18 @@
 
 ---
 
-# Release Notes v0.3.5-alpha (Ready for Push)
+# Release Notes v0.3.6-alpha (Reliability & Polish)
+
+## Latest (2026-02-01)
+- **Safe Update Transaction (Iron Core):** Implemented strict "Atomic Update Protocol". We now check for locks and enforcement a full system upgrade (`-Syu`) for *every* sync transaction, ensuring zero "partial upgrade" breakages.
+- **Custom Title Bar & Permissions:** Integrated a premium client-side decoration (CSD) title bar. Fixed window control functionality (Minimize/Maximize/Close) and enabled backend permissions for the Tauri Store plugin.
+- **Wayland Ghost Protocol:** Fixed black flickering/artifacts on KDE Plasma (especially Nvidia) by intelligently detecting `WAYLAND_DISPLAY` and disabling transparency effects.
+- **The Chameleon (Native Themes):** Now uses XDG Portals (`ashpd`) to detect system Dark/Light mode correctly on all desktops (GNOME, KDE, Hyprland), ignoring legacy GTK theme signals.
+- **Native Dialogs:** Portal-based file pickers (`rfd`) are planned; dependency added. Theme detection uses XDG Portals (`ashpd`).
+
+---
+
+# Release Notes v0.3.5-alpha
 
 ## Latest (2025-01-31)
 - **Security (Fort Knox):** Helper restricts `WriteFile`/`WriteFiles` to `/etc/pacman.d/monarch/` only; command file must be owned by invoking user when using pkexec; 800 ms debounce on helper invokes. See [SECURITY_AUDIT_FORT_KNOX](docs/SECURITY_AUDIT_FORT_KNOX.md).
@@ -13,6 +24,9 @@
 - **Double Password Prompt Fix:** Resolved a race condition in the session password dialog that caused the backend to receive an empty password, triggering an unnecessary system prompt.
 - **Installation Resilience:** Installation engine now gracefully handles missing sync databases (e.g. after a force refresh) by skipping pre-flight checks and letting the main sync transaction handle it.
 - **CI/CD Reliability:** Fixed the GitHub Action build pipeline (`tauri-action`) to correctly handle the nested project structure and ensure frontend assets are built before packaging.
+- **Robust Installations (CRITICAL):** Fixed "Package not found" errors by replacing the manual config parser with `pacman-conf`. The helper now sees exactly what Pacman sees.
+- **Safety First:** Implemented "Smart Retry" logic. If an install fails due to stale databases (404s), Monarch now automatically syncs AND performs a full system upgrade (`pacman -Syu`), preventing dangerous partial upgrades.
+- **AUR Refactor:** Switched to the `raur` crate for faster, async-native AUR searches.
 - **APIs & clean-up:** Typed `get_cache_size`/`get_orphans_with_size`; Rust logging and unwrap hardening; frontend `AppState` typing; docs cleaned and Fort Knox linked.
 
 ## v0.3.5-alpha (base)
@@ -42,12 +56,12 @@ MonARCH is now the **Universal Arch Linux App Manager**. We have transitioned fr
 *   **Responsive Stacking**: The "App Details" view now intelligently stacks metadata on mobile while expanding to a 2-column layout on desktop.
 *   **Skeleton Loading**: Smoother transitions with shimmer effects replaces jarring spinners.
 
-## ⚡ Performance & Resilience
 *   **70% Faster Startup**: Parallel ODRS rating fetches mean the homepage loads instantly.
 *   **Smart Sync**: The installer uses the Helper for all ALPM write operations. We never run `pacman -Sy` alone; repo installs use `pacman -Syu --needed` in one transaction.
 *   **Offline Mode**: A new global "Offline Guard" prevents crashes when the internet cuts out, serving cached data gracefully.
 
 ---
+
 
 # Release Notes v0.3.00-Alpha1 - The "Butterfly" Update
 

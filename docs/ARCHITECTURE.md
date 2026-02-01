@@ -1,8 +1,6 @@
 # System Architecture 🏗️
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
-
-MonARCH Store is built on **Tauri 2**, with a Rust workspace: **monarch-gui** (user process, read-only ALPM + orchestration) and **monarch-helper** (root via Polkit, ALPM write operations). The frontend is React 19 + TypeScript + Tailwind CSS 4 + Vite 7 + Zustand.
+MonARCH Store is built on **Tauri 2**, with a Rust workspace: **monarch-gui** (user process, read-only ALPM + orchestration) and **monarch-helper** (root via Polkit, ALPM write operations). v0.3.6 introduces **The Iron Core** transaction logic and **Chameleon** Portal-based theme detection.
 
 ## High-Level Overview
 
@@ -21,12 +19,13 @@ graph TD
 
 ### Workspace Layout
 - **`src-tauri/monarch-gui/`**: Tauri app (user process). Commands in `commands/`; `helper_client.rs` builds JSON command, writes to temp file, spawns `pkexec monarch-helper <cmd_file_path>`. Read-only ALPM in `alpm_read.rs`; AUR builds (unprivileged makepkg) then Helper installs built packages.
-- **`src-tauri/monarch-helper/`**: Privileged binary. Reads command from temp file, runs ALPM transactions (install, uninstall, sysupgrade, sync). **`force_refresh_sync_dbs`** reads `/etc/pacman.conf` and `/etc/pacman.d/monarch/*.conf` directly so DB refresh works even when ALPM state is corrupt. Progress/result streamed via stdout; GUI emits `alpm-progress`, `install-complete`, etc.
+- **`src-tauri/monarch-helper/`**: Privileged binary. Reads command from temp file, runs ALPM transactions. v0.3.6 introduces `SafeUpdateTransaction` as the "Iron Core" for all sync operations, enforcing `-Syu` at the Rust level to prevent partial upgrades. Progress/result streamed via stdout; GUI emits `alpm-progress`, `install-complete`, etc.
 
 ### Key GUI Modules
 - **`lib.rs`**: Registers Tauri commands and plugins.
 - **`commands/`**: `package.rs` (install/uninstall), `search.rs`, `update.rs`, `system.rs` (includes `test_mirrors(repo_key)` for per-repo mirror latency via rate-mirrors/reflector; `force_refresh_databases`, `rank_mirrors`; repair invokes accept optional password), `utils.rs`, `reviews.rs`.
-- **`models.rs`**: Shared types (e.g. `Package`). **`metadata.rs`** / **`flathub_api.rs`**: AppStream and Flathub API used for metadata only (icons, descriptions, reviews); we do not add Flatpak runtime or app support. **`odrs_api.rs`**: ODRS ratings. **`repo_manager.rs`**: Repo state and sync. **`error_classifier.rs`**: Classifies install errors for recovery UI.
+- **`models.rs`**: Shared types. **`metadata.rs`** / **`flathub_api.rs`**: AppStream and Flathub API used for metadata only. **`odrs_api.rs`**: ODRS ratings. **`repo_manager.rs`**: Repo state and sync. **`error_classifier.rs`**: Classifies errors.
+- **`lib.rs` (v0.3.6)**: Implements **Wayland Ghost Protocol** (disabling transparency on Wayland) and **Chameleon Theme Engine** (using `ashpd` Portals for system-wide dark mode detection).
 
 ### Search & Priority Logic
 To ensure the best user experience, results are processed through a **Weighted Relevance Sort** (`utils::sort_packages_by_relevance`). This system prioritizes:

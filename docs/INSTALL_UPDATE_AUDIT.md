@@ -1,8 +1,8 @@
 # Install & Update Audit: Why It Fails and Passwordless Polkit
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Last updated:** 2026-02-01 (v0.3.6-alpha)
 
-This document audits the install and update flows, root causes of failures, and how to make installs/updates work **without** a password prompt when Polkit is configured.
+This document audits the install and update flows, root causes of failures, and how to make installs/updates work **without** a password prompt when Polkit is configured. For a comparison with Apdatifier, Octopi, and CachyOS packageinstaller, see [Install & Update Comparison](INSTALL_UPDATE_COMPARISON.md).
 
 > [!CAUTION]
 > **ALPHA RELEASE NOTICE**: The installation and update engine described herein is in an **Experimental Alpha** state. While the architecture is designed for robustness, users may encounter synchronization failures or transaction errors. Please use with caution on production systems.
@@ -15,9 +15,9 @@ This document audits the install and update flows, root causes of failures, and 
 |-------|------|
 | **Frontend** | `InstallMonitor.tsx` → `invoke('install_package', …)` or `invoke('perform_system_update', …)` |
 | **Backend (GUI)** | `commands/package.rs` (install), `commands/update.rs` (system update), `commands/system.rs` (update_and_install) |
-| **Helper client** | `helper_client.rs` → builds JSON command, writes to temp file, spawns `pkexec <helper_bin> <cmd_file_path>` |
+| **Helper client** | `helper_client.rs` → writes JSON to temp file in `/var/tmp`, spawns `pkexec <helper_bin> <cmd_file_path>` or `sudo -S <helper_bin> <cmd_file_path>`. **Command is always delivered via file path** (pkexec does not reliably forward stdin). |
 | **Privilege** | `pkexec` (no password) or `sudo -S` (password on stdin) |
-| **Helper (root)** | `monarch-helper` reads command from file or stdin, runs ALPM transactions |
+| **Helper (root)** | `monarch-helper`: Uses **SafeUpdateTransaction** (Iron Core) to run `-Syu` logic natively. |
 
 Polkit matches the **first argument** to pkexec (the program path) against `org.freedesktop.policykit.exec.path` in the policy. Only when the path **exactly** matches does the action (e.g. `com.monarch.store.package-manage`) apply, including passwordless rules.
 
@@ -25,21 +25,17 @@ Polkit matches the **first argument** to pkexec (the program path) against `org.
 
 ## 2. Why Installing Fails
 
-### 2.1 Invalid JSON / Wrong Helper Path (Fixed Previously)
+### 2.1 Command Delivery: Always Use Temp File (v0.3.6)
 
-- **Symptom:** `Error: Invalid JSON command in arguments` and install never runs.
-- **Cause:** Command was passed as a long JSON string in `argv[1]`. Some environments truncate or corrupt long arguments; polkit or the shell can change how argv is passed.
-- **Fix (current):** Command is written to a temp file (`/tmp/monarch-cmd-<ts>.json`); only the **file path** is passed to the helper. Helper reads JSON from file, parses it, then deletes the file. This avoids argv length and escaping issues. The helper also accepts **inline JSON** when the argument is not our temp-file path (e.g. repair `RunCommand` or AUR PACMAN wrapper); "file not found" is only emitted when the argument looks like `/tmp/...monarch-cmd-....json` but the file is missing.
+- **Symptom (previous):** Install/update appeared to start but nothing happened, or "Invalid input on stdin".
+- **Cause:** When using pkexec (no password), the GUI sent the command on **stdin**. Many systems do **not** forward stdin to the pkexec child (Polkit/security), so the helper never received the command.
+- **Fix (current):** Command is **always** written to a temp file in `/var/tmp` and the **file path** is passed as the helper’s first argument for both pkexec and sudo -S. The helper reads JSON from the file, parses it, then deletes the file. Install and update now work reliably with pkexec.
 
 ### 2.2 Polkit Path Mismatch (Dev vs Production)
 
 - **Policy says:** `org.freedesktop.policykit.exec.path` = `/usr/lib/monarch-store/monarch-helper`
-- **In development:** `helper_client` prefers a **dev** helper next to the executable (e.g. `target/debug/monarch-helper`). So we run:
-  - `pkexec /home/…/target/debug/monarch-helper /tmp/monarch-cmd-xxx.json`
-- **Result:** The program path does **not** match the policy. Polkit does **not** use `com.monarch.store.package-manage`; it falls back to a generic auth (or another action), so you get a password prompt and behavior may differ.
-- **In production (installed package):** Helper is at `/usr/lib/monarch-store/monarch-helper`; exe is e.g. `/usr/bin/monarch-store`. Dev paths are not found, so we use `MONARCH_PK_HELPER` = `/usr/lib/monarch-store/monarch-helper`. Path matches policy → correct action and rules apply.
-
-**Recommendation:** When the **installed** helper exists (`/usr/lib/monarch-store/monarch-helper`), use it for privilege escalation so Polkit always matches. Use the dev helper only when the installed one is not present (pure dev).
+- **Fix (v0.3.6):** `helper_client` **prefers the production helper** when it exists. So when the package is installed, we always run `pkexec /usr/lib/monarch-store/monarch-helper <cmd_file_path>` → path matches policy → correct action and passwordless rules apply.
+- **Pure dev (no package installed):** We use the dev helper (`target/debug/monarch-helper`). Its path does **not** match the policy, so Polkit may prompt or deny. Use **Reduce password prompts** (Settings) and enter your password once so we use `sudo -S` and the same file-based command delivery.
 
 ### 2.3 Double Invocation (Fixed Previously)
 
@@ -107,7 +103,7 @@ Two mechanisms:
 ### 4.3 Reduce password prompts & startup unlock
 
 - **Reduce password prompts** (Settings → Workflow & Interface): When enabled, the user can enter their password once in a MonARCH dialog; it is used for installs, repairs, and **startup unlock** for the session (~15 min), not persisted. The password is sent to the app and used with `sudo -S` when invoking the helper; it is less secure than using the system (Polkit) prompt each time.
-- **Startup unlock**: At launch the app calls `needs_startup_unlock()`. If a stale `db.lck` exists (no pacman process running), it runs `unlock_pacman_if_stale`. When **Reduce password prompts** is on, the app shows its own password dialog and passes the password to `unlock_pacman_if_stale` so the system prompt does not appear at launch; otherwise Polkit is used (one prompt or none if rules allow).
+- **Startup unlock**: At launch the app calls `needs_startup_unlock()`. v0.3.6 features an atomic lock check within `SafeUpdateTransaction` to ensure transactions never conflict with existing pacman instances.
 
 ---
 
@@ -145,7 +141,7 @@ Two mechanisms:
 
 ---
 
-## 7. Verification Checklist
+## 8. Verification Checklist
 
 After applying the recommended changes:
 

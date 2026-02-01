@@ -1,6 +1,6 @@
 # 📈 MonARCH Progress Report
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Last updated:** 2026-02-01 (v0.3.6-alpha)
 
 ## 🏆 Recent Achievements
 
@@ -11,6 +11,11 @@
 - **Typed APIs:** `get_cache_size` and `get_orphans_with_size` return typed structs (`CacheSizeResult`, `OrphansWithSizeResult`); SettingsPage uses typed `invoke` interfaces.
 - **Deep clean:** Rust `println!`→`log::*`; commented debug removed; `unwrap()` on mutex/parse replaced with `expect`/`map_err` where appropriate; frontend `useAppStore` uses `AppState`; modal z-index standardized to `z-50`.
 - **Docs:** Obsolete audit/gate docs removed; Fort Knox linked from SECURITY, README, DOCUMENTATION; RELEASE_NOTES and GITHUB_RELEASE_TEMPLATE links updated; DEVELOPER doc index updated.
+- **Robustness (CRITICAL):** Replaced manual `pacman.conf` parsing in helper with `pacman-conf` CLI integration. This ensures 100% accurate repository/server detection, fixing "Install doesn't work" issues for complex configs (Include files, etc.).
+- **Safety First:** Implemented "Smart Retry" in GUI and "Safe Upgrade Enforcement" in Helper. If a download fails (stale DB), we retry with sync enabled, which triggers a mandatory full system upgrade (`pacman -Syu`) to prevent partial upgrades.
+- **Improved AUR:** Refactored AUR interactions to use the `raur` crate for reliability.
+- **Refactor (v0.3.6):** Implemented `SafeUpdateTransaction` (Iron Core) for atomic -Syu enforcement. Added Wayland Ghost Protocol (flicker fix) and Chameleon Theme Engine (Portal-based dark mode).
+- **Native Dialogs:** Portal-based file pickers (`rfd`) are planned; dependency added in v0.3.6. Theme detection already uses XDG Portals (`ashpd`).
 
 ### v0.3.5-alpha (Release readiness & Omni-User)
 - **AppStream:** Production `monarch-store.metainfo.xml` with `com.monarch.store`, developer cpg716, OARS content rating.

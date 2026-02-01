@@ -29,6 +29,7 @@ import { UpdateProgress } from './store/internal_store';
 import { useToast } from './context/ToastContext';
 import { useSessionPassword } from './context/useSessionPassword';
 import { useErrorService } from './context/ErrorContext';
+import TitleBar from './components/TitleBar';
 
 function App() {
   const [activeTab, setActiveTab] = useState('explore');
@@ -402,7 +403,8 @@ function App() {
   if (isRefreshing) return <LoadingScreen />;
 
   return (
-    <div className="flex h-screen w-screen bg-app-bg text-app-fg overflow-hidden font-sans transition-colors" style={{ '--tw-selection-bg': `${accentColor}4D` } as any}>
+    <div className="flex h-screen w-screen bg-app-bg text-app-fg overflow-hidden font-sans transition-colors pt-10 border border-white/5 rounded-xl shadow-2xl" style={{ '--tw-selection-bg': `${accentColor}4D` } as any}>
+      <TitleBar />
       {/* Grandma-proof: one-step DB repair overlay when only issue is corrupt sync DBs */}
       {pendingDbRepair && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6">
@@ -480,55 +482,55 @@ function App() {
 
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0 pb-32 scroll-smooth scroll-gpu">
               <div className="max-w-[1920px] mx-auto w-full">
-              {activeTab === 'explore' && !searchQuery && (
-                <div className="px-6 pt-6 animate-in fade-in slide-in-from-top-5 duration-700">
-                  <HeroSection />
-                </div>
-              )}
-
-              <div className="sticky top-0 z-10 px-4 sm:px-6 py-4 bg-app-bg backdrop-blur-xl transition-all flex items-center justify-center gap-3">
-                <SearchBar value={searchQuery} onChange={setSearchQuery} />
-              </div>
-
-              <div className="max-w-7xl mx-auto px-6 pb-16 min-h-[50vh]">
-                {(searchQuery || activeTab === 'search') ? (
-                  <SearchPage
-                    query={searchQuery}
-                    onQueryChange={setSearchQuery}
-                    packages={packages}
-                    loading={loading}
-                    onSelectPackage={setSelectedPackage}
-                    enabledRepos={enabledRepos}
-                  />
-                ) : activeTab === 'explore' ? (
-                  <HomePage
-                    onSelectPackage={setSelectedPackage}
-                    onSeeAll={setViewAll}
-                    onSelectCategory={setSelectedCategory}
-                  />
-                ) : activeTab === 'installed' ? (
-                  <InstalledPage onSelectPackage={setSelectedPackage} />
-                ) : activeTab === 'favorites' ? (
-                  <div className="py-4">
-                    <h2 className="text-2xl font-bold mb-2">Favorites</h2>
-                    {favorites.length === 0 ? (
-                      <div className="text-center text-app-muted py-20 flex flex-col items-center gap-4">
-                        <div className="p-4 rounded-full bg-app-subtle"><Heart size={32} className="opacity-50" /></div>
-                        <p className="font-bold">No favorites yet</p>
-                      </div>
-                    ) : (
-                      <TrendingSection title="" filterIds={favorites} onSelectPackage={setSelectedPackage} limit={100} />
-                    )}
+                {activeTab === 'explore' && !searchQuery && (
+                  <div className="px-6 pt-6 animate-in fade-in slide-in-from-top-5 duration-700">
+                    <HeroSection />
                   </div>
-                ) : activeTab === 'updates' ? (
-                  <UpdatesPage />
-                ) : activeTab === 'settings' ? (
-                  <SettingsPage
-                    onRestartOnboarding={() => setShowOnboarding(true)}
-                    onRepairComplete={async () => { await refreshSystemHealth(); }}
-                  />
-                ) : null}
-              </div>
+                )}
+
+                <div className="sticky top-0 z-10 px-4 sm:px-6 py-4 bg-app-bg backdrop-blur-xl transition-all flex items-center justify-center gap-3">
+                  <SearchBar value={searchQuery} onChange={setSearchQuery} />
+                </div>
+
+                <div className="max-w-7xl mx-auto px-6 pb-16 min-h-[50vh]">
+                  {(searchQuery || activeTab === 'search') ? (
+                    <SearchPage
+                      query={searchQuery}
+                      onQueryChange={setSearchQuery}
+                      packages={packages}
+                      loading={loading}
+                      onSelectPackage={setSelectedPackage}
+                      enabledRepos={enabledRepos}
+                    />
+                  ) : activeTab === 'explore' ? (
+                    <HomePage
+                      onSelectPackage={setSelectedPackage}
+                      onSeeAll={setViewAll}
+                      onSelectCategory={setSelectedCategory}
+                    />
+                  ) : activeTab === 'installed' ? (
+                    <InstalledPage onSelectPackage={setSelectedPackage} />
+                  ) : activeTab === 'favorites' ? (
+                    <div className="py-4">
+                      <h2 className="text-2xl font-bold mb-2">Favorites</h2>
+                      {favorites.length === 0 ? (
+                        <div className="text-center text-app-muted py-20 flex flex-col items-center gap-4">
+                          <div className="p-4 rounded-full bg-app-subtle"><Heart size={32} className="opacity-50" /></div>
+                          <p className="font-bold">No favorites yet</p>
+                        </div>
+                      ) : (
+                        <TrendingSection title="" filterIds={favorites} onSelectPackage={setSelectedPackage} limit={100} />
+                      )}
+                    </div>
+                  ) : activeTab === 'updates' ? (
+                    <UpdatesPage />
+                  ) : activeTab === 'settings' ? (
+                    <SettingsPage
+                      onRestartOnboarding={() => setShowOnboarding(true)}
+                      onRepairComplete={async () => { await refreshSystemHealth(); }}
+                    />
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>
@@ -553,7 +555,7 @@ function App() {
           variant="info"
         />
       )}
-      
+
       {/* Onboarding - Only show after popup is dismissed or if no reason */}
       {showOnboarding && !showSystemFixPopup && <OnboardingModal onComplete={handleOnboardingComplete} reason={onboardingReason} />}
       {activeInstall && (

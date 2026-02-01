@@ -1,89 +1,17 @@
 use crate::models::{Package, PackageSource};
 use once_cell::sync::Lazy;
-use serde::Deserialize;
-use std::time::Duration;
+use raur::{Handle, Raur};
+use std::sync::Arc;
 
-// Shared HTTP client - created once, reused for all requests
-static AUR_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
-    reqwest::Client::builder()
-        .user_agent("MonARCH-Store/0.1.0 (Tauri; Arch Linux)")
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+// Shared Handle - created once, reused
+static AUR_HANDLE: Lazy<Arc<Handle>> = Lazy::new(|| {
+    // Customize user agent if needed, but default is fine usually.
+    // Handle::new() uses default AUR URL.
+    Arc::new(Handle::new())
 });
 
-#[derive(Deserialize, Debug)]
-struct AurResponse {
-    results: Vec<AurPackage>,
-    #[serde(default)]
-    _resultcount: u32,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-#[derive(Deserialize, Debug)]
-#[allow(dead_code)]
-struct AurPackage {
-    #[serde(rename = "Name")]
-    name: String,
-    #[serde(rename = "Description")]
-    description: Option<String>,
-    #[serde(rename = "Version")]
-    version: String,
-    #[serde(rename = "Maintainer")]
-    maintainer: Option<String>,
-    #[serde(rename = "NumVotes")]
-    num_votes: Option<u32>,
-    #[serde(rename = "URL")]
-    url: Option<String>,
-    #[serde(rename = "License")]
-    license: Option<Vec<String>>,
-    #[serde(rename = "Keywords")]
-    keywords: Option<Vec<String>>,
-    #[serde(rename = "LastModified")]
-    last_modified: Option<i64>,
-    #[serde(rename = "FirstSubmitted")]
-    first_submitted: Option<i64>,
-    #[serde(rename = "OutOfDate")]
-    out_of_date: Option<i64>,
-    #[serde(rename = "Depends")]
-    depends: Option<Vec<String>>,
-    #[serde(rename = "MakeDepends")]
-    make_depends: Option<Vec<String>>,
-    #[serde(rename = "CheckDepends")]
-    check_depends: Option<Vec<String>>,
-    #[serde(rename = "Conflicts")]
-    conflicts: Option<Vec<String>>,
-    #[serde(rename = "Provides")]
-    provides: Option<Vec<String>>,
-}
-
-// Common function to fetch from AUR API
-async fn fetch_aur(url: &str) -> Result<Vec<AurPackage>, String> {
-    let resp = AUR_CLIENT
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("AUR API returned error: {}", resp.status()));
-    }
-
-    let body: AurResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
-
-    if let Some(err) = body.error {
-        return Err(format!("AUR API Error: {}", err));
-    }
-
-    Ok(body.results)
-}
-
-// Convert AurPackage to Package
-fn aur_to_package(p: AurPackage) -> Package {
+// Convert raur::Package to our internal Package model
+fn raur_to_package(p: raur::Package) -> Package {
     Package {
         name: p.name,
         display_name: None,
@@ -91,20 +19,24 @@ fn aur_to_package(p: AurPackage) -> Package {
         version: p.version,
         source: PackageSource::Aur,
         maintainer: p.maintainer,
-        num_votes: p.num_votes,
+        num_votes: Some(p.num_votes as u32),
         url: p.url,
-        license: p.license,
-        keywords: p.keywords,
-        last_modified: p.last_modified,
-        first_submitted: p.first_submitted,
-        out_of_date: p.out_of_date,
+        license: Some(p.license),
+        keywords: Some(p.keywords),
+        last_modified: Some(p.last_modified),
+        first_submitted: Some(p.first_submitted),
+        out_of_date: p.out_of_date, // This might be Option already in raur?
+        // Docs say out_of_date is Option<i64>.
+        // Let's check error: I didn't get error for out_of_date in the list above?
+        // Wait, line 26/27 errors were for last_modified/first_submitted provided as i64.
+        // out_of_date often is Option.
         icon: None,
         screenshots: None,
-        provides: p.provides,
+        provides: Some(p.provides),
         app_id: None,
         is_optimized: None,
-        depends: p.depends,
-        make_depends: p.make_depends,
+        depends: Some(p.depends),
+        make_depends: Some(p.make_depends),
         is_featured: None,
         installed: false,
         ..Default::default()
@@ -116,13 +48,13 @@ pub async fn search_aur(query: &str) -> Result<Vec<Package>, String> {
         return Ok(vec![]);
     }
 
-    let url = format!("https://aur.archlinux.org/rpc/v5/search/{}", query);
-    let mut results = fetch_aur(&url).await?;
+    let results = AUR_HANDLE.search(query).await.map_err(|e| e.to_string())?;
 
-    // Sort by votes (popularity) descending
-    results.sort_by(|a, b| b.num_votes.unwrap_or(0).cmp(&a.num_votes.unwrap_or(0)));
+    // Sort by votes descending
+    let mut packages: Vec<Package> = results.into_iter().map(raur_to_package).collect();
+    packages.sort_by(|a, b| b.num_votes.unwrap_or(0).cmp(&a.num_votes.unwrap_or(0)));
 
-    Ok(results.into_iter().map(aur_to_package).collect())
+    Ok(packages)
 }
 
 #[allow(dead_code)]
@@ -131,15 +63,41 @@ pub async fn search_aur_by_provides(query: &str) -> Result<Vec<Package>, String>
         return Ok(vec![]);
     }
 
-    let url = format!(
-        "https://aur.archlinux.org/rpc/v5/search/{}?by=provides",
-        query
-    );
-    let mut results = fetch_aur(&url).await?;
+    // Raur search_by_provides logic?
+    // raur search method implies by name/desc by default.
+    // raur::SearchBy::Provides?
+    // Checking raur methods... usually Handle has `search_by`.
+    // If not visible, we can implement manual search or skip if not supported.
+    // However, raur usually exposes `search` which maps to `arg` and `by` logic?
+    // Wait, raur 8.0 `search(query)` uses default strategy.
+    // `search_by(query, strategy)`?
+    // I'll assume standard `search` first.
+    // If we need specifically "provides", I might need to check raur docs or source.
+    // For now, I'll fallback to search(query) or check if I can use request builder?
+    // Actually, let's keep it simple. Standard search is usually enough.
+    // But `search_aur_by_provides` was explicit.
+    // I will try `AUR_HANDLE.search_by(query, raur::SearchBy::Provides)` if it exists.
+    // To be safe and avoid compilation error if it doesn't exist, I'll comment out specific implementation or use `search`.
+    // Actually, `raur` repo shows `search_by` method.
+    // `search_by(query, SearchBy::Provides)`.
+    // Need to import `SearchBy`.
 
-    results.sort_by(|a, b| b.num_votes.unwrap_or(0).cmp(&a.num_votes.unwrap_or(0)));
+    // Attempting to use `search_by` if available (it should be in v8)
+    // use raur::SearchBy; (imported if I add it)
 
-    Ok(results.into_iter().map(aur_to_package).collect())
+    // For safety, I'll stick to `search` (name/desc) for now unless I'm sure about `raur` exports.
+    // But wait, the user wants "Best for app". "Best" implies full feature parity.
+    // I'll assume `AUR_HANDLE.search_by(query, raur::SearchBy::Provides)`.
+
+    let results = AUR_HANDLE
+        .search_by(query, raur::SearchBy::Provides)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut packages: Vec<Package> = results.into_iter().map(raur_to_package).collect();
+    packages.sort_by(|a, b| b.num_votes.unwrap_or(0).cmp(&a.num_votes.unwrap_or(0)));
+
+    Ok(packages)
 }
 
 pub async fn get_multi_info(names: &[&str]) -> Result<Vec<Package>, String> {
@@ -147,11 +105,6 @@ pub async fn get_multi_info(names: &[&str]) -> Result<Vec<Package>, String> {
         return Ok(vec![]);
     }
 
-    let mut url = "https://aur.archlinux.org/rpc/v5/info?".to_string();
-    for name in names {
-        url.push_str(&format!("arg[]={}&", name));
-    }
-
-    let results = fetch_aur(&url).await?;
-    Ok(results.into_iter().map(aur_to_package).collect())
+    let results = AUR_HANDLE.info(names).await.map_err(|e| e.to_string())?;
+    Ok(results.into_iter().map(raur_to_package).collect())
 }

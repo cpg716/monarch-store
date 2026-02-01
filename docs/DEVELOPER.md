@@ -1,6 +1,6 @@
 # MonARCH Store — Developer Documentation
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Last updated:** 2026-02-01 (v0.3.6-alpha)
 
 Single reference for developers working on MonARCH Store: setup, architecture, code style, and critical rules.
 
@@ -13,7 +13,9 @@ MonARCH Store is a **distro-aware software store** for Arch, Manjaro, and CachyO
 - **Soft Disable** repositories: system repos stay enabled; UI only filters what you see.
 - **Chaotic-first** installs: pre-built binaries (Chaotic-AUR, CachyOS) before AUR source builds.
 - **Butterfly** health: startup probes for `pkexec`, `git`, Polkit; unified repair wizard.
-- **Omni-User (v0.3.5):** Self-healing (silent DB repair and auto-unlock during install), Glass Cockpit (verbose transaction logs, Advanced Repair, Test Mirrors per repo with latency). Helper `force_refresh_sync_dbs` reads pacman.conf directly. **Startup unlock:** At launch the frontend calls `needs_startup_unlock()`; if true and **Reduce password prompts** (Settings → Workflow & Interface) is on, it requests the session password and passes it to `unlock_pacman_if_stale` so the system prompt does not appear at launch; otherwise Polkit is used. **Install cancel:** InstallMonitor Cancel button and close-with-warning; `cancel_install` creates cancel file, helper exits, then RemoveLock. See [HELPER_ISSUES_AND_RESOLUTION_REPORT.md](HELPER_ISSUES_AND_RESOLUTION_REPORT.md) Parts 12–13.
+- **The Iron Core (v0.3.6):** Implemented `SafeUpdateTransaction` for atomic, borrow-safe ALPM operations. Enforces `-Syu` for all transactions.
+- **Wayland Ghost Protocol:** Automated flicker/artifact prevention on Wayland sessions.
+- **Chameleon Theme Engine:** Native dark mode detection via XDG Portals (`ashpd`).
 - **Two-process backend**: GUI (user) + Helper (root via Polkit) so ALPM writes are isolated.
 
 **Tech stack:**
@@ -82,7 +84,7 @@ monarch-store/
 - **Rust** (latest stable)
 - **Node.js** (LTS) and npm
 - **System (Arch):**  
-  `webkit2gtk`, `base-devel`, `curl`, `wget`, `file`, `openssl`, `appmenu-gtk-module`, `gtk3`, `libappindicator-gtk3`, `librsvg`, `libvips`
+  `webkit2gtk`, `base-devel`, `curl`, `wget`, `file`, `openssl`, `appmenu-gtk-module`, `gtk3`, `libappindicator-gtk3`, `librsvg`, `libvips`, `xdg-desktop-portal` (for native dark mode & dialogs)
 - **Faster linking (optional):** `mold` + `clang`  
   `sudo pacman -S mold clang` — project uses mold by default; see `src-tauri/.cargo/config.toml` for fallbacks.
 
@@ -152,7 +154,7 @@ The npm script sets `CARGO_TARGET_DIR=src-tauri/target`. If config overrides wit
 ### Two-process backend
 
 - **monarch-gui (user):** Read-only ALPM, search, AUR builds (unprivileged makepkg), config. Builds a JSON command, writes to temp file, runs `pkexec monarch-helper <path>`.
-- **monarch-helper (root):** Reads command from file, runs ALPM (install/uninstall/sysupgrade). Progress/result streamed; GUI emits events to frontend.
+- **monarch-helper (root):** Reads command from file, runs ALPM. v0.3.6 introduces `SafeUpdateTransaction.rs` which encapsulates all safety and update logic in a borrow-safe Rust implementation.
 
 ### Polkit & helper path
 

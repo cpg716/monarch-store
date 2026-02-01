@@ -38,8 +38,12 @@ MonARCH is **Context-Aware** thanks to the `distro_detect.rs` module. It probes 
 The installation flow uses the **monarch-helper** binary (invoked via `pkexec`) so that all ALPM write operations run in one privileged process. This prevents partial upgrades and split-brain states.
 
 *   **GUI (user)**: Validates package name, distro safety, and repo selection; builds a JSON command and writes it to a temp file.
-*   **Helper (root)**: Reads the command from the temp file, runs ALPM transactions (sync + install, or uninstall, or sysupgrade). Progress is streamed back via events.
-*   **Rule**: We **never** run `pacman -Sy` alone. Repo installs use `pacman -Syu --needed` in a single transaction; system updates use one full upgrade. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md).
+*   **Helper (root)**: Reads the command from the temp file, runs ALPM transactions. 
+    *   **Config Parsing**: Uses `pacman-conf` to accurately load all repositories and servers, supporting complex `Include` files.
+    *   **The Iron Core (v0.3.6)**: Uses `SafeUpdateTransaction` for atomic reliability.
+    *   **Lock Guard**: Checks `/var/lib/pacman/db.lck` before actions.
+    *   **Strict Safety**: Enforces manual `pacman -Syu` logic (iterating local packages and checking sync DBs for updates) to prevent partial upgrades.
+*   **Safety Rule**: We **never** run `pacman -Sy` alone. Repo installs use `pacman -Syu --needed` in a single transaction; system updates use one full upgrade. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md).
 
 ### 4. Butterfly System Health & Omni-User (v0.3.5)
 MonARCH includes a permission-aware health monitoring ecosystem and a dual-core UX (simplicity by default, power by choice):

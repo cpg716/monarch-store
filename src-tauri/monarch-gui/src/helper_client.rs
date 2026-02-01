@@ -88,6 +88,9 @@ pub enum HelperCommand {
         cpu_optimization: Option<String>,
         target_repo: Option<String>,
     },
+    CheckUpdatesSafe {
+        enabled_repos: Vec<String>,
+    },
     AlpmUninstall {
         packages: Vec<String>,
         remove_deps: bool,
@@ -190,67 +193,66 @@ pub async fn invoke_helper(
 
     let json = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
 
-    let use_stdin = password.is_none();
-    let cmd_path_opt: Option<std::path::PathBuf> = if use_stdin {
-        None
-    } else {
-        if let Err(e) = std::fs::create_dir_all(CMD_FILE_DIR) {
-            return Err(format!(
-                "Failed to create command directory {}: {}",
-                CMD_FILE_DIR, e
-            ));
-        }
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let path =
-            std::path::Path::new(CMD_FILE_DIR).join(format!("{}{}.json", CMD_FILE_PREFIX, ts));
-        {
-            use std::io::Write;
-            let mut file = std::fs::File::create(&path)
-                .map_err(|e| format!("Failed to create command file {}: {}", path.display(), e))?;
-            file.write_all(json.as_bytes())
-                .map_err(|e| format!("Failed to write JSON to file: {}", e))?;
-            file.sync_all()
-                .map_err(|e| format!("Failed to sync file to disk: {}", e))?;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
-                .map_err(|e| format!("Failed to set file permissions: {}", e))?;
-        }
-        let contents = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to verify command file: {}", e))?;
-        if contents.trim().is_empty() {
-            let _ = std::fs::remove_file(&path);
-            return Err("Command file was empty after write".to_string());
-        }
-        if contents.trim() != json.trim() {
-            let _ = std::fs::remove_file(&path);
-            return Err("Command file content mismatch".to_string());
-        }
-        let canonical = path.canonicalize().unwrap_or(path);
-        Some(canonical)
-    };
+    // CRITICAL: Always pass command via temp file + argv[1]. pkexec does NOT reliably forward
+    // stdin to the helper (many systems close or redirect it), so stdin-based command delivery
+    // caused install/update to fail silently. Same file path is used for pkexec and sudo -S.
+    if let Err(e) = std::fs::create_dir_all(CMD_FILE_DIR) {
+        return Err(format!(
+            "Failed to create command directory {}: {}",
+            CMD_FILE_DIR, e
+        ));
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path =
+        std::path::Path::new(CMD_FILE_DIR).join(format!("{}{}.json", CMD_FILE_PREFIX, ts));
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&path)
+            .map_err(|e| format!("Failed to create command file {}: {}", path.display(), e))?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| format!("Failed to write JSON to file: {}", e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync file to disk: {}", e))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .map_err(|e| format!("Failed to set file permissions: {}", e))?;
+    }
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to verify command file: {}", e))?;
+    if contents.trim().is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return Err("Command file was empty after write".to_string());
+    }
+    if contents.trim() != json.trim() {
+        let _ = std::fs::remove_file(&path);
+        return Err("Command file content mismatch".to_string());
+    }
+    let cmd_path = path.canonicalize().unwrap_or(path);
 
-    // Helper selection:
-    // - In debug builds, hard-lock to the dev helper to avoid version mismatches.
-    // - In release builds, MONARCH_USE_PRODUCTION_HELPER=1 forces /usr/lib/monarch-store/monarch-helper.
-    // - Otherwise, prefer dev helper when it exists, then fall back to production path.
+    // Helper selection: Prefer PRODUCTION path when it exists so Polkit policy (exec.path) matches.
+    // Policy allows only /usr/lib/monarch-store/monarch-helper; dev path causes auth failure.
     let mut helper_bin = crate::utils::MONARCH_PK_HELPER.to_string();
     let production_path = std::path::Path::new(crate::utils::MONARCH_PK_HELPER);
     let force_production = std::env::var("MONARCH_USE_PRODUCTION_HELPER").as_deref() == Ok("1");
+    let dev_helper_path =
+        crate::utils::get_dev_helper_path().map(|p| p.to_string_lossy().to_string());
 
-    // Single source of truth: utils::get_dev_helper_path() (same resolution as onboarding deployment).
-    let dev_helper_path = crate::utils::get_dev_helper_path()
-        .map(|p| p.to_string_lossy().to_string());
-
-    if cfg!(debug_assertions) {
+    if force_production && production_path.exists() {
+        helper_bin = crate::utils::MONARCH_PK_HELPER.to_string();
+    } else if production_path.exists() {
+        // Installed app or dev with package installed: use production so Polkit matches.
+        helper_bin = crate::utils::MONARCH_PK_HELPER.to_string();
+    } else if cfg!(debug_assertions) {
         if let Some(dev) = dev_helper_path {
             helper_bin = dev;
         } else {
+            let _ = std::fs::remove_file(&cmd_path);
             let cwd = std::env::current_dir().unwrap_or_default();
             let exe = std::env::current_exe().unwrap_or_default();
             return Err(format!(
@@ -259,34 +261,27 @@ pub async fn invoke_helper(
                 exe.display()
             ));
         }
-    } else if force_production && production_path.exists() {
-        helper_bin = crate::utils::MONARCH_PK_HELPER.to_string();
     } else if let Some(dev) = dev_helper_path {
         helper_bin = dev;
-    } else if production_path.exists() {
-        helper_bin = crate::utils::MONARCH_PK_HELPER.to_string();
     }
+    // else: helper_bin stays MONARCH_PK_HELPER (spawn will fail if missing)
 
+    let use_password = password.is_some();
     let _ = app.emit(
         "helper-output",
         format!(
-            "[Client]: Seeking helper at: {} (command via {})",
+            "[Client]: Helper: {} | Command file: {} | Auth: {}",
             helper_bin,
-            if use_stdin {
-                "stdin, Polkit"
+            cmd_path.display(),
+            if use_password {
+                "sudo (password on stdin)"
             } else {
-                "file, sudo (one password)"
+                "pkexec (Polkit)"
             }
         ),
     );
 
-    let mut command = if let Some(ref cmd_path) = cmd_path_opt {
-        if !cmd_path.exists() {
-            return Err(format!(
-                "Command file does not exist: {}",
-                cmd_path.display()
-            ));
-        }
+    let mut command = if use_password {
         let mut c = tokio::process::Command::new("sudo");
         c.env("MONARCH_CMD_JSON", &json);
         c.env("MONARCH_CMD_FILE", cmd_path.to_string_lossy().as_ref());
@@ -296,6 +291,7 @@ pub async fn invoke_helper(
         let mut c = tokio::process::Command::new("pkexec");
         c.arg("--disable-internal-agent");
         c.arg(&helper_bin);
+        c.arg(cmd_path.to_string_lossy().as_ref());
         c
     };
 
@@ -305,38 +301,29 @@ pub async fn invoke_helper(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
-            if let Some(ref p) = cmd_path_opt {
-                let _ = std::fs::remove_file(p);
-            }
+            let _ = std::fs::remove_file(&cmd_path);
             format!(
                 "Failed to spawn monarch-helper ({}): {}. {}",
                 helper_bin,
                 e,
-                if use_stdin {
-                    "Ensure Polkit policy is installed."
-                } else {
+                if use_password {
                     "Check sudo access."
+                } else {
+                    "Ensure Polkit policy is installed (e.g. /usr/share/polkit-1/actions/com.monarch.store.policy)."
                 }
             )
         })?;
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
 
+    // Command is always delivered via file (argv[1]). Stdin is only used for sudo password when provided.
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        if use_stdin {
+        if let Some(pwd) = &password {
             stdin
-                .write_all(json.as_bytes())
+                .write_all(format!("{}\n", pwd).as_bytes())
                 .await
                 .map_err(|e| e.to_string())?;
-            stdin.write_all(b"\n").await.map_err(|e| e.to_string())?;
-        } else {
-            if let Some(pwd) = &password {
-                stdin
-                    .write_all(format!("{}\n", pwd).as_bytes())
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
         }
         stdin.shutdown().await.ok();
     }
@@ -355,6 +342,12 @@ pub async fn invoke_helper(
                     {
                         // Emit structured ALPM event
                         let _ = a.emit("alpm-progress", &event);
+                        // When helper sends event_type "error", message is JSON of ClassifiedError; emit for recovery UI
+                        if event.event_type == "error" {
+                            if let Ok(classified) = serde_json::from_str::<serde_json::Value>(&event.message) {
+                                let _ = a.emit("install-error-classified", &classified);
+                            }
+                        }
                         // Also convert to ProgressMessage for backward compatibility
                         let msg = ProgressMessage {
                             progress: event.percent.unwrap_or(0),

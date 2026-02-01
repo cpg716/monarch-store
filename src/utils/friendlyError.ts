@@ -82,8 +82,8 @@ export function friendlyError(raw: string): FriendlyError {
     if (r.includes("conflicting dependencies") || r.includes("breaks dependency")
         || r.includes("unresolvable package conflicts")) {
         return {
-            title: "Dependency Conflict",
-            description: "This package conflicts with something already installed. You may need to remove the conflicting package first.",
+            title: "Can't Install Together",
+            description: "This app conflicts with something already on your system. You may need to remove the other app first, or choose a different version.",
             isTechnical: true,
             recoveryAction: 'manual',
             recoveryLabel: 'View Details'
@@ -116,7 +116,7 @@ export function friendlyError(raw: string): FriendlyError {
     if (r.includes("permission denied") || r.includes("operation not permitted")) {
         return {
             title: "Permission Denied",
-            description: "Administrator privileges are required for this operation.",
+            description: "This action needs your password. Enter it when prompted and try again.",
             isTechnical: false,
             recoveryAction: 'retry',
             recoveryLabel: 'Try Again'
@@ -126,8 +126,8 @@ export function friendlyError(raw: string): FriendlyError {
     // 10. AUR-specific: Missing dependencies for build
     if (r.includes("missing dependencies") && r.includes("makepkg")) {
         return {
-            title: "Build Dependencies Missing",
-            description: "Some packages needed to build this AUR package are not installed.",
+            title: "Build Tools Missing",
+            description: "This app is built from source and needs extra tools (like compilers) that aren't installed yet. Install them from Settings → Run Wizard, or run the AUR setup step.",
             isTechnical: true,
             recoveryAction: 'manual',
             recoveryLabel: 'View Details'
@@ -137,8 +137,8 @@ export function friendlyError(raw: string): FriendlyError {
     // 11. AUR-specific: PGP key for source verification
     if (r.includes("pgp key") && r.includes("could not be verified")) {
         return {
-            title: "Source Verification Failed",
-            description: "The package source code could not be verified. The developer's PGP key may need to be imported.",
+            title: "Developer Signature Not Verified",
+            description: "We couldn't verify the developer's security key for this package. You may need to add their key or skip verification (advanced).",
             isTechnical: true,
             recoveryAction: 'manual',
             recoveryLabel: 'View Details'
@@ -159,11 +159,11 @@ export function friendlyError(raw: string): FriendlyError {
     // 13. makepkg "An unknown error has occurred" — toolchain, permissions, or stale build cache
     if (r.includes("unknown error has occurred") || r.includes("makepkg reported an unknown error") || r.includes("permission sanitizer")) {
         return {
-            title: "AUR Build Failed (Unknown Error)",
-            description: "makepkg reported an unknown error. Ensure base-devel and git are installed; run scripts/monarch-permission-sanitizer.sh to fix build cache permissions.",
+            title: "Build From Source Failed",
+            description: "Something went wrong while building this app. Usually this is fixed by: (1) Running Settings → Run Wizard to install build tools, or (2) running the Permission Sanitizer script if you see permission errors.",
             isTechnical: false,
             recoveryAction: 'manual',
-            recoveryLabel: 'Run Permission Sanitizer'
+            recoveryLabel: 'View Details'
         };
     }
 
