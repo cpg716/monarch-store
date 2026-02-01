@@ -47,6 +47,10 @@ jobs:
           cd src-tauri
           cargo build --release -p monarch-helper
 
+      - name: disable tauri build hook
+        run: |
+          sed -i 's/npm run build/echo "skipping build hook"/' src-tauri/monarch-gui/tauri.conf.json
+
       - name: Build and upload
         uses: tauri-apps/tauri-action@v0
         env:
