@@ -34,6 +34,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "resources": [
+      "community.xml",
+      "extra.xml",
+      "extra.xml.gz",
+      "extra_v3.xml",
+      "extra_v4.xml",
+      "extra_v5.xml",
+      "monarch-store.metainfo.xml"
     ]
   },
   "plugins": {
