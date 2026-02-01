@@ -17,10 +17,15 @@ jobs:
     container:
       image: archlinux:latest
     steps:
+      - name: Initialize pacman keyring
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+
       - name: install build dependencies (Arch)
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm git base-devel nodejs npm rustup libwebkit2gtk-4.1 libappindicator-gtk3 librsvg patchelf mold clang libalpm
+          pacman -S --noconfirm git base-devel nodejs npm rustup webkit2gtk-4.1 libappindicator-gtk3 librsvg patchelf mold clang
 
       - uses: actions/checkout@v4
 
