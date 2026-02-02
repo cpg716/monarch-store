@@ -6,6 +6,7 @@ import Sidebar from './components/Sidebar';
 import SearchBar from './components/SearchBar';
 import InstallMonitor from './components/InstallMonitor';
 import { Package } from './components/PackageCard';
+import { PackageSource } from './types/alpm';
 import TrendingSection from './components/TrendingSection';
 import HeroSection from './components/HeroSection';
 import PackageDetails from './pages/PackageDetailsFresh';
@@ -33,7 +34,7 @@ import TitleBar from './components/TitleBar';
 
 function App() {
   const [activeTab, setActiveTab] = useState('explore');
-  const [activeInstall, setActiveInstall] = useState<{ name: string; source: string; repoName?: string; mode: 'install' | 'uninstall' } | null>(null);
+  const [activeInstall, setActiveInstall] = useState<{ name: string; source: PackageSource; repoName?: string; mode: 'install' | 'uninstall' } | null>(null);
   const [viewAll, setViewAll] = useState<'essentials' | 'trending' | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -461,8 +462,19 @@ function App() {
             preferredSource={preferredSource}
             installInProgress={activeInstall !== null}
             activeInstallPackage={activeInstall}
-            onInstall={(p: { name: string; source: string; repoName?: string }) => setActiveInstall({ ...p, mode: 'install' })}
-            onUninstall={(p: { name: string; source: string; repoName?: string }) => setActiveInstall({ ...p, mode: 'uninstall' })}
+            onInstall={(p: { name: string; source: PackageSource | string; repoName?: string }) => {
+              // Normalize string source to struct if needed (legacy fallback)
+              const srcArgs = typeof p.source === 'string'
+                ? { source_type: 'repo', id: p.source, version: '', label: p.source.toUpperCase() } as PackageSource
+                : p.source;
+              setActiveInstall({ name: p.name, source: srcArgs, repoName: p.repoName, mode: 'install' });
+            }}
+            onUninstall={(p: { name: string; source: PackageSource | string; repoName?: string }) => {
+              const srcArgs = typeof p.source === 'string'
+                ? { source_type: 'repo', id: p.source, version: '', label: p.source.toUpperCase() } as PackageSource
+                : p.source;
+              setActiveInstall({ name: p.name, source: srcArgs, repoName: p.repoName, mode: 'uninstall' });
+            }}
           />
         ) : selectedCategory ? (
           <CategoryView category={selectedCategory} onBack={handleBack} onSelectPackage={setSelectedPackage} />

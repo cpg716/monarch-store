@@ -1,30 +1,61 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Server, Database, Download } from 'lucide-react';
+import { Database, ShieldCheck, Zap } from 'lucide-react';
+import { useDistro } from '../hooks/useDistro';
 import logoIcon from '../assets/logo.png';
 
-const LOADING_TIPS = [
-    "Syncing with Arch Linux mirrors...",
-    "Updating Chaotic-AUR binaries...",
-    "Refreshing package databases...",
-    "Checking for latest updates...",
+const GENERIC_TIPS = [
     "Optimizing search index...",
     "Did you know? Chaotic-AUR builds packages automatically!",
-    "Loading 'Essentials' collection..."
+    "Loading 'Essentials' collection...",
+    "Preparing the identity matrix...",
+    "Scanning for local updates..."
 ];
 
+const DISTRO_TIPS: Record<string, string[]> = {
+    manjaro: [
+        "Respecting Manjaro stability branches...",
+        "Checking Manjaro official mirrors...",
+        "Applying Manjaro Stability Guard policies...",
+    ],
+    arch: [
+        "Syncing with Arch Linux mirrors...",
+        "Refreshing Arch core databases...",
+        "Verifying ALPM integrity...",
+    ],
+    cachyos: [
+        "Detection: v3/v4 optimized x86_64 binaries...",
+        "Connecting to CachyOS performance mirrors...",
+        "Enabling CachyOS system optimizations...",
+    ],
+    endeavouros: [
+        "Respecting EndeavourOS repository priority...",
+        "Syncing with EndeavourOS mirrors...",
+    ],
+    garuda: [
+        "Initializing Garuda gaming enhancements...",
+        "Connecting to Garuda chaotic mirrors...",
+    ]
+};
+
 export default function LoadingScreen() {
+    const { distro } = useDistro();
     const [tipIndex, setTipIndex] = useState(0);
     const [status, setStatus] = useState("Initializing system...");
     const [progress, setProgress] = useState(0);
 
+    const tips = [
+        ...(DISTRO_TIPS[distro.id] || DISTRO_TIPS['arch'] || []),
+        ...GENERIC_TIPS
+    ];
+
     // Rotate tips every 3 seconds for variety
     useEffect(() => {
         const interval = setInterval(() => {
-            setTipIndex(prev => (prev + 1) % LOADING_TIPS.length);
+            setTipIndex(prev => (prev + 1) % tips.length);
         }, 3000);
         return () => clearInterval(interval);
-    }, []);
+    }, [tips.length]);
 
     // Listen for real-time progress from backend
     useEffect(() => {
@@ -93,23 +124,23 @@ export default function LoadingScreen() {
                             exit={{ opacity: 0, y: -10 }}
                             className="text-app-muted text-xs absolute inset-0 flex items-center justify-center px-4"
                         >
-                            " {LOADING_TIPS[tipIndex]} "
+                            " {tips[tipIndex]} "
                         </motion.p>
                     </AnimatePresence>
                 </div>
 
                 {/* Progress/Status indicators */}
                 <div className="flex gap-4 text-xs text-app-muted font-mono">
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle">
-                        <Server size={12} />
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle border border-app-border/20">
+                        <Zap size={12} className="text-amber-500" />
                         <span>chaotic-aur</span>
                     </div>
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle">
-                        <Database size={12} />
-                        <span>core</span>
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle border border-app-border/20">
+                        <ShieldCheck size={12} className="text-blue-500" />
+                        <span>{distro.id === 'arch' ? 'arch' : distro.id}</span>
                     </div>
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle">
-                        <Download size={12} />
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle border border-app-border/20">
+                        <Database size={12} className="text-indigo-500" />
                         <span>extra</span>
                     </div>
                 </div>

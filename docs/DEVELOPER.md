@@ -1,6 +1,6 @@
 # MonARCH Store — Developer Documentation
 
-**Last updated:** 2026-02-01 (v0.3.6-alpha)
+**Last updated:** 2026-02-02 (v0.4.0-alpha)
 
 Single reference for developers working on MonARCH Store: setup, architecture, code style, and critical rules.
 
@@ -8,12 +8,13 @@ Single reference for developers working on MonARCH Store: setup, architecture, c
 
 ## 1. Overview
 
-MonARCH Store is a **distro-aware software store** for Arch, Manjaro, and CachyOS. It provides:
+MonARCH Store is a **Host-Adaptive software store** for Arch, Manjaro, Garuda, and CachyOS. It provides:
 
-- **Soft Disable** repositories: system repos stay enabled; UI only filters what you see.
-- **Chaotic-first** installs: pre-built binaries (Chaotic-AUR, CachyOS) before AUR source builds.
-- **Butterfly** health: startup probes for `pkexec`, `git`, Polkit; unified repair wizard.
+- **Host-Adaptive** repositories: We respect `/etc/pacman.conf` as the source of truth instad of managing internal state.
+- **Unified Search**: Aggregates Official, AUR, and Flatpak results.
+- **Native AUR Builder**: User-level `makepkg` builds with streaming logs.
 - **The Iron Core (v0.3.6):** Implemented `SafeUpdateTransaction` for atomic, borrow-safe ALPM operations. Enforces `-Syu` for all transactions.
+- **Silent Guard (Atomic Batch):** Use `TransactionManifest` to bundle multiple operations (Refresh, Upgrade, Install) into a single helper invocation, reducing password prompts.
 - **Wayland Ghost Protocol:** Automated flicker/artifact prevention on Wayland sessions.
 - **Chameleon Theme Engine:** Native dark mode detection via XDG Portals (`ashpd`).
 - **Two-process backend**: GUI (user) + Helper (root via Polkit) so ALPM writes are isolated.
@@ -73,6 +74,31 @@ monarch-store/
 ├── docs/                         # ARCHITECTURE, TROUBLESHOOTING, INSTALL_UPDATE_AUDIT, …
 ├── package.json, vite.config.ts
 └── tsconfig.json
+
+## 4. Helper Protocol (v0.4.0)
+
+We use a "Batch Transaction" model to minimize password prompts.
+
+### `TransactionManifest`
+Defined in `monarch-gui/src/models.rs` and `monarch-helper/src/transactions.rs`.
+
+```rust
+pub struct TransactionManifest {
+    pub update_system: bool,        // Run -Syu?
+    pub refresh_db: bool,           // Run -Sy?
+    pub install_targets: Vec<String>, // Official Repo packages
+    pub remove_targets: Vec<String>,  // Packages to remove
+    pub local_paths: Vec<String>,     // Pre-built .pkg.tar.zst files
+}
+```
+
+**Usage (Client):**
+```rust
+use crate::helper_client::commit_transaction;
+let manifest = TransactionManifest { ... };
+commit_transaction(&app_handle, manifest, password).await?;
+```
+
 ```
 
 ---
@@ -138,18 +164,17 @@ The npm script sets `CARGO_TARGET_DIR=src-tauri/target`. If config overrides wit
 
 ## 5. Architecture (Summary)
 
-### Soft Disable
+### Host-Adaptive Model (v0.4.0)
 
-- **System:** All supported repos are enabled in pacman config (e.g. via onboarding).
-- **UI:** “Disabling” a repo only hides it from search/browse; `pacman -Syu` still sees all repos.
-- **Benefit:** No partial upgrades; shared libs stay in sync.
+- **System:** We read `/etc/pacman.conf` via ALPM to know which repositories are enabled.
+- **UI:** We only show packages from repositories that are actually enabled on the host.
+- **Toggling:** We only offer a toggle for `chaotic-aur`. All other repos must be managed by the user in `pacman.conf`.
 
-### Chaotic-first priority
+### Priority Hierarchy
 
-1. Hardware-optimized (CachyOS v3/v4) if CPU supports it  
-2. Chaotic-AUR (pre-built)  
-3. Official Arch  
-4. AUR (source build last)
+1. Official Repositories
+2. Flatpak (Sandboxed)
+3. AUR (Source Build)
 
 ### Two-process backend
 

@@ -1,6 +1,6 @@
 # Testing Guide for MonARCH Store
 
-**Release:** v0.3.6-alpha
+**Current Version:** v0.4.00_alpha
 
 ## ⚠️ Important: What Tests Actually Prove
 

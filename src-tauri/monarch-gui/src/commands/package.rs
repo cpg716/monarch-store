@@ -130,10 +130,7 @@ pub async fn install_package_core(
     // Block Pre-built binaries from Arch-based repos (Chaotic/CachyOS) on Manjaro due to glibc/python mismatches.
     let distro = crate::distro_context::DistroContext::new();
     if distro.id == crate::distro_context::DistroId::Manjaro {
-        if matches!(
-            source,
-            models::PackageSource::Chaotic | models::PackageSource::CachyOS
-        ) {
+        if source.id == "chaotic-aur" || source.id == "cachyos" {
             let msg = "Manjaro Stability Guard: Installing pre-built binaries (Chaotic/CachyOS) is blocked on Manjaro to prevent system breakage. Please use the AUR (Native Build) version instead.".to_string();
             let _ = app.emit("install-output", &msg);
             let _ = app.emit("install-complete", "failed");
@@ -201,8 +198,8 @@ pub async fn install_package_core(
     let mut install_log: Vec<String> = Vec::new();
     const LOG_CAP: usize = 50;
 
-    match source {
-        models::PackageSource::Aur => {
+    match source.source_type.as_str() {
+        "aur" => {
             // ✅ AUR: Build with makepkg, install with ALPM
             let _ = app.emit(
                 "install-output",
@@ -229,16 +226,18 @@ pub async fn install_package_core(
                 let _ = app.emit("install-output", &msg.message);
             }
         }
+        "flatpak" => {
+            let _ = app.emit(
+                "install-output",
+                format!("Installing {} from Flathub...", name),
+            );
+            crate::flathub_api::install_flatpak(app.clone(), name.to_string()).await?;
+        }
         _ => {
             // Ensure monarch repo configs (e.g. 50-chaotic-aur.conf) are on disk before the helper runs.
-            // The helper reads /etc/pacman.d/monarch/ at startup; without this, "Package not found" / "no servers configured" can occur.
             let is_monarch_repo = matches!(
-                source,
-                models::PackageSource::Chaotic
-                    | models::PackageSource::CachyOS
-                    | models::PackageSource::Garuda
-                    | models::PackageSource::Endeavour
-                    | models::PackageSource::Manjaro
+                source.id.as_str(),
+                "chaotic-aur" | "cachyos" | "garuda" | "endeavour" | "manjaro"
             );
             if is_monarch_repo {
                 repo_manager
@@ -249,14 +248,19 @@ pub async fn install_package_core(
 
             let _ = app.emit("install-output", "--- Starting ALPM Transaction ---");
 
-            // Launch already runs apply_os_config + sync_system_databases, so monarch DBs are present; no need to sync again per install.
             let sync_first = false;
 
-            // Ghost fix: pass selected repo so helper installs from that repo only (not first match)
-            let target_repo = match source {
-                models::PackageSource::Aur => None,
-                _ => _repo_name.clone(),
+            // ✅ GHOST FIX: Pass selected repo so helper installs from THAT repo ONLY (not first match).
+            // We prioritize source.id if source_type is "repo", otherwise fallback to Legacy _repo_name.
+            let target_repo = if source.source_type == "repo"
+                && !source.id.is_empty()
+                && source.id != "id_unknown"
+            {
+                Some(source.id.clone())
+            } else {
+                _repo_name.clone()
             };
+
             let mut rx = helper_client::invoke_helper(
                 app,
                 helper_client::HelperCommand::AlpmInstall {
@@ -280,7 +284,7 @@ pub async fn install_package_core(
                 }
                 if (msg.message.contains("unknown variant") && msg.message.contains("AlpmInstall"))
                     || (msg.message.contains("expected one of")
-                        && msg.message.contains("InstallTargets"))
+                        && msg.message.contains("ExecuteBatch"))
                     || msg.message.contains("outdated and does not support ALPM")
                 {
                     saw_unknown_variant = true;
@@ -342,47 +346,27 @@ pub async fn install_package_core(
                 );
                 let mut rx_refresh = helper_client::invoke_helper(
                     app,
-                    helper_client::HelperCommand::Refresh,
+                    helper_client::HelperCommand::ExecuteBatch {
+                        manifest: crate::models::TransactionManifest {
+                            refresh_db: true,
+                            ..Default::default()
+                        },
+                    },
                     password.clone(),
                 )
                 .await
                 .map_err(|e| format!("Failed to invoke helper (refresh): {}", e))?;
-                let mut refresh_corrupt = false;
                 while let Some(msg) = rx_refresh.recv().await {
                     let _ = app.emit("install-output", &msg.message);
-                    install_log.push(msg.message.clone());
-                    if install_log.len() > LOG_CAP {
-                        install_log.remove(0);
-                    }
-                    if msg.message.contains("Unrecognized archive format")
-                        || msg.message.contains("could not open database")
-                    {
-                        refresh_corrupt = true;
-                    }
-                }
-
-                // If corruption detected during refresh, try force refresh before install
-                if refresh_corrupt {
-                    let _ = app.emit(
-                        "install-output",
-                        "Corruption detected; force refreshing databases...",
-                    );
-                    let mut rx_force = helper_client::invoke_helper(
-                        app,
-                        helper_client::HelperCommand::ForceRefreshDb,
-                        password.clone(),
-                    )
-                    .await
-                    .map_err(|e| format!("Failed to invoke helper (force refresh): {}", e))?;
-                    while let Some(msg) = rx_force.recv().await {
-                        let _ = app.emit("install-output", &msg.message);
-                    }
                 }
 
                 let mut rx_install = helper_client::invoke_helper(
                     app,
-                    helper_client::HelperCommand::InstallTargets {
-                        packages: vec![name.to_string()],
+                    helper_client::HelperCommand::ExecuteBatch {
+                        manifest: crate::models::TransactionManifest {
+                            install_targets: vec![name.to_string()],
+                            ..Default::default()
+                        },
                     },
                     password.clone(),
                 )
@@ -424,10 +408,7 @@ pub async fn install_package_core(
             || m.contains("could not find")
     });
 
-    if !verification
-        && source != models::PackageSource::Aur
-        && !saw_unknown_variant
-        && is_dependency_failure
+    if !verification && source.source_type != "aur" && !saw_unknown_variant && is_dependency_failure
     {
         let _ = app.emit(
             "install-output",
@@ -436,7 +417,7 @@ pub async fn install_package_core(
     }
 
     if !verification
-        && source != models::PackageSource::Aur
+        && source.source_type != "aur"
         && !saw_unknown_variant
         && might_need_sync
         && !is_dependency_failure
@@ -452,9 +433,10 @@ pub async fn install_package_core(
             .filter(|r| r.enabled)
             .map(|r| r.name.clone())
             .collect();
-        let target_repo_retry = match source {
-            models::PackageSource::Aur => None,
-            _ => _repo_name.clone(),
+        let target_repo_retry = if source.source_type == "aur" {
+            None
+        } else {
+            _repo_name.clone()
         };
         let mut rx_install = helper_client::invoke_helper(
             app,
@@ -566,6 +548,7 @@ pub async fn install_package_core(
 pub async fn uninstall_package(
     app: AppHandle,
     name: String,
+    source: Option<models::PackageSource>,
     password: Option<String>,
 ) -> Result<(), String> {
     // SUICIDE PREVENTION: Protect critical system packages
@@ -598,7 +581,14 @@ pub async fn uninstall_package(
         format!("Preparing to uninstall '{}'...", name),
     );
 
-    // ✅ NEW: Use ALPM transaction instead of shell command
+    // ✅ Flatpak Support
+    if let Some(src) = &source {
+        if src.source_type == "flatpak" {
+            return crate::flathub_api::remove_flatpak(app.clone(), name).await;
+        }
+    }
+
+    // ✅ Native ALPM Support
     let mut rx = helper_client::invoke_helper(
         &app,
         helper_client::HelperCommand::AlpmUninstall {

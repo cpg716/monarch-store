@@ -31,28 +31,18 @@
 - **Dev vs production helper:** By default, `npm run tauri dev` uses the **dev-built** helper (same build as the GUI) so install/update work without reinstalling the package. To test the **installed** helper with the dev GUI (e.g. to verify Polkit policy), set `MONARCH_USE_PRODUCTION_HELPER=1` before running (the installed helper must be up to date: `pacman -Syu monarch-store`).
 
 ## Architecture
-- **Frontend**: React 19 + TypeScript + Tailwind CSS 4 + Vite 7 + Zustand (state). Key dirs: `src/components/`, `src/pages/`, `src/hooks/`, `src/store/`, `src/services/`, `src/context/`, `src/utils/`. Full reference: [docs/APP_AUDIT.md](docs/APP_AUDIT.md).
-- **Backend (GUI)**: `src-tauri/monarch-gui/`. Runs as **USER**. Read-only ALPM, config, AUR builds, IPC to Helper. Key: `commands/`, `helper_client.rs` (writes command to temp file, passes path to helper), `alpm_read.rs`, `error_classifier.rs`.
-- **Backend (Helper)**: `src-tauri/monarch-helper/`. Runs as **ROOT** (Polkit/pkexec). v0.3.6 introduces **The Iron Core** (`SafeUpdateTransaction.rs`), which enforces the Atomic Update Protocol (strict `-Syu`). Helper restricts `WriteFile`/`WriteFiles` to `/etc/pacman.d/monarch/` only. Key: `safe_transaction.rs`, `transactions.rs`. Security: [docs/SECURITY_AUDIT_FORT_KNOX.md](docs/SECURITY_AUDIT_FORT_KNOX.md).
-- **The Chameleon (v0.3.6)**: Native desktop integration via **XDG Portals** (`ashpd`) and **Wayland Ghost Protocol** for flicker-free window rendering on modern desktops.
-- **Purpose**: Arch Linux package manager GUI with "Soft Disable" repos and Chaotic-AUR priority.
+- **Frontend**: React 19 + TypeScript + Tailwind CSS 4 + Vite 7 + Zustand (state).
+- **Backend (GUI)**: `src-tauri/monarch-gui/`. Runs as **USER**. Read-only ALPM, config, AUR builds, IPC to Helper.
+- **Backend (Helper)**: `src-tauri/monarch-helper/`. Runs as **ROOT** (Polkit/pkexec). v0.3.6 introduces **The Iron Core** (`SafeUpdateTransaction.rs`).
+- **Host-Adaptive (v0.4.0)**: Use ALPM to discover system state instead of managing private repo configs.
+- **The Chameleon (v0.3.6)**: Native desktop integration via **XDG Portals**.
 
-### Why onboarding UI changes didn’t show (testing)
-- **Onboarding only mounts when it’s shown.** It appears only when: (1) first run (no `monarch_onboarding_v3` in localStorage), (2) system unhealthy (popup then onboarding), or (3) user clicks **Settings → “Run Wizard”**. If you already completed onboarding, the modal never renders — you’re looking at the main app, so edits to `OnboardingModal.tsx` don’t appear until you open the modal again.
-- **To see onboarding after editing it:** (1) **Settings → Run Wizard** to open the modal, or (2) clear `monarch_onboarding_v3` in Application → Local Storage and refresh (next launch may show onboarding). (3) **Full reload after code changes:** stop and restart `npm run tauri dev`, or hard refresh the app (Ctrl+Shift+R / Cmd+Shift+R) so the WebView loads the new bundle; HMR may not re-mount a component that wasn’t on screen.
-- **Dev shortcut:** In dev, open DevTools console and run `localStorage.removeItem('monarch_onboarding_v3'); window.location.reload();` then trigger onboarding (e.g. Run Wizard or simulate first run).
+### Settings page
+- **Repositories**: In v0.4.0+, Repositories are discovered from `/etc/pacman.conf`. The UI shows what the system has enabled. Toggling `chaotic-aur` writes a drop-in file to `/etc/pacman.d/monarch/`. Auto-block on Manjaro.
 
-### Settings page (full re-do)
-- Settings was fully updated per [SETTINGS_UX_AUDIT_v0.3.5](docs/SETTINGS_UX_AUDIT_v0.3.5.md): P0 items (Performance & Hardware section, Parallel Downloads, Rank Mirrors, keyboard nav, ARIA, health loading state, space savings in modals). **Use `npm run tauri dev`** to see the current UI; the Performance & Hardware section is always visible (CPU card only when optimization detected). **Workflow & Interface:** **Reduce password prompts** — when on, the user can enter their password once in a MonARCH dialog; it is used for installs, repairs, and startup unlock for the session (~15 min), not persisted. **Security:** **One-Click Authentication** — when on, Polkit rule allows passwordless install/update for the active session (policy/rule must be installed). **Omni-User (v0.3.5):** General → **Show Detailed Transaction Logs** (verbose pacman/makepkg stdout in InstallMonitor). Maintenance → **Advanced Repair** (Unlock DB, Fix Keys, Refresh DBs, Clear Cache, Clean Orphans). Repositories → **Test Mirrors** per repo (`test_mirrors(repo_key)`; top 3 mirrors with latency; rate-mirrors/reflector, no system config change). Repo toggle failures (e.g. sync after enabling a repo) are reported via `getErrorService()?.reportError(e)` so the user sees a toast.
-
-## Before Making Changes
-- **Check the relevant flow first.** Before changing install, repo, onboarding, or any feature: read the code path (e.g. which page invokes it, what the UI shows, what state is possible). Confirm what the UI allows — e.g. only active repos are shown to pick from; don’t add checks for cases the UI already prevents.
-
-## Repo behavior (Soft Disable)
-- **Onboarding:** User selects which repos to use (enable). Settings can turn repos on or off later.
-- **Turning a repo OFF:** The repo is not fully shut off — it is still needed for updates. “Off” means: apps from that repo are **removed from discovery** (Search, Categories, Trending, Essentials). They still appear under **Installed** and **Updates**.
-- **Turning a repo ON** (in Settings, first time / wasn’t installed before): Activate the repo and show its apps in the app. If the user turns it off later, same behavior as above — remove from discovery, still used for Installed/Updates.
-- **PackageDetailsFresh:** Only **active** (enabled) repos show as install options. Only the **selected** build in the dropdown (or selected row) is the one the installer uses — install uses that repo only, not all enabled repos.
+## Repo behavior (Host-Adaptive)
+- **Onboarding:** We detect enabled repos (CachyOS, Garuda, etc) automatically using ALPM.
+- **Toggling:** We only manage `chaotic-aur` explicitly. Other repos are read-only in the UI (must be changed in `pacman.conf` by user).
 
 ## Code Style
 - Strict TypeScript (`strict: true`, `noUnusedLocals`, `noUnusedParameters`)

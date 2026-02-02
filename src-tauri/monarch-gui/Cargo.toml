@@ -1,6 +1,6 @@
 [package]
 name = "monarch-store"
-version = "0.3.6-alpha"
+version = "0.4.0-alpha"
 description = "MonARCH Store - A premium software store for Arch Linux"
 authors = ["MonARCH Store Contributors"]
 license = "MIT"

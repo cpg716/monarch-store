@@ -11,12 +11,8 @@ import { useToast } from '../context/ToastContext';
 import { useSessionPassword } from '../context/useSessionPassword';
 import { friendlyError } from '../utils/friendlyError';
 
-interface PendingUpdate {
-    name: string;
-    old_version: string;
-    new_version: string;
-    repo: string;
-}
+import { UpdateItem } from '../types/alpm';
+import RepoBadge from '../components/RepoBadge';
 
 
 // Helper component for Icon
@@ -64,7 +60,7 @@ export default function UpdatesPage() {
         clearUpdateLogs
     } = useAppStore();
 
-    const [updates, setUpdates] = useState<PendingUpdate[]>([]);
+    const [updates, setUpdates] = useState<UpdateItem[]>([]);
     const [isChecking, setIsChecking] = useState(true);
     const [updateResult, setUpdateResult] = useState<string | null>(null);
     const [showConsole, setShowConsole] = useState(false);
@@ -114,7 +110,7 @@ export default function UpdatesPage() {
         setIsChecking(true);
         setUpdateResult(null);
         try {
-            const pendingUpdates = await invoke<PendingUpdate[]>('check_for_updates');
+            const pendingUpdates = await invoke<UpdateItem[]>('check_updates');
             setUpdates(pendingUpdates);
         } catch (e) {
             errorService.reportError(e as Error | string);
@@ -149,7 +145,7 @@ export default function UpdatesPage() {
             }
         });
         return () => {
-            unlisten.then((fn) => fn()).catch(() => {});
+            unlisten.then((fn) => fn()).catch(() => { });
         };
     }, [setUpdating, setPacnewWarnings]);
 
@@ -484,17 +480,10 @@ export default function UpdatesPage() {
                                     <div>
                                         <h3 className="font-bold flex items-center gap-3 text-xl text-slate-900 dark:text-white mb-1">
                                             {pkg.name}
-                                            <span className={clsx(
-                                                "text-[10px] px-2 py-0.5 rounded-full uppercase font-black tracking-widest border",
-                                                pkg.repo === 'official' ? "bg-teal-100 dark:bg-teal-500/10 text-teal-700 dark:text-teal-400 border-teal-200 dark:border-teal-500/20" :
-                                                    pkg.repo === 'chaotic' ? "bg-violet-100 dark:bg-violet-500/10 text-violet-700 dark:text-violet-400 border-violet-200 dark:border-violet-500/20" :
-                                                        "bg-amber-100 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/20"
-                                            )}>
-                                                {pkg.repo}
-                                            </span>
+                                            <RepoBadge source={pkg.source} />
                                         </h3>
                                         <div className="flex items-center gap-3 text-sm font-medium">
-                                            <span className="text-slate-400 dark:text-app-muted line-through opacity-50">{pkg.old_version}</span>
+                                            <span className="text-slate-400 dark:text-app-muted line-through opacity-50">{pkg.current_version}</span>
                                             <ArrowRight size={14} className="text-slate-300 dark:text-white/20" />
                                             <span className="text-emerald-600 dark:text-emerald-400">{pkg.new_version}</span>
                                         </div>
@@ -502,10 +491,10 @@ export default function UpdatesPage() {
                                 </div>
 
                                 <div className="flex items-center gap-6">
-                                    {pkg.repo === 'aur' && (
+                                    {pkg.source.source_type === 'aur' && (
                                         <div title="AUR Package: May take longer to build" className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-100 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-500 text-xs font-bold">
                                             <AlertCircle size={14} />
-                                            <span>Compassion Needed</span>
+                                            <span>Built from Source</span>
                                         </div>
                                     )}
                                 </div>
@@ -523,13 +512,13 @@ export default function UpdatesPage() {
                 }}
                 onConfirm={performUpdate}
                 title="Update System"
-                message={updates.some(u => u.repo === 'aur')
+                message={updates.some(u => u.source.source_type === 'aur')
                     ? "This update includes AUR packages which require building from source. Please enter your administrator password to proceed."
                     : "This will update all system packages. Are you ready to proceed?"
                 }
                 confirmLabel="Start Update"
                 variant="info"
-                showPasswordInput={updates.some(u => u.repo === 'aur')}
+                showPasswordInput={updates.some(u => u.source.source_type === 'aur')}
                 passwordValue={password}
                 onPasswordChange={setPassword}
             />

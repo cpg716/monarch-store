@@ -1,13 +1,13 @@
 # Troubleshooting Guide 🛟
 
-**Last updated:** 2026-02-01 (v0.3.6-alpha)
+**Current Version:** v0.4.0-alpha
 
 Common issues users encounter when using MonARCH Store.
 
 > [!CAUTION]
 > **MonARCH Store is in ALPHA.** Installation and update operations are experimental. If you encounter persistent failures, please use the standard terminal tools (`pacman`, `yay`, etc.) and report the issue.
 
-**Install/Update not working or password prompts:** See [Install & Update Audit](INSTALL_UPDATE_AUDIT.md) for the full flow, Polkit setup, and passwordless configuration (Polkit rules, helper path, policy).
+**Install/Update not working or password prompts:** See [Developer Guide](DEVELOPER.md) for architecture details.
 
 ## 📦 Install or Update does nothing / fails silently (v0.3.6 fix)
 
@@ -208,9 +208,9 @@ Logs will show `Portal Theme Detected: dark` on successful detection.
 
 **Current:** File pickers use the default system chooser. Native Portal-based dialogs (`rfd`) are planned for a future release. Ensure `xdg-desktop-portal-kde` is installed for theme detection; when Portal file pickers are implemented, the same package will provide native KDE dialogs.
 
-## 🔄 Update "Stalled" on AUR Build (e.g. Cloning element-web)
+## 🔄 Update "Stalled" / "Built from Source" (AUR)
 
-**Symptom:** The update log stops at a line like `Cloning into bare repository '.../element-web'...` or "Retrieving sources..." and appears frozen.
+**Symptom:** AUR updates are labeled "Built from Source" and appear to take much longer than Official or Flatpak updates.
 
 **Cause:** Some AUR packages (e.g. element-desktop-git) clone very large git repos. The same package would take just as long in a terminal (`yay -Syu` or `paru -Syu`)—it's the package, not MonARCH. In the app it looks like a stall; you should not have to wait indefinitely.
 

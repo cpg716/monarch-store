@@ -13,141 +13,343 @@ pub struct PaginatedResponse {
     pub has_more: bool,
 }
 
+use crate::flathub_api::FlathubApiClient;
+use crate::models::{Package, PackageSource};
+
+// Helper to normalize names for merging (e.g. "Firefox" -> "firefox")
+fn normalize_name(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
+// Phase 1: The "Distro Dictionary"
+// Maps specific repository names + distro ID to Friendly Labels
+fn get_friendly_label(db_name: &str, distro_id: &str) -> &'static str {
+    match db_name {
+        // --- The Big Players ---
+        "core" | "extra" | "multilib" => match distro_id {
+            "manjaro" => "Manjaro Official",
+            "endeavouros" => "EndeavourOS (Arch)",
+            "garuda" => "Garuda (Arch)",
+            "cachyos" => "CachyOS (Arch)",
+            "steamos" => "SteamOS (Arch)", // SteamOS often mirrors core/extra
+            "chimeraos" => "ChimeraOS (Arch)",
+            "arcolinux" => "ArcoLinux (Arch)",
+            "rebornos" => "RebornOS (Arch)",
+            "artix" => "Artix Linux",
+            "biglinux" => "BigLinux (Arch)",
+            "mabox" => "Mabox (Manjaro Base)",
+            _ => "Arch Official", // Default fallback
+        },
+
+        // --- SteamOS & Gaming ---
+        "jupiter" | "jupiter-rel" | "jupiter-main" => "SteamOS (Jupiter)",
+        "holo" | "holo-rel" | "holo-main" => "SteamOS (Holo)",
+        "chimeraos" | "chimeraos-extra" => "ChimeraOS (Gaming)",
+        "gamer-os" => "GamerOS",
+
+        // --- Performance & Optimization ---
+        "cachyos" | "cachyos-v3" | "cachyos-v4" => "CachyOS (Optimized)",
+        "chaotic-aur" => "Chaotic-AUR (Pre-built)",
+
+        // --- Specialized Distros ---
+        "endeavouros" => "EndeavourOS Tools",
+        "garuda" => "Garuda Tools",
+        "arcolinux_repo" | "arcolinux_repo_3party" => "ArcoLinux Repo",
+        "rebornos" => "RebornOS Repo",
+        "blackarch" => "BlackArch (Security)",
+        "xerolinux_repo" => "XeroLinux Repo",
+        "mabox" => "Mabox Tools",
+        "alg-repo" => "ArchLabs",
+        "athena" => "Athena OS",
+        "biglinux-stable" | "biglinux-testing" => "BigLinux Repo",
+        "bluestar" => "Bluestar Linux",
+        "obarun" => "Obarun",
+        "parabola" => "Parabola (Libre)",
+        "hyperbola" => "Hyperbola",
+        "ctlos" => "CtlOS",
+        "alci-repo" => "ALCI",
+
+        // --- Universal ---
+        "aur" => "AUR (Community)",
+        "flatpak" => "Flatpak (Sandboxed)",
+        _ => "Custom Repository", // Catch-all for obscure distros
+    }
+}
+
 #[tauri::command]
 pub async fn search_packages(
-    app: tauri::AppHandle,
-    state_meta: State<'_, metadata::MetadataState>,
     state_repo: State<'_, RepoManager>,
+    state_flathub: State<'_, FlathubApiClient>,
+    state_metadata: State<'_, metadata::MetadataState>,
+    state_distro: State<'_, crate::distro_context::DistroContext>,
     query: String,
-) -> Result<Vec<models::Package>, String> {
-    let query = query.trim().to_string();
-    if query.is_empty() {
-        return Ok(vec![]);
+) -> Result<Vec<Package>, String> {
+    if query.len() < 2 {
+        return Ok(Vec::new());
     }
 
-    // Telemetry
-    let app_handle = app.clone();
-    let q_telemetry = query.clone();
-    tauri::async_runtime::spawn(async move {
-        utils::track_event_safe(
-            &app_handle,
-            "search_query",
-            Some(serde_json::json!({
-                "term": q_telemetry,
-                "term_length": q_telemetry.len(),
-                "category": "all",
-            })),
-        )
-        .await;
-    });
+    let query_lower = query.to_lowercase();
+    let repo_manager = state_repo.inner();
+    let flathub = state_flathub.inner();
+    // aur_api is stateless/lazy_static accessible directly
 
-    // 1. Concurrent Search: ALPM (Local/Repo) + Monarch Cache + AUR (Web)
-    let aur_enabled = state_repo.inner().is_aur_enabled().await;
-    let query_cloned = query.clone();
+    // 1. Parallel Search
+    // We use tokio::join to run searches concurrently
+    let (official_res, aur_res, flatpak_res) = tokio::join!(
+        repo_manager.get_packages_matching(&query, state_distro.inner()),
+        crate::aur_api::search_aur(&query),
+        flathub.search_flathub(&query)
+    );
 
-    let alpm_handle =
-        tokio::task::spawn_blocking(move || crate::alpm_read::search_local_dbs(&query_cloned));
+    // 2. Merge Logic
+    // We want a map of unique packages keyed by "normalized name"
+    // Priority: Official > Flatpak > AUR (implicit by order of processing if we overwrite? logic needs care)
+    // We will accumulate available_sources.
 
-    // Monarch Cache Search (Backing Store for synced 3rd party repos)
-    let repo_manager = state_repo.inner().clone();
-    let query_parts: Vec<String> = query.split_whitespace().map(|s| s.to_string()).collect();
-    let cache_handle = tokio::spawn(async move {
-        let query_regexes: Vec<regex::Regex> = query_parts
-            .iter()
-            .filter_map(|p| {
-                regex::RegexBuilder::new(&regex::escape(p))
-                    .case_insensitive(true)
-                    .build()
-                    .ok()
-            })
-            .collect();
+    let mut package_map: HashMap<String, Package> = HashMap::new();
 
-        if query_regexes.is_empty() {
-            return Vec::new();
+    // A. Process Official (Highest Priority Base)
+    // A. Process Official (Highest Priority Base)
+    if let Ok(pkgs) = official_res {
+        for mut p in pkgs {
+            // "Grand Unification": Apply Distro Identity Logic
+            let distro_id_str = match &state_distro.id {
+                crate::distro_context::DistroId::Manjaro => "manjaro",
+                crate::distro_context::DistroId::Garuda => "garuda",
+                crate::distro_context::DistroId::CachyOS => "cachyos",
+                crate::distro_context::DistroId::EndeavourOS => "endeavouros",
+                crate::distro_context::DistroId::Arch => "arch",
+                crate::distro_context::DistroId::Unknown(s) => s.as_str(),
+            };
+
+            p.source.label = get_friendly_label(&p.source.id, distro_id_str).to_string();
+
+            // Initialize available_sources with its own source
+            p.available_sources = Some(vec![p.source.clone()]);
+
+            let key = normalize_name(&p.name);
+            package_map.insert(key, p);
         }
+    }
 
-        let cache = repo_manager.cache.read().await;
-        let mut results = Vec::new();
-        for (repo_name, pkgs) in cache.iter() {
-            for pkg in pkgs {
-                let mut all_match = true;
-                for re in &query_regexes {
-                    if !re.is_match(&pkg.name) && !re.is_match(&pkg.description) {
-                        all_match = false;
-                        break;
+    // B. Process Flatpak
+    if let Some(hits) = flatpak_res {
+        for hit in hits {
+            // Try to map Flatpak AppID to a known package name if possible (Reverse Map)
+            // Or simple normalization of Name ("Firefox" -> "firefox")
+            // We also check mapped ID from flathub_api if available in future,
+            // but here we just use the hit.name or app_id as potential key.
+
+            // Heuristic: Use normalized name
+            let key = normalize_name(&hit.name);
+
+            // Check if exists
+            if let Some(existing) = package_map.get_mut(&key) {
+                // UPDATE existing
+                // Add Flatpak to sources
+                if let Some(sources) = &mut existing.available_sources {
+                    if !sources.iter().any(|s| s.source_type == "flatpak") {
+                        sources.push(PackageSource::new(
+                            "flatpak",
+                            "flathub",
+                            "latest",
+                            "Flatpak (Sandboxed)",
+                        ));
                     }
                 }
-
-                if all_match {
-                    let mut p = pkg.clone();
-                    p.source = models::PackageSource::from_repo_name(repo_name);
-                    results.push(p);
+                // Update App ID if not set
+                if existing.app_id.is_none() {
+                    existing.app_id = Some(hit.app_id);
                 }
+            } else {
+                // NEW Flatpak-only package
+                let p = Package {
+                    name: hit.name.clone(),
+                    display_name: Some(hit.name), // Flatpak names are display names
+                    description: hit.summary.unwrap_or_default(),
+                    version: "latest".to_string(), // Metadata fetch needed for real version?
+                    source: PackageSource::new(
+                        "flatpak",
+                        "flathub",
+                        "latest",
+                        "Flatpak (Sandboxed)",
+                    ),
+                    maintainer: None,
+                    license: None,
+                    url: None, // Could link flathub
+                    last_modified: None,
+                    first_submitted: None,
+                    out_of_date: None,
+                    keywords: None,
+                    num_votes: None,
+                    icon: hit.icon,
+                    screenshots: None,
+                    provides: None,
+                    app_id: Some(hit.app_id),
+                    is_optimized: None,
+                    depends: None,
+                    make_depends: None,
+                    is_featured: None,
+                    installed: false, // Check installed?? (TODO: Phase 3 check)
+                    download_size: None,
+                    installed_size: None,
+                    alternatives: None,
+                    available_sources: Some(vec![PackageSource::new(
+                        "flatpak",
+                        "flathub",
+                        "latest",
+                        "Flatpak (Sandboxed)",
+                    )]),
+                };
+                package_map.insert(key, p);
             }
-        }
-        results
-    });
-
-    let aur_handle = async {
-        if aur_enabled && query.len() >= 2 {
-            aur_api::search_aur(&query).await.unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    };
-
-    let (alpm_res, cache_res, aur_pkgs) = tokio::join!(alpm_handle, cache_handle, aur_handle);
-    let mut packages = alpm_res.map_err(|e| e.to_string())?;
-    let cache_pkgs = cache_res.map_err(|e| e.to_string())?;
-
-    // Merge ALPM and Cache first
-    packages.extend(cache_pkgs);
-
-    // 2. Integration & Hydration
-    for pkg in aur_pkgs {
-        // Hydrate AUR results if they exist in ALPM (already installed or in chaotic)
-        if let Some(existing) = packages.iter_mut().find(|p| p.name == pkg.name) {
-            if existing.source == models::PackageSource::Local {
-                existing.source = models::PackageSource::Aur;
-                // Hydrate metadata from AUR if strictly better?
-                existing.maintainer = pkg.maintainer.clone();
-                existing.num_votes = pkg.num_votes;
-                existing.out_of_date = pkg.out_of_date;
-                existing.first_submitted = pkg.first_submitted;
-                existing.last_modified = pkg.last_modified;
-            }
-        } else {
-            packages.push(pkg);
         }
     }
 
-    // 3. Metadata Hydration (AppStream Icons/AppIDs)
-    if let Ok(loader) = state_meta.inner().0.lock() {
-        for pkg in &mut packages {
-            if pkg.icon.is_none() {
-                pkg.icon = loader.find_icon_heuristic(&pkg.name);
+    // C. Process AUR
+    // Only if enabled in settings? (We assume checking inside aur.search_aur or we check here)
+    // For now we assume we always search if the module is active.
+    if let Ok(pkgs) = aur_res {
+        for mut p in pkgs {
+            let key = normalize_name(&p.name);
+
+            if let Some(existing) = package_map.get_mut(&key) {
+                // MERGE AUR info
+                if let Some(sources) = &mut existing.available_sources {
+                    if !sources.iter().any(|s| s.source_type == "aur") {
+                        sources.push(p.source.clone());
+                    }
+                }
+                // If official/flatpak didn't have description, maybe AUR does? (Unlikely to be better than official)
+                // But we CAN populate AUR-specific fields if we want to show them in "Details".
+                // For the list item, the existing (Official/Flatpak) takes precedence.
+            } else {
+                // NEW AUR package
+                p.available_sources = Some(vec![p.source.clone()]);
+                package_map.insert(key, p);
             }
-            if pkg.app_id.is_none() {
-                pkg.app_id = loader.find_app_id(&pkg.name);
-            }
-            pkg.display_name = Some(utils::to_pretty_name(&pkg.name));
         }
     }
 
-    // 4. Prioritization & Deduplication
-    utils::sort_packages_by_relevance(&mut packages, &query);
+    // 3. Relevance Scoring & Sorting ("Smart Sort")
+    let metadata_loader = state_metadata.0.lock().map_err(|e| e.to_string())?;
 
-    // Custom priority: Installed to Top.
-    // We use a stable sort and return Equal for same-status to preserve the
-    // relevance ranking from sort_packages_by_relevance.
-    packages.sort_by(|a, b| {
-        if a.installed != b.installed {
-            return b.installed.cmp(&a.installed);
+    // Hardcoded list of "Popular" apps to boost (Phase 2)
+    let popular_apps = [
+        "firefox",
+        "google-chrome",
+        "chromium",
+        "brave-bin",
+        "brave-browser",
+        "steam",
+        "spotify",
+        "discord",
+        "vlc",
+        "obs-studio",
+        "gimp",
+        "inkscape",
+        "blender",
+        "visual-studio-code-bin",
+        "code",
+        "vscode",
+        "telegram-desktop",
+        "signal-desktop",
+        "slack-desktop",
+        "zoom",
+        "teams",
+        "libreoffice-fresh",
+        "thunderbird",
+        "lutris",
+        "neovim",
+        "kitty",
+        "alacritty",
+    ];
+
+    let mut results: Vec<Package> = package_map.into_values().collect();
+
+    // 4. Apply Friendly Names (The "Smart Search" Polish)
+    // We update the display_name of packages using our registry
+    for pkg in &mut results {
+        if let Some(friendly) = metadata_loader.get_friendly_name(&pkg.name) {
+            pkg.display_name = Some(friendly);
         }
-        std::cmp::Ordering::Equal
+    }
+
+    results.sort_by(|a, b| {
+        let score_a = calculate_relevance(a, &query_lower, &metadata_loader, &popular_apps);
+        let score_b = calculate_relevance(b, &query_lower, &metadata_loader, &popular_apps);
+
+        // Descending score
+        score_b
+            .cmp(&score_a)
+            // If scores equal, fallback to shortest name
+            .then_with(|| a.name.len().cmp(&b.name.len()))
+            // Finally alphabetical
+            .then_with(|| a.name.cmp(&b.name))
     });
 
-    Ok(utils::merge_and_deduplicate(Vec::new(), packages))
+    Ok(results)
+}
+
+fn calculate_relevance(
+    pkg: &Package,
+    query: &str,
+    metadata: &metadata::AppStreamLoader,
+    popular_apps: &[&str],
+) -> u32 {
+    let pkg_name_lower = pkg.name.to_lowercase();
+    let display_name_lower = pkg.display_name.as_ref().map(|s| s.to_lowercase());
+    let friendly_name = metadata
+        .get_friendly_name(&pkg.name)
+        .map(|s| s.to_lowercase());
+
+    // 1. Exact Name Match (Score 100)
+    if pkg_name_lower == query {
+        return 100;
+    }
+
+    // 2. Exact Friendly Name Match
+    if let Some(friendly) = &friendly_name {
+        if friendly == query {
+            return 100;
+        }
+        if friendly.contains(query) && query.len() >= 3 {
+            return 95;
+        }
+    }
+
+    // 3. Exact App ID Match (Score 90)
+    if let Some(app_id) = &pkg.app_id {
+        if app_id.to_lowercase() == query {
+            return 90;
+        }
+    }
+
+    // 4. Popular Flag (Score 80)
+    let is_popular = popular_apps.contains(&pkg_name_lower.as_str());
+    let matches_query = pkg_name_lower.contains(query)
+        || display_name_lower.as_deref().unwrap_or("").contains(query)
+        || pkg
+            .keywords
+            .as_ref()
+            .map(|k| k.iter().any(|w| w.to_lowercase().contains(query)))
+            .unwrap_or(false);
+
+    if is_popular && matches_query {
+        return 80;
+    }
+
+    // 5. Starts with Query (Score 50)
+    if pkg_name_lower.starts_with(query) {
+        return 50;
+    }
+
+    // 6. Contains Query (Score 20)
+    if matches_query {
+        return 20;
+    }
+
+    0
 }
 
 #[tauri::command]
@@ -208,7 +410,7 @@ pub async fn get_packages_by_names(
                 .and_then(|m| m.desc.clone())
                 .unwrap_or_default(),
             version: p.version.clone().unwrap_or_default(),
-            source: models::PackageSource::Chaotic,
+            source: models::PackageSource::chaotic(),
             maintainer: Some("Chaotic-AUR Team".to_string()),
             license: p
                 .metadata
@@ -259,7 +461,7 @@ pub async fn get_packages_by_names(
         // Also identify 'Local' packages that we should check against AUR to see if they are actually from AUR
         let local_names: Vec<String> = packages
             .iter()
-            .filter(|p| p.source == models::PackageSource::Local)
+            .filter(|p| p.source.source_type == "local")
             .map(|p| p.name.clone())
             .collect();
 
@@ -275,8 +477,13 @@ pub async fn get_packages_by_names(
                 for mut pkg in aur_results {
                     if let Some(existing) = packages.iter_mut().find(|p| p.name == pkg.name) {
                         // If it was labeled Local, but we found it in AUR, upgrade it
-                        if existing.source == models::PackageSource::Local {
-                            existing.source = models::PackageSource::Aur;
+                        if existing.source.source_type == "local" {
+                            existing.source = models::PackageSource::new(
+                                "aur",
+                                "aur",
+                                &pkg.version,
+                                "AUR (Community)",
+                            );
                             existing.maintainer = pkg.maintainer;
                             existing.num_votes = pkg.num_votes;
                             existing.out_of_date = pkg.out_of_date;
@@ -350,7 +557,7 @@ pub async fn get_trending(
                     display_name: Some(app.name),
                     description: app.summary.unwrap_or_default(),
                     version: app.version.unwrap_or_else(|| "latest".to_string()),
-                    source: models::PackageSource::Official,
+                    source: models::PackageSource::new("repo", "core", "latest", "Arch Official"),
                     maintainer: None,
                     license: None,
                     url: None,
@@ -430,7 +637,7 @@ pub async fn get_trending(
                             display_name: Some(app.name),
                             description: app.summary.unwrap_or_default(),
                             version: app.version.unwrap_or_else(|| "optimized".to_string()),
-                            source: models::PackageSource::CachyOS,
+                            source: models::PackageSource::cachyos(),
                             // ... fields ...
                             maintainer: Some("CachyOS Team".to_string()),
                             license: None,
@@ -463,7 +670,12 @@ pub async fn get_trending(
                         display_name: Some(utils::to_pretty_name(name)),
                         description: "High-performance CachyOS component".to_string(),
                         version: "latest".to_string(),
-                        source: models::PackageSource::CachyOS,
+                        source: models::PackageSource::new(
+                            "repo",
+                            "cachyos",
+                            "optimized",
+                            "CachyOS (Optimized)",
+                        ),
                         maintainer: Some("CachyOS Team".to_string()),
                         license: None,
                         url: None,
@@ -515,7 +727,12 @@ pub async fn get_trending(
                                 .and_then(|m| m.desc.clone())
                                 .unwrap_or_default(),
                             version: p.version.clone().unwrap_or_default(),
-                            source: models::PackageSource::Chaotic,
+                            source: models::PackageSource::new(
+                                "repo",
+                                "chaotic-aur",
+                                &p.version.clone().unwrap_or_default(),
+                                "Chaotic-AUR (Pre-built)",
+                            ),
                             maintainer: Some("Chaotic-AUR Team".to_string()),
                             license: p
                                 .metadata
@@ -582,7 +799,12 @@ pub async fn get_trending(
                         display_name: Some(utils::to_pretty_name(&p.name)),
                         description: p.description.clone(),
                         version: p.version.clone(),
-                        source: models::PackageSource::Aur,
+                        source: models::PackageSource::new(
+                            "aur",
+                            "aur",
+                            &p.version,
+                            "AUR (Community)",
+                        ),
                         maintainer: p.maintainer,
                         license: p.license,
                         url: p.url,
@@ -623,6 +845,7 @@ pub async fn get_trending(
 pub async fn get_package_variants(
     state_meta: State<'_, metadata::MetadataState>,
     state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    state_flathub: State<'_, crate::flathub_api::FlathubApiClient>,
     state_repo: State<'_, RepoManager>,
     pkg_name: String,
 ) -> Result<Vec<models::PackageVariant>, String> {
@@ -674,7 +897,12 @@ pub async fn get_package_variants(
                         .and_then(|m| m.desc.clone())
                         .unwrap_or_default(),
                     version: p.version.clone().unwrap_or_default(),
-                    source: models::PackageSource::Chaotic,
+                    source: models::PackageSource::new(
+                        "repo",
+                        "chaotic-aur",
+                        &p.version.clone().unwrap_or_default(),
+                        "Chaotic-AUR (Pre-built)",
+                    ),
                     maintainer: Some("Chaotic-AUR Team".to_string()),
                     license: p
                         .metadata
@@ -711,6 +939,24 @@ pub async fn get_package_variants(
         }
     }
 
+    // Flatpak Search (Exact and Variants)
+    if let Some(flatpak_results) = state_flathub.inner().search_flathub(base_name).await {
+        for hit in flatpak_results {
+            combined_packages.push(models::Package {
+                name: hit.app_id.clone(), // CRITICAL: Use AppID as name for variants to allow flatpak install
+                display_name: Some(hit.name),
+                source: models::PackageSource::new(
+                    "flatpak",
+                    "flathub",
+                    "latest",
+                    "Flatpak (Sandboxed)",
+                ),
+                app_id: Some(hit.app_id),
+                ..Default::default()
+            });
+        }
+    }
+
     // 2. Filter by App ID if we have one, otherwise by Normalized Name
     let mut final_variants: Vec<models::PackageVariant> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -734,9 +980,9 @@ pub async fn get_package_variants(
             let key = format!("{:?}-{}", p_source, p.name);
             if !seen.contains(&key) {
                 final_variants.push(models::PackageVariant {
-                    source: p_source,
+                    source: p_source.clone(),
                     version: p.version.clone(),
-                    repo_name: if matches!(p.source, models::PackageSource::Chaotic) {
+                    repo_name: if p_source.id == "chaotic-aur" {
                         Some("chaotic-aur".to_string())
                     } else {
                         None
@@ -773,7 +1019,7 @@ pub async fn get_category_packages_paginated(
         display_name: Some(app.name),
         description: app.summary.unwrap_or_default(),
         version: app.version.unwrap_or_else(|| "latest".to_string()),
-        source: models::PackageSource::Official,
+        source: models::PackageSource::new("repo", "core", "latest", "Arch Official"),
         maintainer: None,
         license: None,
         url: None,
@@ -815,7 +1061,12 @@ pub async fn get_category_packages_paginated(
                 .and_then(|m| m.desc.clone())
                 .unwrap_or_default(),
             version: p.version.clone().unwrap_or_default(),
-            source: models::PackageSource::Chaotic,
+            source: models::PackageSource::new(
+                "repo",
+                "chaotic-aur",
+                &p.version.clone().unwrap_or_default(),
+                "Chaotic-AUR (Pre-built)",
+            ),
             maintainer: Some("Chaotic-AUR Team".to_string()),
             license: p
                 .metadata
@@ -895,15 +1146,19 @@ pub async fn get_category_packages_paginated(
                 repos.iter().map(|s| s.to_lowercase()).collect();
 
             packages.retain(|p| {
-                let p_source = match p.source {
-                    models::PackageSource::Official => "official",
-                    models::PackageSource::Chaotic => "chaotic-aur",
-                    models::PackageSource::Aur => "aur",
-                    models::PackageSource::CachyOS => "cachyos",
-                    models::PackageSource::Garuda => "garuda",
-                    models::PackageSource::Endeavour => "endeavour",
-                    models::PackageSource::Manjaro => "manjaro",
-                    models::PackageSource::Local => "local",
+                let p_source = match p.source.source_type.as_str() {
+                    "repo" => match p.source.id.as_str() {
+                        "chaotic-aur" => "chaotic-aur",
+                        "cachyos" => "cachyos",
+                        "garuda" => "garuda",
+                        "endeavour" => "endeavour",
+                        "manjaro" => "manjaro",
+                        _ => "official",
+                    },
+                    "flatpak" => "flatpak",
+                    "aur" => "aur",
+                    "local" => "local",
+                    _ => "other",
                 };
 
                 if p_source == "chaotic-aur"

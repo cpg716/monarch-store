@@ -1,4 +1,4 @@
-use crate::helper_client::{HelperCommand, invoke_helper};
+use crate::helper_client::{invoke_helper, HelperCommand};
 use crate::models::{Package, PackageSource};
 use crate::repo_db;
 use std::collections::HashMap;
@@ -55,17 +55,23 @@ pub struct RepoManager {
 }
 
 // Helper for Intelligent Priority Sorting (Granular Optimization Ranking)
-pub fn calculate_package_rank(pkg: &Package, opt_level: u8, distro: &crate::distro_context::DistroContext) -> u8 {
+pub fn calculate_package_rank(
+    pkg: &Package,
+    opt_level: u8,
+    distro: &crate::distro_context::DistroContext,
+) -> u8 {
     // Manjaro Strategy: Stability First (Official Repos Priority 0)
     // We treat "source_first" as "Official/Stable First" here
     if distro.capabilities.default_search_sort == "source_first" {
-         match pkg.source {
-            PackageSource::Official | PackageSource::Manjaro => 0, // Highest Priority
-            PackageSource::Aur | PackageSource::Local => 2,
-            PackageSource::Chaotic | PackageSource::CachyOS | PackageSource::Garuda | PackageSource::Endeavour => {
-                 // Deprioritize unofficial binaries massively to warn user
-                10 
-            }
+        match pkg.source.source_type.as_str() {
+            "repo" => match pkg.source.id.as_str() {
+                "core" | "extra" | "multilib" => 0, // High Priority Official
+                "manjaro" => 0,
+                _ => 10, // Unofficial repos deprioritized on Manjaro
+            },
+            "flatpak" => 1,
+            "aur" | "local" => 2,
+            _ => 10,
         }
     } else {
         // CachyOS/Garuda/Arch Strategy: Performance First (Optimization Level Priority)
@@ -90,136 +96,87 @@ impl RepoManager {
         std::fs::create_dir_all(&config_path).unwrap_or_default();
         // let config_file = config_path.join("repos.json"); // Not used for state init anymore directly here, but later
 
-        // Default Repos - Chaotic-AUR is PRIMARY
+        // Default Repos - We only actively manage Chaotic-AUR.
+        // Everything else must be discovered from the host system.
         let mut initial_repos = vec![
             RepoConfig {
                 name: "chaotic-aur".to_string(),
                 url: "https://cdn-mirror.chaotic.cx/chaotic-aur/x86_64/chaotic-aur.db".to_string(),
-                source: PackageSource::Chaotic,
+                source: PackageSource::chaotic(),
                 enabled: false, // Default to false, check disk
             },
-            RepoConfig {
-                name: "cachyos".to_string(),
-                url: "https://cdn77.cachyos.org/repo/x86_64/cachyos/cachyos.db".to_string(),
-                source: PackageSource::CachyOS,
-                enabled: false, 
-            },
-            RepoConfig {
-                name: "cachyos-v3".to_string(),
-                url: "https://cdn77.cachyos.org/repo/x86_64_v3/cachyos-v3/cachyos-v3.db".to_string(),
-                source: PackageSource::CachyOS,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "cachyos-core-v3".to_string(),
-                url: "https://cdn77.cachyos.org/repo/x86_64_v3/cachyos-core-v3/cachyos-core-v3.db".to_string(),
-                source: PackageSource::CachyOS,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "cachyos-extra-v3".to_string(),
-                url: "https://cdn77.cachyos.org/repo/x86_64_v3/cachyos-extra-v3/cachyos-extra-v3.db".to_string(),
-                source: PackageSource::CachyOS,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "cachyos-v4".to_string(),
-                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-v4/cachyos-v4.db".to_string(),
-                source: PackageSource::CachyOS,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "cachyos-core-v4".to_string(),
-                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-core-v4/cachyos-core-v4.db".to_string(),
-                source: PackageSource::CachyOS,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "cachyos-extra-v4".to_string(),
-                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-extra-v4/cachyos-extra-v4.db".to_string(),
-                source: PackageSource::CachyOS,
-                enabled: false,
-            },
-             RepoConfig {
-                name: "cachyos-extra-znver4".to_string(),
-                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-extra-znver4/cachyos-extra-znver4.db".to_string(),
-                source: PackageSource::CachyOS,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "cachyos-core-znver4".to_string(),
-                url: "https://cdn77.cachyos.org/repo/x86_64_v4/cachyos-core-znver4/cachyos-core-znver4.db".to_string(),
-                source: PackageSource::CachyOS,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "garuda".to_string(),
-                url: "https://builds.garudalinux.org/repos/garuda/x86_64/garuda.db".to_string(),
-                source: PackageSource::Garuda,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "endeavouros".to_string(),
-                url: "https://mirror.moson.org/endeavouros/repo/endeavouros/x86_64/endeavouros.db".to_string(),
-                source: PackageSource::Endeavour,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "manjaro-core".to_string(),
-                url: "https://mirror.init7.net/manjaro/stable/core/x86_64/core.db".to_string(),
-                source: PackageSource::Manjaro,
-                enabled: false,
-            },
-            RepoConfig {
-                name: "manjaro-extra".to_string(),
-                url: "https://mirror.init7.net/manjaro/stable/extra/x86_64/extra.db".to_string(),
-                source: PackageSource::Manjaro,
-                enabled: false,
-            },
-            // Official Repos are Always True (Logic handled in filtering usually, but let's keep them here)
+            // Official Repos (We keep these for UI structure, but their enabled state comes from system)
             RepoConfig {
                 name: "core".to_string(),
                 url: "https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db".to_string(),
-                source: PackageSource::Official,
+                source: PackageSource::official(),
                 enabled: true,
             },
             RepoConfig {
                 name: "extra".to_string(),
                 url: "https://geo.mirror.pkgbuild.com/extra/os/x86_64/extra.db".to_string(),
-                source: PackageSource::Official,
+                source: PackageSource::official(),
                 enabled: true,
             },
             RepoConfig {
                 name: "community".to_string(),
                 url: "https://geo.mirror.pkgbuild.com/community/os/x86_64/community.db".to_string(),
-                source: PackageSource::Official,
+                source: PackageSource::official(),
                 enabled: true,
             },
             RepoConfig {
                 name: "multilib".to_string(),
                 url: "https://geo.mirror.pkgbuild.com/multilib/os/x86_64/multilib.db".to_string(),
-                source: PackageSource::Official,
+                source: PackageSource::official(),
                 enabled: true,
             },
         ];
 
         // TRUTH FROM DISK (Modular Config Strategy)
-        // Check /etc/pacman.d/monarch/50-{name}.conf
+        // 1. Check /etc/pacman.d/monarch/50-{name}.conf for Monarch-managed repos (like chaotic-aur)
         let monarch_conf_dir = std::path::Path::new("/etc/pacman.d/monarch");
-        
-        for repo in &mut initial_repos {
-            if repo.source == PackageSource::Official {
-                continue; // Always enabled
-            }
 
-            let conf_name = format!("50-{}.conf", repo.name);
-            let path = monarch_conf_dir.join(conf_name);
-            if path.exists() {
-                // If the file exists, the repo is enabled in the system.
-                // We trust the disk over everything else.
-                repo.enabled = true;
-            } else {
-                repo.enabled = false;
+        for repo in &mut initial_repos {
+            // Chaotic-AUR is managed by Monarch via specialized config files
+            if repo.name == "chaotic-aur" {
+                let conf_name = format!("50-{}.conf", repo.name);
+                let path = monarch_conf_dir.join(conf_name);
+                if path.exists() {
+                    repo.enabled = true;
+                }
+            }
+        }
+
+        // 2. DISCOVER HOST REPOS via ALPM
+        // We look at what the system currently has enabled to populate the list with valid local repos.
+        // This ensures CachyOS/Manjaro/Garuda/Endeavour users see their repos as "enabled" but we don't injecting them elsewhere.
+        if let Ok(alpm) = alpm::Alpm::new("/", "/var/lib/pacman") {
+            let dbs = alpm.syncdbs();
+            for db in dbs {
+                let db_name = db.name();
+                // If it's already in our list, mark it enabled
+                if let Some(existing) = initial_repos.iter_mut().find(|r| r.name == db_name) {
+                    existing.enabled = true;
+                } else {
+                    // It's a system repo we didn't know about (e.g. cachyos, garuda, etc).
+                    // Add it closely respecting the host.
+
+                    // Infer Source from Name
+                    let source = PackageSource::from_repo_name(
+                        db_name,
+                        "latest",
+                        &crate::distro_context::DistroContext::new(),
+                    );
+
+                    let servers = db.servers().into_iter().next().unwrap_or("").to_string();
+
+                    initial_repos.push(RepoConfig {
+                        name: db_name.to_string(),
+                        url: servers,
+                        source,
+                        enabled: true,
+                    });
+                }
             }
         }
 
@@ -246,10 +203,11 @@ impl RepoManager {
 
                     // Merge saved repo enabled states
                     for saved_repo in saved_config.repos {
-                        if let Some(r) = initial_repos.iter_mut().find(|r| r.name == saved_repo.name)
+                        if let Some(r) =
+                            initial_repos.iter_mut().find(|r| r.name == saved_repo.name)
                         {
                             // Only overwrite if not an Official repo (Official stay enabled by policy)
-                            if r.source != PackageSource::Official {
+                            if r.source != PackageSource::official() {
                                 r.enabled = saved_repo.enabled;
                             }
                         }
@@ -378,7 +336,7 @@ impl RepoManager {
     }
 
     pub async fn load_initial_cache(&self) {
-         let repos = self.repos.read().await;
+        let repos = self.repos.read().await;
         // Only load enabled or required repos
         let active_repos: Vec<RepoConfig> = repos.iter().filter(|r| r.enabled).cloned().collect();
         drop(repos);
@@ -399,16 +357,20 @@ impl RepoManager {
             // Simplified loading logic...
             let r = repo.clone();
             let c_dir = cache_dir.clone();
-             handles.push(tokio::spawn(async move {
+            handles.push(tokio::spawn(async move {
                 let file_name = format!("{}.db", r.name);
                 let path = c_dir.join(file_name);
-                if !path.exists() { return None; }
-                 match std::fs::read(&path) {
+                if !path.exists() {
+                    return None;
+                }
+                match std::fs::read(&path) {
                     Ok(_) => {
                         let client = crate::repo_db::RealRepoClient::new();
                         match crate::repo_db::fetch_repo_packages(
                             &client, &r.url, &r.name, r.source, &c_dir, false, 999999,
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(pkgs) => Some((r.name, pkgs)),
                             Err(_) => None,
                         }
@@ -418,7 +380,7 @@ impl RepoManager {
             }));
         }
 
-         for handle in handles {
+        for handle in handles {
             if let Ok(Some((name, pkgs))) = handle.await {
                 let mut cache = self.cache.write().await;
                 cache.insert(name, pkgs);
@@ -426,8 +388,13 @@ impl RepoManager {
         }
     }
 
-    pub async fn sync_all(&self, force: bool, interval_hours: u64, app: Option<tauri::AppHandle>) -> Result<String, String> {
-         use tauri::Emitter;
+    pub async fn sync_all(
+        &self,
+        force: bool,
+        interval_hours: u64,
+        app: Option<tauri::AppHandle>,
+    ) -> Result<String, String> {
+        use tauri::Emitter;
         let repos = self.repos.read().await;
         // Use all enabled repos for system sync, not just active ones (though they are usually same)
         let active_repos: Vec<RepoConfig> = repos.iter().filter(|r| r.enabled).cloned().collect();
@@ -437,22 +404,22 @@ impl RepoManager {
         // 1. Trigger System Sync (Helper) - This updates /var/lib/pacman/sync
         if let Some(ref a) = app {
             let _ = a.emit("sync-progress", "Synchronizing system databases...");
-            
+
             // We need a password? sync_all is usually called from background or trigger_repo_sync.
-            // trigger_repo_sync doesn't pass password. 
+            // trigger_repo_sync doesn't pass password.
             // However, AlpmSync requires root ONLY if writing to /var/lib/pacman/sync.
             // If we are in background, we might check if we can run passwordless (Polkit).
             // But invoke_helper handles Polkit via pkexec.
             // If the user isn't prompted, it might fail or hang?
             // Wait, AlpmSync in helper runs as root. pkexec will prompt if needed.
             // But if this runs on startup (background), we DON'T want a prompt blocking everything.
-            // 
+            //
             // The user prompt said: "Constraint: The UI search results must not update until both the local cache AND the system sync are complete."
             // But if this blocks on auth...
             // "When the GUI triggers a 'Refresh Mirrors/DBs'..." -> Usually a user action.
             // If it's the auto-sync on startup, we might skip system sync if it prompts.
             // But we can't detect "will prompt".
-            
+
             // However, Polkit rules allow passwordless refresh usually?
             // "Authentication is required to install, update, or remove applications."
             // Refreshing DBs is "update".
@@ -460,17 +427,20 @@ impl RepoManager {
             // For background sync, it might annoy.
             // BUT: The "Dual Brain" fix is critical.
             // Let's implement it. If we are in `trigger_repo_sync` (User Action), we definitely want this.
-            
+
             // To be safe, we spawn it.
             // But we need to wait for it?
-            
+
             let _ = invoke_helper(
-                a, 
-                HelperCommand::AlpmSync { enabled_repos: enabled_repo_names }, // Use AlpmSync instead of Refresh for targeted repo control
-                None // No password passed to sync_all usually
-            ).await;
-            
-            // We ignore the result/rx for now to not block the GUI cache update? 
+                a,
+                HelperCommand::AlpmSync {
+                    enabled_repos: enabled_repo_names,
+                }, // Use AlpmSync instead of Refresh for targeted repo control
+                None, // No password passed to sync_all usually
+            )
+            .await;
+
+            // We ignore the result/rx for now to not block the GUI cache update?
             // Or do we wait?
             // "Constraint: UI search results must not update until... complete"
             // So we SHOULD wait.
@@ -489,11 +459,21 @@ impl RepoManager {
             let c_dir = cache_dir.clone();
             let app_clone = app.clone();
             handles.push(tokio::spawn(async move {
-                 if let Some(ref a) = app_clone {
+                if let Some(ref a) = app_clone {
                     let _ = a.emit("sync-progress", format!("Updating {}...", r.name));
                 }
                 let client = repo_db::RealRepoClient::new();
-                match repo_db::fetch_repo_packages(&client, &r.url, &r.name, r.source, &c_dir, force, interval_hours).await {
+                match repo_db::fetch_repo_packages(
+                    &client,
+                    &r.url,
+                    &r.name,
+                    r.source,
+                    &c_dir,
+                    force,
+                    interval_hours,
+                )
+                .await
+                {
                     Ok(pkgs) => Ok((r.name, pkgs)),
                     Err(e) => Err((r.name, e)),
                 }
@@ -502,12 +482,12 @@ impl RepoManager {
 
         let mut results = Vec::new();
         for handle in handles {
-             match handle.await {
+            match handle.await {
                 Ok(Ok((name, pkgs))) => {
                     let mut cache = self.cache.write().await;
                     let val = if pkgs.len() > 0 { pkgs } else { Vec::new() };
                     cache.insert(name.clone(), val);
-                     results.push(format!("Synced {} from {}", 0, name)); // Simplified logging
+                    results.push(format!("Synced {} from {}", 0, name)); // Simplified logging
                 }
                 _ => {}
             }
@@ -515,128 +495,96 @@ impl RepoManager {
         Ok("Sync Complete".to_string())
     }
 
-    // MODULAR APPLY LOGIC — pass password so one prompt covers all helper invokes
-    pub async fn apply_os_config(&self, app: &tauri::AppHandle, password: Option<String>) -> Result<(), String> {
-        let repos = self.repos.read().await;
-        let all_repos: Vec<RepoConfig> = repos.iter().cloned().collect();
-        drop(repos);
+    /// Search for packages in the local cache matching the query string.
+    /// This uses regex for case-insensitive partial matching on name and description.
+    pub async fn get_packages_matching(
+        &self,
+        query: &str,
+        distro: &crate::distro_context::DistroContext,
+    ) -> Result<Vec<Package>, String> {
+        let query_parts: Vec<String> = query.split_whitespace().map(|s| s.to_string()).collect();
+        let query_regexes: Vec<regex::Regex> = query_parts
+            .iter()
+            .filter_map(|p| {
+                regex::RegexBuilder::new(&regex::escape(p))
+                    .case_insensitive(true)
+                    .build()
+                    .ok()
+            })
+            .collect();
 
-        // 1. Initialize System (Include and Folders)
-        let _ = invoke_helper(app, HelperCommand::Initialize, password.clone()).await?.recv().await;
+        if query_regexes.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        let mut files_to_write = Vec::new();
-        let mut paths_to_remove = Vec::new();
-
-        // 2. Prepare Batch Operations
-        for repo in all_repos {
-            if repo.source == PackageSource::Official {
-                continue;
-            }
-
-            let filename = format!("50-{}.conf", repo.name);
-            let path = format!("/etc/pacman.d/monarch/{}", filename);
-
-            if repo.enabled {
-                let mut content = String::new();
-                let server_url = if repo.url.ends_with(".db") {
-                    let parts: Vec<&str> = repo.url.split('/').collect();
-                    if parts.len() > 1 {
-                        parts[..parts.len() - 1].join("/")
-                    } else {
-                        repo.url.clone()
+        let cache = self.cache.read().await;
+        let mut results = Vec::new();
+        for (repo_name, pkgs) in cache.iter() {
+            for pkg in pkgs {
+                let mut all_match = true;
+                for re in &query_regexes {
+                    // Search name and description
+                    if !re.is_match(&pkg.name) && !re.is_match(&pkg.description) {
+                        all_match = false;
+                        break;
                     }
-                } else {
-                    repo.url.clone()
-                };
-
-                content.push_str(&format!("[{}]\nServer = {}\n", repo.name, server_url));
-
-                if repo.name == "chaotic-aur" || repo.name.starts_with("cachyos") {
-                    content.push_str("SigLevel = PackageRequired\n");
-                } else {
-                    content.push_str("SigLevel = Optional TrustAll\n");
                 }
-                files_to_write.push((path, content));
-            } else {
-                paths_to_remove.push(path);
-            }
-        }
 
-        // 3. Execute Batches
-        let mut changed = false;
-        if !files_to_write.is_empty() {
-            let _ = invoke_helper(app, HelperCommand::WriteFiles { files: files_to_write }, password.clone()).await?.recv().await;
-            changed = true;
-        }
-        if !paths_to_remove.is_empty() {
-            let _ = invoke_helper(app, HelperCommand::RemoveFiles { paths: paths_to_remove }, password.clone()).await?.recv().await;
-            changed = true;
-        }
-
-        // 4. Force refresh sync databases after writing repo configs (Apple Store–like: must succeed)
-        // Optimization: only sync if we actually changed something on disk.
-        if !changed {
-            return Ok(());
-        }
-
-        let run_sync = || async {
-            let mut rx = invoke_helper(app, HelperCommand::ForceRefreshDb, password.clone()).await?;
-            let mut last_msg: Option<String> = None;
-            while let Some(msg) = rx.recv().await {
-                last_msg = Some(msg.message);
-            }
-            if let Some(m) = last_msg.as_deref() {
-                if m.starts_with("Error:") || (m.contains("failed") && m.to_lowercase().contains("sync")) {
-                    return Err(m.to_string());
+                if all_match {
+                    let mut p = pkg.clone();
+                    p.source = PackageSource::from_repo_name(repo_name, &p.version, distro);
+                    results.push(p);
                 }
             }
-            Ok(())
-        };
-        if run_sync().await.is_err() {
-            // One retry on transient failure
-            if run_sync().await.is_err() {
-                return Err(
-                    "Could not sync repositories. Check your connection and try again, or use Settings → Maintenance → Refresh Databases.".to_string()
-                );
-            }
         }
+        Ok(results)
+    }
 
+    // MODULAR APPLY LOGIC — pass password so one prompt covers all helper invokes
+    pub async fn apply_os_config(
+        &self,
+        app: &tauri::AppHandle,
+        password: Option<String>,
+    ) -> Result<(), String> {
+        let repos = self.repos.read().await;
+        drop(repos);
+        // 1. Refactor note: Traditional "Repo Injection" is deprecated.
+        // We no longer modify pacman.conf or manage .conf files directly via HelperCommand::{WriteFiles, RemoveFiles}.
+        // The application now uses Host Detection to respect system-provided repositories.
+
+        // If we still need to trigger a sync (e.g. after user manually added a repo), we use ExecuteBatch.
+        let mut rx = invoke_helper(
+            app,
+            HelperCommand::ExecuteBatch {
+                manifest: crate::models::TransactionManifest {
+                    refresh_db: true,
+                    ..Default::default()
+                },
+            },
+            password,
+        )
+        .await?;
+        while let Some(_) = rx.recv().await {}
         Ok(())
     }
 
-    /// Returns repo names that belong to the given family (e.g. "cachyos" -> ["cachyos", "cachyos-v3", ...]).
-    /// Used for atomic enable: run key import for these repos before writing config.
-    pub async fn get_repo_names_in_family(&self, family: &str) -> Vec<String> {
-        let repos = self.repos.read().await;
-        let family_lower = family.to_lowercase();
-        let mut names = Vec::new();
-        for repo in repos.iter() {
-            let repo_lower = repo.name.to_lowercase();
-            let belongs = match family_lower.as_str() {
-                "cachyos" => repo_lower.starts_with("cachyos"),
-                "manjaro" => repo_lower.starts_with("manjaro"),
-                "chaotic" | "chaotic-aur" => repo_lower == "chaotic-aur",
-                "garuda" => repo_lower == "garuda",
-                "endeavouros" => repo_lower == "endeavouros",
-                _ => repo_lower == family_lower,
-            };
-            if belongs {
-                names.push(repo.name.clone());
-            }
-        }
-        names
-    }
-
-    pub async fn set_repo_state(&self, app: &tauri::AppHandle, name: &str, enabled: bool) -> Result<(), String> {
+    pub async fn set_repo_state(
+        &self,
+        app: &tauri::AppHandle,
+        name: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
         // --- FIREWALL: Identity Matrix Check ---
         let distro = crate::distro_context::get_distro_context();
-        
+
         // Rule 1: Manjaro cannot enable Chaotic-AUR (Glibc Mismatch)
         if enabled && name == "chaotic-aur" {
             // Bypass check if in Advanced Mode
             if !*self.advanced_mode.read().await {
-                if let crate::distro_context::ChaoticSupport::Blocked = distro.capabilities.chaotic_aur_support {
-                     return Err(format!(
+                if let crate::distro_context::ChaoticSupport::Blocked =
+                    distro.capabilities.chaotic_aur_support
+                {
+                    return Err(format!(
                         "ACTION BLOCKED: Enabling Chaotic-AUR on {} is unsafe due to glibc incompatibility.", 
                         distro.pretty_name
                     ));
@@ -665,7 +613,13 @@ impl RepoManager {
 
     /// Toggle all repos belonging to a family (e.g., "cachyos", "manjaro")
     /// Added skip_os_sync to avoid 4x prompts during onboarding
-    pub async fn set_repo_family_state(&self, app: &tauri::AppHandle, family: &str, enabled: bool, skip_os_sync: bool) -> Result<(), String> {
+    pub async fn set_repo_family_state(
+        &self,
+        app: &tauri::AppHandle,
+        family: &str,
+        enabled: bool,
+        skip_os_sync: bool,
+    ) -> Result<(), String> {
         let mut repos = self.repos.write().await;
         let family_lower = family.to_lowercase();
         let mut affected_repos = Vec::new();
@@ -720,9 +674,7 @@ impl RepoManager {
         Ok(())
     }
 
-
-// ... inside RepoManager impl ...
-
+    // ... inside RepoManager impl ...
 
     #[allow(dead_code)]
     pub async fn get_package(&self, name: &str) -> Option<Package> {
@@ -735,7 +687,11 @@ impl RepoManager {
     pub async fn get_all_packages_with_repos(&self, name: &str) -> Vec<(Package, String)> {
         let enabled: std::collections::HashSet<String> = {
             let repos = self.repos.read().await;
-            repos.iter().filter(|r| r.enabled).map(|r| r.name.clone()).collect()
+            repos
+                .iter()
+                .filter(|r| r.enabled)
+                .map(|r| r.name.clone())
+                .collect()
         };
         let cache = self.cache.read().await;
         let mut results: Vec<(Package, u8, String)> = Vec::new();
@@ -747,15 +703,20 @@ impl RepoManager {
             if !enabled.contains(repo_name) {
                 continue;
             }
-            let opt_level: u8 = if repo_name.contains("-znver4") && crate::utils::is_cpu_znver4_compatible() {
-                3
-            } else if repo_name.contains("-v4") && cpu_v4 {
-                2
-            } else if (repo_name.contains("-v3") || repo_name.contains("-core-v3") || repo_name.contains("-extra-v3")) && cpu_v3 {
-                1
-            } else {
-                0
-            };
+            let opt_level: u8 =
+                if repo_name.contains("-znver4") && crate::utils::is_cpu_znver4_compatible() {
+                    3
+                } else if repo_name.contains("-v4") && cpu_v4 {
+                    2
+                } else if (repo_name.contains("-v3")
+                    || repo_name.contains("-core-v3")
+                    || repo_name.contains("-extra-v3"))
+                    && cpu_v3
+                {
+                    1
+                } else {
+                    0
+                };
 
             if let Some(p) = pkgs.iter().find(|p| p.name == name) {
                 results.push((p.clone(), opt_level, repo_name.clone()));
@@ -800,7 +761,11 @@ impl RepoManager {
         let mut results = Vec::new();
         let enabled: std::collections::HashSet<String> = {
             let repos = self.repos.read().await;
-            repos.iter().filter(|r| r.enabled).map(|r| r.name.clone()).collect()
+            repos
+                .iter()
+                .filter(|r| r.enabled)
+                .map(|r| r.name.clone())
+                .collect()
         };
         let cache = self.cache.read().await;
 
@@ -826,7 +791,11 @@ impl RepoManager {
         let mut results = Vec::new();
         let enabled: std::collections::HashSet<String> = {
             let repos = self.repos.read().await;
-            repos.iter().filter(|r| r.enabled).map(|r| r.name.clone()).collect()
+            repos
+                .iter()
+                .filter(|r| r.enabled)
+                .map(|r| r.name.clone())
+                .collect()
         };
         let cache = self.cache.read().await;
         let names_set: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
@@ -886,9 +855,9 @@ mod tests {
 
     #[test]
     fn test_chaotic_priority() {
-        let p_chaotic = make_test_pkg(PackageSource::Chaotic);
-        let p_official = make_test_pkg(PackageSource::Official);
-        let p_aur = make_test_pkg(PackageSource::Aur);
+        let p_chaotic = make_test_pkg(PackageSource::chaotic());
+        let p_official = make_test_pkg(PackageSource::official());
+        let p_aur = make_test_pkg(PackageSource::aur());
         let distro = crate::distro_context::DistroContext::new(); // Default Arch
 
         // Rank Check directly (Standard Priorities: Chaotic=4, Official=5, Aur=8)
@@ -898,13 +867,14 @@ mod tests {
 
         // Verify Chaotic beats Official (Lower rank is better)
         assert!(
-            calculate_package_rank(&p_chaotic, 0, &distro) < calculate_package_rank(&p_official, 0, &distro)
+            calculate_package_rank(&p_chaotic, 0, &distro)
+                < calculate_package_rank(&p_official, 0, &distro)
         );
     }
 
     #[test]
     fn test_optimized_priority() {
-        let p_cachy = make_test_pkg(PackageSource::CachyOS);
+        let p_cachy = make_test_pkg(PackageSource::cachyos());
         let distro = crate::distro_context::DistroContext::new(); // Default Arch
 
         // Optimized tiers vs Standard Cachy (Cachy standard is priority 3+3=6)
@@ -913,7 +883,10 @@ mod tests {
         assert_eq!(calculate_package_rank(&p_cachy, 1, &distro), 2); // v3
         assert_eq!(calculate_package_rank(&p_cachy, 0, &distro), 6); // Standard Cachy
 
-        assert!(calculate_package_rank(&p_cachy, 1, &distro) < calculate_package_rank(&p_cachy, 0, &distro));
+        assert!(
+            calculate_package_rank(&p_cachy, 1, &distro)
+                < calculate_package_rank(&p_cachy, 0, &distro)
+        );
     }
 }
 

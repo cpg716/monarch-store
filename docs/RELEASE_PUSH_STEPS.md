@@ -1,4 +1,4 @@
-# Release push steps — v0.3.6-alpha
+# Release push steps — v0.4.0-alpha
 
 Follow these steps to push the release to GitHub and finalize the PKGBUILD for the versioned tag.
 

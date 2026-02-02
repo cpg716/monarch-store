@@ -3,16 +3,18 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, Check, Zap, Globe, ShieldCheck, Hammer, Server } from 'lucide-react';
 import { clsx } from 'clsx';
 
+import { PackageSource } from '../types/alpm';
+
 interface RepoVariant {
-    source: string;
+    source: PackageSource | string;
     version: string;
     repo_name?: string;
 }
 
 interface RepoSelectorProps {
     variants: RepoVariant[];
-    selectedSource: string;
-    onChange: (source: string) => void;
+    selectedSource: PackageSource | string;
+    onChange: (source: PackageSource | string) => void;
 }
 
 const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, onChange }) => {
@@ -29,12 +31,56 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    const selectedVariant = variants.find(v => v.source === selectedSource);
+    // Comparison Helper
+    const isSameSource = (a: PackageSource | string, b: PackageSource | string) => {
+        if (typeof a === 'string' && typeof b === 'string') return a === b;
+        if (typeof a !== 'string' && typeof b !== 'string') return a.id === b.id && a.source_type === b.source_type;
+        return false;
+    };
+
+    const selectedVariant = variants.find(v => isSameSource(v.source, selectedSource));
 
     const getSourceInfo = (variant?: RepoVariant) => {
         if (!variant) return { label: 'Select Source', icon: Globe, color: 'text-app-muted', bg: 'bg-app-card' };
 
         const { source, repo_name } = variant;
+
+        // --- STRUCT LOGIC ---
+        if (typeof source !== 'string') {
+            const { source_type, id, label } = source;
+
+
+            if (source_type === 'repo') {
+                if (id === 'chaotic-aur') {
+                    return { label: label || 'Chaotic-AUR', badge: 'CHAOTIC', icon: ShieldCheck, color: 'text-green-500', bg: 'bg-green-500/10 border-green-500/20', recommended: true };
+                }
+                if (id === 'cachyos') {
+                    return { label: label || 'CachyOS', badge: 'OPTIMIZED', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
+                }
+                if (id === 'manjaro') {
+                    return { label: label || 'Manjaro', badge: 'MANJARO', icon: ShieldCheck, color: 'text-teal-500', bg: 'bg-teal-500/10 border-teal-500/20' };
+                }
+                if (id === 'garuda') return { label: label || 'Garuda', badge: 'GARUDA', icon: Zap, color: 'text-orange-500', bg: 'bg-orange-500/10 border-orange-500/20' };
+                if (id === 'endeavour') return { label: label || 'EndeavourOS', badge: 'ENDEAVOUR', icon: Zap, color: 'text-purple-500', bg: 'bg-purple-500/10 border-purple-500/20' };
+
+                // Official / Fallback Repo
+                return { label: label || 'Official', badge: 'OFFICIAL', icon: Server, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/20', recommended: true };
+            }
+
+            if (source_type === 'aur') {
+                return { label: label || 'AUR', badge: 'AUR', icon: Hammer, color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/20' };
+            }
+            if (source_type === 'flatpak') {
+                return { label: label || 'Flatpak', badge: 'FLATPAK', icon: Globe, color: 'text-sky-500', bg: 'bg-sky-500/10 border-sky-500/20' };
+            }
+            if (source_type === 'local') {
+                return { label: label || 'Local', badge: 'LOCAL', icon: Server, color: 'text-neutral-500', bg: 'bg-neutral-500/10 border-neutral-500/20' };
+            }
+
+            return { label: label || 'Unknown', badge: 'REPO', icon: Server, color: 'text-slate-500', bg: 'bg-slate-100 border-slate-200' };
+        }
+
+        // --- LEGACY STRING LOGIC ---
         const isOptimized = repo_name?.includes('v3') || repo_name?.includes('v4') || repo_name?.includes('znver4');
 
         switch (source) {
@@ -116,7 +162,7 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                             {variants.map(v => {
                                 const vInfo = getSourceInfo(v);
                                 const VIcon = vInfo.icon;
-                                const isSelected = selectedSource === v.source;
+                                const isSelected = isSameSource(selectedSource, v.source);
                                 return (
                                     <button
                                         key={`${v.source}-${v.version}`}
@@ -144,10 +190,10 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ variants, selectedSource, o
                                                             RECOMMENDED
                                                         </span>
                                                     )}
-                                                    {v.source !== 'aur' ? (
-                                                        <span className="text-[8px] bg-green-500/10 text-green-500 px-1 rounded font-bold">INSTANT</span>
+                                                    {typeof v.source === 'string' ? (
+                                                        v.source !== 'aur' ? <span className="text-[8px] bg-green-500/10 text-green-500 px-1 rounded font-bold">INSTANT</span> : <span className="text-[8px] bg-amber-500/10 text-amber-500 px-1 rounded font-bold">SLOW BUILD</span>
                                                     ) : (
-                                                        <span className="text-[8px] bg-amber-500/10 text-amber-500 px-1 rounded font-bold">SLOW BUILD</span>
+                                                        v.source.source_type !== 'aur' ? <span className="text-[8px] bg-green-500/10 text-green-500 px-1 rounded font-bold">INSTANT</span> : <span className="text-[8px] bg-amber-500/10 text-amber-500 px-1 rounded font-bold">SLOW BUILD</span>
                                                     )}
                                                 </div>
                                             </div>

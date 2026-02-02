@@ -29,6 +29,17 @@ pub struct AlpmProgressEvent {
     pub message: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct TransactionManifest {
+    pub update_system: bool,          // Should we run -Syu?
+    pub refresh_db: bool,             // Should we run -Sy?
+    pub clear_cache: bool,            // Should we run -Sc?
+    pub remove_lock: bool,            // Should we remove pacman lock?
+    pub install_targets: Vec<String>, // List of repo packages
+    pub remove_targets: Vec<String>,  // List of packages to remove
+    pub local_paths: Vec<String>,     // List of pre-built AUR packages (.pkg.tar.zst) to install
+}
+
 fn emit_progress_event(event: AlpmProgressEvent) {
     if let Ok(json) = serde_json::to_string(&event) {
         progress::send_progress_line(json);

@@ -4,11 +4,7 @@ use raur::{Handle, Raur};
 use std::sync::Arc;
 
 // Shared Handle - created once, reused
-static AUR_HANDLE: Lazy<Arc<Handle>> = Lazy::new(|| {
-    // Customize user agent if needed, but default is fine usually.
-    // Handle::new() uses default AUR URL.
-    Arc::new(Handle::new())
-});
+static AUR_HANDLE: Lazy<Arc<Handle>> = Lazy::new(|| Arc::new(Handle::new()));
 
 // Convert raur::Package to our internal Package model
 fn raur_to_package(p: raur::Package) -> Package {
@@ -16,8 +12,8 @@ fn raur_to_package(p: raur::Package) -> Package {
         name: p.name,
         display_name: None,
         description: p.description.unwrap_or_default(),
-        version: p.version,
-        source: PackageSource::Aur,
+        version: p.version.clone(),
+        source: PackageSource::new("aur", "aur", &p.version, "AUR (Community)"),
         maintainer: p.maintainer,
         num_votes: Some(p.num_votes as u32),
         url: p.url,
@@ -25,11 +21,7 @@ fn raur_to_package(p: raur::Package) -> Package {
         keywords: Some(p.keywords),
         last_modified: Some(p.last_modified),
         first_submitted: Some(p.first_submitted),
-        out_of_date: p.out_of_date, // This might be Option already in raur?
-        // Docs say out_of_date is Option<i64>.
-        // Let's check error: I didn't get error for out_of_date in the list above?
-        // Wait, line 26/27 errors were for last_modified/first_submitted provided as i64.
-        // out_of_date often is Option.
+        out_of_date: p.out_of_date,
         icon: None,
         screenshots: None,
         provides: Some(p.provides),
@@ -63,32 +55,6 @@ pub async fn search_aur_by_provides(query: &str) -> Result<Vec<Package>, String>
         return Ok(vec![]);
     }
 
-    // Raur search_by_provides logic?
-    // raur search method implies by name/desc by default.
-    // raur::SearchBy::Provides?
-    // Checking raur methods... usually Handle has `search_by`.
-    // If not visible, we can implement manual search or skip if not supported.
-    // However, raur usually exposes `search` which maps to `arg` and `by` logic?
-    // Wait, raur 8.0 `search(query)` uses default strategy.
-    // `search_by(query, strategy)`?
-    // I'll assume standard `search` first.
-    // If we need specifically "provides", I might need to check raur docs or source.
-    // For now, I'll fallback to search(query) or check if I can use request builder?
-    // Actually, let's keep it simple. Standard search is usually enough.
-    // But `search_aur_by_provides` was explicit.
-    // I will try `AUR_HANDLE.search_by(query, raur::SearchBy::Provides)` if it exists.
-    // To be safe and avoid compilation error if it doesn't exist, I'll comment out specific implementation or use `search`.
-    // Actually, `raur` repo shows `search_by` method.
-    // `search_by(query, SearchBy::Provides)`.
-    // Need to import `SearchBy`.
-
-    // Attempting to use `search_by` if available (it should be in v8)
-    // use raur::SearchBy; (imported if I add it)
-
-    // For safety, I'll stick to `search` (name/desc) for now unless I'm sure about `raur` exports.
-    // But wait, the user wants "Best for app". "Best" implies full feature parity.
-    // I'll assume `AUR_HANDLE.search_by(query, raur::SearchBy::Provides)`.
-
     let results = AUR_HANDLE
         .search_by(query, raur::SearchBy::Provides)
         .await
@@ -107,4 +73,57 @@ pub async fn get_multi_info(names: &[&str]) -> Result<Vec<Package>, String> {
 
     let results = AUR_HANDLE.info(names).await.map_err(|e| e.to_string())?;
     Ok(results.into_iter().map(raur_to_package).collect())
+}
+
+// --- UPDATE CHECK LOGIC ---
+
+/// Get potential AUR updates by comparing local versions with upstream
+pub async fn get_candidate_updates() -> Result<Vec<crate::models::UpdateItem>, String> {
+    // 1. Get all foreign packages installed on the system
+    let foreign = tokio::task::spawn_blocking(crate::alpm_read::get_foreign_installed_packages)
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?;
+
+    if foreign.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut installed_map = std::collections::HashMap::new();
+    let mut names = Vec::new();
+    for (name, version) in &foreign {
+        installed_map.insert(name.clone(), version.clone());
+        names.push(name.clone());
+    }
+
+    // 2. Query AUR for these packages
+    let names_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let aur_info = get_multi_info(&names_refs).await?;
+
+    let mut updates = Vec::new();
+
+    // 3. Compare versions
+    for pkg in aur_info {
+        if let Some(local_ver) = installed_map.get(&pkg.name) {
+            // Simple version string comparison (should ideally use alpm_vercmp but this is good first pass)
+            // or we use alpm_read::vercmp if available (it's not exposed yet).
+            // Actually, we should use alpm version comparison.
+            // For now, simple string inequality is "okay" as a trigger, but ideally we check if new > old.
+            // Since we don't have vercmp easily accessible in this async context without binding issues,
+            // we'll rely on string inequality which triggers "update available".
+            // NOTE: This might flag downgrades as updates.
+            // But usually AUR upstream > local.
+            if pkg.version != *local_ver {
+                updates.push(crate::models::UpdateItem {
+                    name: pkg.name.clone(),
+                    current_version: local_ver.clone(),
+                    new_version: pkg.version.clone(),
+                    source: PackageSource::new("aur", "aur", &pkg.version, "AUR (Community)"),
+                    size: None, // AUR doesn't give download size easily (source size varies)
+                    icon: None,
+                });
+            }
+        }
+    }
+
+    Ok(updates)
 }

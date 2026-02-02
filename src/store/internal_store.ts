@@ -43,6 +43,12 @@ export interface AppState {
     reducePasswordPrompts: boolean;
     setReducePasswordPrompts: (enabled: boolean) => void;
 
+    /** Builder Settings */
+    cleanBuild: boolean;
+    setCleanBuild: (enabled: boolean) => void;
+    parallelDownloads: number;
+    setParallelDownloads: (count: number) => void;
+
     fetchTrending: () => Promise<void>;
     fetchInfraStats: () => Promise<void>;
     checkTelemetry: () => Promise<void>;
@@ -91,6 +97,20 @@ export const useAppStore = create<AppState>((set) => ({
             else localStorage.removeItem('monarch_reduce_password_prompts');
         }
         set({ reducePasswordPrompts: enabled });
+    },
+    cleanBuild: typeof localStorage !== 'undefined' ? localStorage.getItem('monarch_clean_build') === 'true' : false,
+    setCleanBuild: (enabled: boolean) => {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('monarch_clean_build', String(enabled));
+        }
+        set({ cleanBuild: enabled });
+    },
+    parallelDownloads: typeof localStorage !== 'undefined' ? parseInt(localStorage.getItem('parallel-downloads') ?? '5', 10) : 5,
+    setParallelDownloads: (count: number) => {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('parallel-downloads', count.toString());
+        }
+        set({ parallelDownloads: count });
     },
     fetchTrending: async () => {
         set({ loadingTrending: true, error: null });

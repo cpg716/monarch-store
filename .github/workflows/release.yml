@@ -61,8 +61,8 @@ jobs:
           RUSTFLAGS: ""
         with:
           projectPath: './src-tauri/monarch-gui'
-          tagName: v0.3.6-alpha
-          releaseName: 'MonArch Store v0.3.6-alpha'
+          tagName: v0.4.0-alpha
+          releaseName: 'MonArch Store v0.4.0-alpha'
           releaseBody: 'Experimental Alpha Release. See assets below for installation.'
           releaseDraft: true
           prerelease: true

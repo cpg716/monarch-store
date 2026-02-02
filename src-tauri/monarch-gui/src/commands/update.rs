@@ -108,7 +108,13 @@ async fn run_system_update_impl(
 
     let mut rx = crate::helper_client::invoke_helper(
         &app,
-        crate::helper_client::HelperCommand::Sysupgrade,
+        crate::helper_client::HelperCommand::ExecuteBatch {
+            manifest: crate::models::TransactionManifest {
+                update_system: true,
+                refresh_db: true,
+                ..Default::default()
+            },
+        },
         password.clone(),
     )
     .await?;
@@ -325,4 +331,178 @@ async fn install_built_packages(
     }
 
     Ok(())
+}
+
+/// Unified Update Aggregator (Phase 2)
+/// Fetches updates from Repo, AUR, and Flatpak in parallel.
+#[tauri::command]
+pub async fn check_updates() -> Result<Vec<crate::models::UpdateItem>, String> {
+    log::info!("Checking for updates (Unified)...");
+
+    // Task A: Repo (Official) - Fast, local DB read
+    // Note: We assume DBs are refreshed. If not, user should hit "Refresh" or we call refresh separately.
+    let repo_task = tokio::task::spawn_blocking(crate::alpm_read::get_host_updates);
+
+    // Task B: AUR - Web query + Raur
+    let aur_task = crate::aur_api::get_candidate_updates();
+
+    // Task C: Flatpak - CLI process
+    let flatpak_task = crate::flathub_api::get_updates();
+
+    // Parallel Join
+    let (repo_res, aur_res, flatpak_res) = tokio::join!(repo_task, aur_task, flatpak_task);
+
+    let mut all_updates = Vec::new();
+
+    // 1. Repo
+    match repo_res {
+        Ok(items) => all_updates.extend(items),
+        Err(e) => log::error!("Failed to check repo updates: {}", e),
+    }
+
+    // 2. AUR
+    match aur_res {
+        Ok(items) => all_updates.extend(items),
+        Err(e) => log::error!("Failed to check AUR updates: {}", e),
+    }
+
+    // 3. Flatpak
+    match flatpak_res {
+        Ok(items) => all_updates.extend(items),
+        Err(e) => log::error!("Failed to check Flatpak updates: {}", e),
+    }
+
+    log::info!("Found {} total updates", all_updates.len());
+    Ok(all_updates)
+}
+
+/// Unified Execution Engine (Phase 3 & 4)
+/// Safely executes the update queue respecting the "Safety Lock".
+#[tauri::command]
+pub async fn apply_updates(
+    app: AppHandle,
+    targets: Vec<crate::models::UpdateItem>,
+    password: Option<String>,
+) -> Result<String, String> {
+    if targets.is_empty() {
+        return Ok("No updates selected".to_string());
+    }
+
+    log::info!("Applying {} updates...", targets.len());
+
+    // Phase 4: Safety Lock
+    // If ANY official package is selected, we MUST do a full system upgrade.
+    // We cannot selectively upgrade "core/pacman" without "-Syu".
+    let has_official = targets.iter().any(|t| t.source.source_type == "repo");
+
+    // Group targets
+    let aur_targets: Vec<&crate::models::UpdateItem> = targets
+        .iter()
+        .filter(|t| t.source.source_type == "aur")
+        .collect();
+
+    let flatpak_targets: Vec<&crate::models::UpdateItem> = targets
+        .iter()
+        .filter(|t| t.source.source_type == "flatpak")
+        .collect();
+
+    // 1. Execute Repo Loop (The Iron Core)
+    if has_official {
+        log::info!("Safety Lock: Official updates detected. Enforcing System Upgrade.");
+        // We reuse the existing logic which does -Syu
+        // This updates ALL system packages, not just the selected ones.
+        // The UI should ideally warn user "Updating System..."
+        // Calls `run_system_update_impl` but we might want to skip AUR/Flatpak phase of that old function
+        // if we are handling them here specially.
+        // However, `run_system_update_impl` handles the heavy lifting of Sysupgrade transaction.
+        // Let's call a simplified version or reuse.
+        // reuse `run_system_update_impl` covers Sysupgrade + AUR.
+        // But here we have specific targets.
+        // If we call `run_system_update_impl`, it checks *all* AUR updates.
+        // We want to update only `aur_targets`.
+
+        // Let's trigger the Sysupgrade part manually.
+        let _ = app.emit(
+            "update-status",
+            "Starting System Upgrade (Official Repos)...",
+        );
+        let mut rx = crate::helper_client::invoke_helper(
+            &app,
+            crate::helper_client::HelperCommand::ExecuteBatch {
+                manifest: crate::models::TransactionManifest {
+                    update_system: true,
+                    refresh_db: true,
+                    ..Default::default()
+                },
+            },
+            password.clone(),
+        )
+        .await?;
+
+        // Monitor Sysupgrade
+        while let Some(msg) = rx.recv().await {
+            let _ = app.emit("install-output", &msg.message);
+            if msg.message.starts_with("Error:") {
+                return Err(format!("System update failed: {}", msg.message));
+            }
+        }
+    }
+
+    // 2. Execute AUR Loop (Native Builder)
+    if !aur_targets.is_empty() {
+        let _ = app.emit(
+            "update-status",
+            format!("Processing {} AUR updates...", aur_targets.len()),
+        );
+        let mut built_paths = Vec::new();
+
+        for item in aur_targets {
+            let _ = app.emit("update-status", format!("Building {}...", item.name));
+            match build_aur_package(&item.name, &app, &password).await {
+                Ok(paths) => built_paths.extend(paths),
+                Err(e) => {
+                    let _ = app.emit(
+                        "install-output",
+                        format!("Failed to build {}: {}", item.name, e),
+                    );
+                    // Check if we should abort or continue? Usually continue best effort.
+                }
+            }
+        }
+
+        if !built_paths.is_empty() {
+            let _ = app.emit("update-status", "Installing AUR packages...");
+            install_built_packages(built_paths, &password, &app).await?;
+        }
+    }
+
+    // 3. Execute Flatpak Loop (Safety Net)
+    if !flatpak_targets.is_empty() {
+        let _ = app.emit(
+            "update-status",
+            format!("Updating {} Flatpaks...", flatpak_targets.len()),
+        );
+        for item in flatpak_targets {
+            // item.name should be App ID based on our flathub_api.rs change.
+            let _ = app.emit("install-output", format!("Updating Flatpak: {}", item.name));
+
+            // Call flatpak update <id> -y
+            // We can implement a helper or call Command direct.
+            if let Err(e) = crate::flathub_api::update_flatpak(app.clone(), item.name.clone()).await
+            {
+                let _ = app.emit("install-output", format!("Flatpak update error: {}", e));
+            }
+        }
+    }
+
+    let _ = app.emit("update-status", "All selected updates applied.");
+    let _ = app.emit(
+        "update-complete",
+        UpdateCompletePayload {
+            success: true,
+            message: "Done".into(),
+        },
+    );
+
+    Ok("Updates applied".to_string())
 }

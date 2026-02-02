@@ -132,9 +132,6 @@ export default function SystemHealthSection() {
                 case "cache":
                     cmd = "clear_cache";
                     break;
-                case "reset_config":
-                    cmd = "reset_pacman_conf";
-                    break;
             }
 
             if (cmd) {
@@ -259,13 +256,6 @@ export default function SystemHealthSection() {
                             title="Free Disk Space"
                             desc="Clear temporary downloads and cached data."
                             onClick={() => handleAction("cache")}
-                            loading={loading}
-                        />
-                        <RepairButton
-                            icon={<AlertTriangle className="text-red-500" />}
-                            title="Factory Reset Config"
-                            desc="Restores default MonARCH settings. Last resort."
-                            onClick={() => handleAction("reset_config")}
                             loading={loading}
                         />
                     </div>

@@ -1,45 +1,32 @@
 import { clsx } from 'clsx';
-
-export type RepoSource = string;
+import { PackageSource } from '../types/alpm';
+import { getRepoColor } from '../utils/repoHelper';
 
 interface RepoBadgeProps {
-    repo: RepoSource;
+    source: PackageSource | string;
     className?: string;
 }
 
-/**
- * Trust Signal pill: maps repository/source names to color-coded badges.
- * Official → Blue, Optimized (Chaotic/CachyOS) → Purple, AUR → Orange, Fallback → Gray.
- */
-export default function RepoBadge({ repo, className }: RepoBadgeProps) {
-    const s = (repo || '').toLowerCase();
+export default function RepoBadge({ source, className }: RepoBadgeProps) {
+    const isLegacy = typeof source === 'string';
+    const labelRaw = isLegacy ? (source as string) : (source as PackageSource).label || (source as PackageSource).id;
 
-    const isOfficial =
-        s === 'official' || s === 'core' || s === 'extra' || s === 'multilib' || s === 'manjaro';
-    const isOptimized =
-        s === 'chaotic' || s === 'chaotic-aur' || s.startsWith('cachyos');
-    const isCommunity = s === 'aur';
+    const colorClass = getRepoColor(labelRaw);
 
-    const [label, pillClass] = isOfficial
-        ? ['Official', 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200']
-        : isOptimized
-            ? ['Optimized', 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200']
-            : isCommunity
-                ? ['AUR', 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200']
-                : s === 'local'
-                    ? ['Local', 'bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-300']
-                    : [s || 'Repo', 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'];
+    const displayText = isLegacy
+        ? (source as string).toUpperCase()
+        : (source as PackageSource).label;
 
     return (
         <span
             className={clsx(
-                'inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider shrink-0 whitespace-nowrap',
-                pillClass,
+                'inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider shrink-0 whitespace-nowrap border shadow-sm',
+                colorClass,
                 className
             )}
-            title={repo}
+            title={isLegacy ? (source as string) : `${(source as PackageSource).source_type}/${(source as PackageSource).id}`}
         >
-            {label}
+            {displayText}
         </span>
     );
 }

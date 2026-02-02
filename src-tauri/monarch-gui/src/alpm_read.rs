@@ -93,109 +93,6 @@ fn register_syncdbs_from_conf(alpm: &Alpm, conf_path: &str) {
     }
 }
 
-pub fn search_local_dbs(query: &str) -> Vec<Package> {
-    let alpm = match Alpm::new("/", "/var/lib/pacman") {
-        Ok(a) => a,
-        Err(_) => return Vec::new(),
-    };
-
-    // Dynamic Repository Registration (Domain 2)
-    let last_check = std::fs::metadata("/var/lib/pacman/db.lck")
-        .and_then(|m| m.modified())
-        .map(|t| t.elapsed().unwrap_or_default().as_secs())
-        .unwrap_or(3601);
-
-    if last_check < 3600 {
-        // Passive check using checkupdates if checked < 1 hour ago
-        let output = std::process::Command::new("checkupdates").output();
-        if let Ok(o) = output {
-            if o.status.success() {
-                // Return cached version or just continue
-            }
-        }
-    }
-
-    register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
-
-    let mut results = Vec::new();
-    let query_parts: Vec<String> = query.split_whitespace().map(|s| s.to_string()).collect();
-    let query_regexes: Vec<regex::Regex> = query_parts
-        .iter()
-        .filter_map(|p| {
-            regex::RegexBuilder::new(&regex::escape(p))
-                .case_insensitive(true)
-                .build()
-                .ok()
-        })
-        .collect();
-
-    if query_regexes.is_empty() {
-        return Vec::new();
-    }
-
-    for db in alpm.syncdbs() {
-        let db_name = db.name();
-        for pkg in db.pkgs() {
-            let n = pkg.name();
-            let d = pkg.desc().unwrap_or("");
-
-            let mut all_match = true;
-            for re in &query_regexes {
-                if !re.is_match(n) && !re.is_match(d) {
-                    all_match = false;
-                    break;
-                }
-            }
-
-            if all_match {
-                let is_installed = alpm.localdb().pkg(pkg.name()).is_ok();
-                results.push(Package {
-                    name: pkg.name().to_string(),
-                    display_name: Some(crate::utils::to_pretty_name(pkg.name())),
-                    description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-                    version: pkg.version().to_string(),
-                    source: PackageSource::from_repo_name(db_name),
-                    installed: is_installed,
-                    download_size: Some(pkg.download_size() as u64),
-                    installed_size: Some(pkg.isize() as u64),
-                    ..Default::default()
-                });
-            }
-        }
-    }
-
-    // Also search localdb directly for packages not in syncdbs (e.g. custom AUR builds)
-    for pkg in alpm.localdb().pkgs() {
-        if !results.iter().any(|r| r.name == pkg.name()) {
-            let n = pkg.name();
-            let d = pkg.desc().unwrap_or("");
-
-            let mut all_match = true;
-            for re in &query_regexes {
-                if !re.is_match(n) && !re.is_match(d) {
-                    all_match = false;
-                    break;
-                }
-            }
-
-            if all_match {
-                results.push(Package {
-                    name: pkg.name().to_string(),
-                    display_name: Some(crate::utils::to_pretty_name(pkg.name())),
-                    description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-                    version: pkg.version().to_string(),
-                    source: PackageSource::Local, // Default source for local-only if we don't know better
-                    installed: true,
-                    download_size: Some(pkg.download_size() as u64),
-                    installed_size: Some(pkg.isize() as u64),
-                    ..Default::default()
-                });
-            }
-        }
-    }
-
-    results
-}
 
 pub fn get_package_native(name: &str) -> Option<Package> {
     let alpm = Alpm::new("/", "/var/lib/pacman").ok()?;
@@ -209,7 +106,11 @@ pub fn get_package_native(name: &str) -> Option<Package> {
                 name: pkg.name().to_string(),
                 version: pkg.version().to_string(),
                 description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-                source: PackageSource::from_repo_name(db.name()),
+                source: PackageSource::from_repo_name(
+                    db.name(),
+                    pkg.version().as_str(),
+                    &crate::distro_context::DistroContext::new(),
+                ),
                 installed,
                 download_size: Some(pkg.download_size() as u64),
                 installed_size: Some(pkg.isize() as u64),
@@ -224,7 +125,7 @@ pub fn get_package_native(name: &str) -> Option<Package> {
             name: pkg.name().to_string(),
             version: pkg.version().to_string(),
             description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-            source: PackageSource::Local,
+            source: PackageSource::new("local", "local", pkg.version().as_str(), "Local"),
             installed: true,
             installed_size: Some(pkg.isize() as u64),
             ..Default::default()
@@ -284,7 +185,11 @@ pub fn get_packages_batch(names: &[String], enabled_repos: &[String]) -> Vec<Pac
                     display_name: Some(crate::utils::to_pretty_name(pkg.name())),
                     description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
                     version: pkg.version().to_string(),
-                    source: PackageSource::from_repo_name(db_name),
+                    source: PackageSource::from_repo_name(
+                        db_name,
+                        pkg.version().as_str(),
+                        &crate::distro_context::DistroContext::new(),
+                    ),
                     installed: is_installed,
                     download_size: Some(pkg.download_size() as u64),
                     installed_size: Some(pkg.isize() as u64),
@@ -302,7 +207,7 @@ pub fn get_packages_batch(names: &[String], enabled_repos: &[String]) -> Vec<Pac
                 display_name: Some(crate::utils::to_pretty_name(pkg.name())),
                 description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
                 version: pkg.version().to_string(),
-                source: PackageSource::Local,
+                source: PackageSource::new("local", "local", pkg.version().as_str(), "Local"),
                 installed: true,
                 installed_size: Some(pkg.isize() as u64),
                 ..Default::default()
@@ -404,9 +309,45 @@ pub fn get_orphans_native() -> Vec<String> {
     alpm.localdb()
         .pkgs()
         .iter()
-        .filter(|pkg| {
-            pkg.reason() == PackageReason::Depend && !required.contains(pkg.name())
-        })
+        .filter(|pkg| pkg.reason() == PackageReason::Depend && !required.contains(pkg.name()))
         .map(|pkg| pkg.name().to_string())
         .collect()
+}
+
+/// Returns a list of packages that have upgrades available in the sync databases.
+/// Replicates `pacman -Qu`.
+pub fn get_host_updates() -> Vec<crate::models::UpdateItem> {
+    let alpm = match Alpm::new("/", "/var/lib/pacman") {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+    register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
+
+    let mut updates = Vec::new();
+    let localdb = alpm.localdb();
+
+    for db in alpm.syncdbs() {
+        let db_name = db.name();
+        for pkg in db.pkgs() {
+            if let Ok(local_pkg) = localdb.pkg(pkg.name()) {
+                if alpm::vercmp(pkg.version().as_str(), local_pkg.version().as_str())
+                    == std::cmp::Ordering::Greater
+                {
+                    updates.push(crate::models::UpdateItem {
+                        name: pkg.name().to_string(), // Package Name
+                        current_version: local_pkg.version().to_string(),
+                        new_version: pkg.version().to_string(),
+                        source: PackageSource::from_repo_name(
+                            db_name,
+                            pkg.version().as_str(),
+                            &crate::distro_context::DistroContext::new(),
+                        ),
+                        size: Some(pkg.download_size() as u64),
+                        icon: None,
+                    });
+                }
+            }
+        }
+    }
+    updates
 }

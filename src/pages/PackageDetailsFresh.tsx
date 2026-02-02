@@ -10,6 +10,7 @@ import DOMPurify from 'dompurify'; // Vector 1: HTML Injection Fix
 import RepoSelector from '../components/RepoSelector';
 import RepoBadge from '../components/RepoBadge';
 import { Package } from '../components/PackageCard';
+import { PackageSource } from '../types/alpm';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { clsx } from 'clsx';
@@ -30,17 +31,17 @@ import { useFocusTrap } from '../hooks/useFocusTrap';
 interface PackageDetailsProps {
     pkg: Package;
     onBack: () => void;
-    preferredSource?: string;
+    preferredSource?: PackageSource | string;
     /** When true, disable Install/Uninstall to prevent concurrent ALPM operations. */
     installInProgress?: boolean;
     /** When set and name matches this pkg, show "Installing..." / "Uninstalling..." with spinner (no layout shift). */
     activeInstallPackage?: { name: string; mode: 'install' | 'uninstall' } | null;
-    onInstall: (p: { name: string; source: string; repoName?: string }) => void;
-    onUninstall: (p: { name: string; source: string; repoName?: string }) => void;
+    onInstall: (p: { name: string; source: PackageSource | string; repoName?: string }) => void;
+    onUninstall: (p: { name: string; source: PackageSource | string; repoName?: string }) => void;
 }
 
 interface PackageVariant {
-    source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour' | 'manjaro' | 'local';
+    source: PackageSource | string;
     version: string;
     repo_name?: string;
     pkg_name?: string;
@@ -50,7 +51,7 @@ interface InstallStatus {
     installed: boolean;
     version?: string;
     repo?: string;
-    source?: string;
+    source?: PackageSource | string;
     actual_package_name?: string;
 }
 
@@ -69,7 +70,13 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
     const { reviews, summary: rating, refresh: refreshReviews } = usePackageReviews(pkg.name, lookupId);
 
     const [variants, setVariants] = useState<PackageVariant[]>([]);
-    const [selectedSource, setSelectedSource] = useState<string>(pkg.source);
+    const [selectedSource, setSelectedSource] = useState<PackageSource | string>(pkg.source);
+
+    const isSameSource = (a: PackageSource | string, b: PackageSource | string) => {
+        if (typeof a === 'string' && typeof b === 'string') return a === b;
+        if (typeof a !== 'string' && typeof b !== 'string') return a.id === b.id && a.source_type === b.source_type;
+        return false;
+    };
 
     const [showReviewForm, setShowReviewForm] = useState(false);
     const [reviewTitle, setReviewTitle] = useState('');
@@ -145,10 +152,11 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                 } catch (e) { errorService.reportError(e as Error | string); }
 
                 // Fallback selection: prefer card source so OFFICIAL on card shows OFFICIAL on details
-                if (preferredSource && vars.some(v => v.source === preferredSource)) setSelectedSource(preferredSource);
-                else if (vars.some(v => v.source === pkg.source)) setSelectedSource(pkg.source);
-                else if (vars.some(v => v.source === 'chaotic')) setSelectedSource('chaotic');
-                else if (vars.some(v => v.source === 'official')) setSelectedSource('official');
+                // Fallback selection: prefer card source so OFFICIAL on card shows OFFICIAL on details
+                if (preferredSource && vars.some(v => isSameSource(v.source, preferredSource))) setSelectedSource(preferredSource);
+                else if (vars.some(v => isSameSource(v.source, pkg.source))) setSelectedSource(pkg.source);
+                else if (vars.some(v => typeof v.source === 'string' ? v.source === 'chaotic' : v.source.id === 'chaotic-aur')) setSelectedSource(vars.find(v => typeof v.source === 'string' ? v.source === 'chaotic' : v.source.id === 'chaotic-aur')!.source);
+                else if (vars.some(v => typeof v.source === 'string' ? v.source === 'official' : v.source.id === 'core')) setSelectedSource(vars.find(v => typeof v.source === 'string' ? v.source === 'official' : v.source.id === 'core')!.source);
                 else if (vars.length > 0) setSelectedSource(vars[0].source);
             });
     }, [pkg.name, preferredSource]);
@@ -156,7 +164,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
     // 2. Status Checking Routine
     const checkStatus = (customName?: string) => {
         const reqId = ++checkRequestId.current;
-        const nameToCheck = customName || installedVariant?.actual_package_name || installStatus?.actual_package_name || variants.find(v => v.source === selectedSource)?.pkg_name || pkg.name;
+        const nameToCheck = customName || installedVariant?.actual_package_name || installStatus?.actual_package_name || variants.find(v => isSameSource(v.source, selectedSource))?.pkg_name || pkg.name;
 
         invoke<InstallStatus>('check_installed_status', { name: nameToCheck })
             .then(res => {
@@ -328,7 +336,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                         </motion.h1>
 
                         <div className="flex flex-wrap items-center gap-2 md:gap-4 mb-6 text-app-muted/80 font-medium">
-                            <RepoBadge repo={selectedSource} />
+                            <RepoBadge source={selectedSource} />
                             <div className="px-3 py-1 rounded-full bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-sm flex items-center gap-2 text-slate-700 dark:text-white/80">
                                 <Cpu size={14} /> <span>v{variants.find(v => v.source === selectedSource)?.version || pkg.version}</span>
                             </div>
@@ -339,7 +347,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                     <CheckCircle2 size={14} />
                                     <span>
                                         Installed: v{installedVariant.version}
-                                        ({(installedVariant.source && installedVariant.source.length > 0) ? installedVariant.source : (installedVariant.repo || 'Unknown')})
+                                        ({installedVariant.source ? (typeof installedVariant.source === 'string' ? installedVariant.source : installedVariant.source.label) : (installedVariant.repo || 'Unknown')})
                                     </span>
                                 </div>
                             )}
@@ -352,7 +360,8 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
 
                         {/* WARNINGS BLOCK - Compact and properly aligned */}
                         <div className="space-y-2 mb-6 max-w-2xl">
-                            {selectedSource === 'aur' && (
+
+                            {(typeof selectedSource === 'string' ? selectedSource === 'aur' : selectedSource.source_type === 'aur') && (
                                 <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 backdrop-blur-sm">
                                     <AlertTriangle size={18} className="text-amber-500 shrink-0" />
                                     <div className="text-xs text-amber-200/80">
@@ -363,12 +372,14 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
 
                             {/* SAFETY NET: Cross-Pollination Warnings */}
                             {(() => {
-                                const source = selectedSource.toLowerCase();
+                                const sourceId = typeof selectedSource === 'string' ? selectedSource.toLowerCase() : selectedSource.id;
+                                // const sourceType = typeof selectedSource === 'string' ? 'repo' : selectedSource.source_type; // approx
+
                                 const isArch = distro.id === 'arch' || distro.id === 'cachyos' || distro.id === 'endeavouros';
                                 const isManjaro = distro.id === 'manjaro';
 
                                 // Scenario A: Manjaro -> Chaotic/Arch (High Risk)
-                                if (isManjaro && (source === 'chaotic' || source === 'official' || source === 'core' || source === 'extra')) {
+                                if (isManjaro && (sourceId === 'chaotic-aur' || sourceId === 'chaotic' || sourceId === 'core' || sourceId === 'extra')) {
                                     return (
                                         <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 backdrop-blur-sm mt-2">
                                             <AlertTriangle size={18} className="text-red-500 shrink-0 mt-0.5" />
@@ -381,7 +392,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                 }
 
                                 // Scenario B: Arch -> Manjaro Repo (Compat Risk)
-                                if (isArch && source.includes('manjaro')) {
+                                if (isArch && sourceId.includes('manjaro')) {
                                     return (
                                         <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-orange-500/10 border border-orange-500/20 backdrop-blur-sm mt-2">
                                             <AlertTriangle size={18} className="text-orange-500 shrink-0 mt-0.5" />
@@ -421,13 +432,17 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                     {(() => {
                                         // 1. Determine Identity
                                         const activeSource = selectedSource;
-                                        const candidateVersion = variants.find(v => v.source === activeSource)?.version || pkg.version;
+                                        const candidateVersion = variants.find(v => isSameSource(v.source, activeSource))?.version || pkg.version;
 
                                         // 2. Determine State
                                         const isInstalled = installedVariant?.installed;
                                         // Robust Source Check: Use source OR repo as fallback
-                                        const installedSourceRaw = (installedVariant?.source && installedVariant.source.length > 0) ? installedVariant.source : installedVariant?.repo || '';
-                                        const isSourceMismatch = isInstalled && installedSourceRaw && installedSourceRaw.toLowerCase() !== activeSource.toLowerCase();
+                                        const installedSourceRaw = installedVariant?.source
+                                            ? (typeof installedVariant.source === 'string' ? installedVariant.source : installedVariant.source.id)
+                                            : installedVariant?.repo || '';
+
+                                        const activeSourceId = typeof activeSource === 'string' ? activeSource : activeSource.id;
+                                        const isSourceMismatch = isInstalled && installedSourceRaw && installedSourceRaw.toLowerCase() !== activeSourceId.toLowerCase();
 
                                         const isUpdateAvailable = isInstalled && !isSourceMismatch && installedVariant?.version && candidateVersion && compareVersions(candidateVersion, installedVariant.version) > 0;
 
@@ -483,9 +498,9 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                                 </>
                                             );
                                         } else {
-                                            const source = selectedSource.toLowerCase();
+                                            const sourceId = typeof selectedSource === 'string' ? selectedSource.toLowerCase() : selectedSource.id;
                                             const isManjaro = distro.id === 'manjaro';
-                                            const isRisky = isManjaro && (source === 'chaotic' || source === 'official' || source === 'core' || source === 'extra');
+                                            const isRisky = isManjaro && (sourceId === 'chaotic-aur' || sourceId === 'chaotic' || sourceId === 'core' || sourceId === 'extra');
 
                                             const isThisPackageInstalling = activeInstall?.name === pkg.name && activeInstall?.mode === 'install';
                                             return (
@@ -523,7 +538,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                         <Heart size={24} className={isFav ? "fill-current" : ""} />
                                     </button>
 
-                                    {selectedSource === 'aur' && (
+                                    {(typeof selectedSource === 'string' ? selectedSource === 'aur' : selectedSource.source_type === 'aur') && (
                                         <button onClick={fetchPkgbuild} className="h-14 w-14 rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/5 flex items-center justify-center text-slate-500 dark:text-white/50 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-white/10 transition-colors shrink-0" title="View PKGBUILD">
                                             {pkgbuildLoading ? <Loader2 size={24} className="animate-spin" /> : <Code size={24} />}
                                         </button>
@@ -533,8 +548,12 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
 
                             {/* CONFLICT / SWITCH UI (Compact) */}
                             {(() => {
-                                const installedSourceRaw = (installedVariant?.source && installedVariant.source.length > 0) ? installedVariant.source : installedVariant?.repo || '';
-                                const isSourceMismatch = installedVariant?.installed && installedSourceRaw && installedSourceRaw.toLowerCase() !== selectedSource.toLowerCase();
+                                const installedSourceRaw = installedVariant?.source
+                                    ? (typeof installedVariant.source === 'string' ? installedVariant.source : installedVariant.source.id)
+                                    : installedVariant?.repo || '';
+
+                                const activeSourceId = typeof selectedSource === 'string' ? selectedSource : selectedSource.id;
+                                const isSourceMismatch = installedVariant?.installed && installedSourceRaw && installedSourceRaw.toLowerCase() !== activeSourceId.toLowerCase();
 
                                 if (isSourceMismatch) {
                                     return (
@@ -545,12 +564,12 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                                 </div>
                                                 <div className="text-sm">
                                                     <span className="font-bold text-app-fg block">Version Conflict</span>
-                                                    <span className="text-app-muted text-xs">Installed: <b>{installedSourceRaw}</b> vs Selected: <b>{selectedSource}</b></span>
+                                                    <span className="text-app-muted text-xs">Installed: <b>{installedSourceRaw}</b> vs Selected: <b>{typeof selectedSource === 'string' ? selectedSource : selectedSource.label}</b></span>
                                                 </div>
                                             </div>
                                             <button
                                                 onClick={() => {
-                                                    const v = variants.find(variant => variant.source === selectedSource);
+                                                    const v = variants.find(variant => isSameSource(variant.source, selectedSource));
                                                     onInstall({
                                                         name: pkg.name,
                                                         source: selectedSource,

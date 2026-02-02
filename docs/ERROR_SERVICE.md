@@ -1,6 +1,6 @@
 # ErrorService - Centralized Error Handling
 
-**Last updated:** 2026-02-01 (v0.3.6-alpha)
+**Last updated:** 2026-02-01 (v0.4.0-alpha)
 
 ## Overview
 

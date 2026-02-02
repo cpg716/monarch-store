@@ -59,7 +59,14 @@ export default function SearchPage({
         }
 
         if (currentFilter !== 'all') {
-            results = results.filter(p => p.source === currentFilter);
+            results = results.filter(p => {
+                const sourceId = typeof p.source === 'string' ? p.source : p.source.id;
+                const matchesSource = sourceId === currentFilter || (typeof p.source !== 'string' && p.source.source_type === currentFilter);
+
+                const matchesAvailable = p.available_sources?.some(s => s.id === currentFilter || s.source_type === currentFilter);
+
+                return matchesSource || matchesAvailable;
+            });
         }
         return results;
     };
@@ -152,7 +159,10 @@ export default function SearchPage({
                                 if (repo.source === 'manjaro') label = 'Manjaro';
                                 if (repo.source === 'cachyos') label = 'CachyOS';
 
-                                const count = (packages || []).filter(p => p.source === repo.source).length;
+                                const count = (packages || []).filter(p => {
+                                    if (typeof p.source === 'string') return p.source === repo.source;
+                                    return p.source.id === repo.source || p.source.source_type === repo.source;
+                                }).length;
                                 if (count === 0) return;
 
                                 if (families.has(family)) {
@@ -162,6 +172,16 @@ export default function SearchPage({
                                     families.set(family, { label, count, sources: [repo.source] });
                                 }
                             });
+
+                            // [Manual] Add Flatpak if present in results
+                            const flatpakCount = (packages || []).filter(p =>
+                                (typeof p.source === 'string' ? p.source === 'flatpak' : p.source.source_type === 'flatpak') ||
+                                (p.available_sources && p.available_sources.some(s => s.source_type === 'flatpak'))
+                            ).length;
+
+                            if (flatpakCount > 0) {
+                                families.set('flatpak', { label: 'Flatpak', count: flatpakCount, sources: ['flatpak'] });
+                            }
 
                             return Array.from(families.entries()).map(([id, family]) => (
                                 <button

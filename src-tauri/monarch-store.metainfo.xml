@@ -48,9 +48,14 @@
     <content_attribute id="money-gambling">none</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.4.0-alpha" date="2026-02-02">
+      <description>
+        <p>Universal MonARCH Architecture: Hybrid Host-Adaptive backend, native AUR builder with streaming logs, full Flatpak integration, and a premium tabbed Settings redesign (Operation Mission Control).</p>
+      </description>
+    </release>
     <release version="0.3.6-alpha" date="2026-02-01">
       <description>
-        <p>Reliability &amp; Polish Update: Integrated "Iron Core" atomic upgrade protocol, fixed unclickable title bar controls, updated Tauri capabilities for window/store plugins, and conducted a comprehensive documentation audit.</p>
+        <p>Reliability &amp; Polish Update: Integrated "Iron Core" atomic upgrade protocol, fixed unclickable title bar controls, and updated Tauri capabilities.</p>
       </description>
     </release>
     <release version="0.3.5-alpha" date="2025-01-29">

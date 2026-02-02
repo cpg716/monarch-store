@@ -7,12 +7,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { resolveIconUrl } from '../utils/iconHelper';
 import RepoBadge from './RepoBadge';
 
+import { PackageSource } from '../types/alpm';
+
 export interface Package {
     name: string;
     display_name?: string;
     description: string;
     version: string;
-    source: 'chaotic' | 'aur' | 'official' | 'cachyos' | 'garuda' | 'endeavour' | 'manjaro' | 'local';
+    source: PackageSource | string; // Struct preferred, string for legacy
     maintainer?: string;
     votes?: number;
     url?: string; // Upstream URL
@@ -27,6 +29,7 @@ export interface Package {
     screenshots?: string[];
     is_optimized?: boolean;
     is_featured?: boolean;
+    available_sources?: PackageSource[];
     alternatives?: Package[];
 }
 
@@ -62,7 +65,9 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
         setDisplayPkg(pkg);
     }, [pkg]);
 
-    const isChaotic = displayPkg.source === 'chaotic';
+    const isChaotic = typeof displayPkg.source === 'string'
+        ? displayPkg.source === 'chaotic'
+        : displayPkg.source.id === 'chaotic-aur';
     const [chaoticInfo, setChaoticInfo] = useState<ChaoticPackage | null>(initialChaoticInfo || null);
 
     // Global Data Optimization (Source of Truth)
@@ -139,7 +144,15 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
                                 <div className="relative">
                                     <select
                                         className="text-[10px] font-mono bg-app-card dark:bg-white/5 border border-app-border rounded-lg px-2 py-1 outline-none focus:border-blue-500 text-app-fg min-w-[120px] cursor-pointer hover:bg-app-fg/5 transition-colors shadow-sm appearance-none pr-6"
-                                        value={variants.findIndex(v => v.source === displayPkg.source && v.version === displayPkg.version) !== -1 ? variants.findIndex(v => v.source === displayPkg.source && v.version === displayPkg.version) : 0}
+                                        value={variants.findIndex(v => {
+                                            if (typeof v.source === 'string' && typeof displayPkg.source === 'string') return v.source === displayPkg.source && v.version === displayPkg.version;
+                                            if (typeof v.source !== 'string' && typeof displayPkg.source !== 'string') return v.source.id === displayPkg.source.id && v.version === displayPkg.version;
+                                            return false;
+                                        }) !== -1 ? variants.findIndex(v => {
+                                            if (typeof v.source === 'string' && typeof displayPkg.source === 'string') return v.source === displayPkg.source && v.version === displayPkg.version;
+                                            if (typeof v.source !== 'string' && typeof displayPkg.source !== 'string') return v.source.id === displayPkg.source.id && v.version === displayPkg.version;
+                                            return false;
+                                        }) : 0}
                                         onChange={(e) => {
                                             const idx = parseInt(e.target.value);
                                             const selected = variants[idx];
@@ -149,8 +162,8 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
                                         }}
                                     >
                                         {variants.map((v, i) => (
-                                            <option key={`${v.name}-${v.source}-${v.version}`} value={i} className="bg-white text-slate-900 dark:bg-[#1a1b1e] dark:text-gray-200">
-                                                {v.version} ({v.source})
+                                            <option key={`${typeof v.source === 'string' ? v.source : v.source.id}-${v.version}`} value={i} className="bg-white text-slate-900 dark:bg-[#1a1b1e] dark:text-gray-200">
+                                                {v.version} ({typeof v.source === 'string' ? v.source : v.source.label})
                                             </option>
                                         ))}
                                     </select>
@@ -175,7 +188,15 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
 
             <div className="flex items-center justify-between mt-auto">
                 <div className="flex flex-col gap-2 items-start">
-                    <RepoBadge repo={displayPkg.source} />
+                    <div className="flex flex-wrap gap-1">
+                        {displayPkg.available_sources && displayPkg.available_sources.length > 0 ? (
+                            displayPkg.available_sources.map(src => (
+                                <RepoBadge key={typeof src === 'string' ? src : src.id} source={src} />
+                            ))
+                        ) : (
+                            <RepoBadge source={displayPkg.source} />
+                        )}
+                    </div>
 
                     <div className="flex items-center gap-2">
                         {displayPkg.is_optimized && (

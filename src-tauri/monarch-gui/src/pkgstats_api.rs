@@ -33,7 +33,7 @@ pub async fn fetch_top_packages(limit: u32) -> Result<Vec<models::Package>, Stri
             display_name: Some(p.name.clone()), // We might prettify this later
             description: format!("Popularity: {:.2}%", p.popularity), // Placeholder desc until metdata hydrates
             version: "latest".to_string(),
-            source: models::PackageSource::Official,
+            source: models::PackageSource::official(),
             maintainer: None,
             license: None,
             url: None,

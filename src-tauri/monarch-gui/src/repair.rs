@@ -87,14 +87,15 @@ async fn run_privileged(
         let helper = crate::utils::MONARCH_PK_HELPER;
 
         if std::path::Path::new(helper).exists() && !bypass_helper {
-            let helper_cmd = crate::helper_client::HelperCommand::RunCommand {
-                binary: cmd.to_string(),
-                args: args.iter().map(|s| s.to_string()).collect(),
-            };
-            let json = serde_json::to_string(&helper_cmd).unwrap_or_default();
+            // Refactoring note: We've removed arbitrary RunCommand for security.
+            // Privileged actions should now be specialized in the helper or use direct pkexec if safe.
+            // For now, if we reach here without a password, we fall back to generic pkexec which will prompt.
             (
                 "/usr/bin/pkexec".to_string(),
-                vec!["--disable-internal-agent".to_string(), helper.to_string(), json],
+                vec![cmd.to_string()]
+                    .into_iter()
+                    .chain(args.iter().map(|s| s.to_string()))
+                    .collect(),
             )
         } else {
             let mut all_args = vec!["--disable-internal-agent".to_string(), cmd.to_string()];
@@ -160,26 +161,27 @@ async fn run_privileged(
                     buf.push(line.clone());
                 }
                 // Filter out informational gpg messages that aren't actual errors
-                let is_gpg_info = line.starts_with("gpg:") && 
-                    (line.contains("trustdb created") ||
-                     line.contains("no ultimately trusted keys found") ||
-                     line.contains("starting migration") ||
-                     line.contains("migration succeeded") ||
-                     line.contains("directory") ||
-                     line.contains("revocation certificate stored") ||
-                     line.contains("marginals needed") ||
-                     line.contains("depth:") ||
-                     line.contains("valid:") ||
-                     line.contains("signed:") ||
-                     line.contains("trust:") ||
-                     line.contains("next trustdb check") ||
-                     line.contains("Note: third-party key signatures") ||
-                     line.contains("setting ownertrust") ||
-                     line.contains("inserting ownertrust") ||
-                     line.contains("Total number processed") ||
-                     line.contains("imported:") ||
-                     (line.contains("keyserver receive failed") && line.contains("Connection timed out")));
-                
+                let is_gpg_info = line.starts_with("gpg:")
+                    && (line.contains("trustdb created")
+                        || line.contains("no ultimately trusted keys found")
+                        || line.contains("starting migration")
+                        || line.contains("migration succeeded")
+                        || line.contains("directory")
+                        || line.contains("revocation certificate stored")
+                        || line.contains("marginals needed")
+                        || line.contains("depth:")
+                        || line.contains("valid:")
+                        || line.contains("signed:")
+                        || line.contains("trust:")
+                        || line.contains("next trustdb check")
+                        || line.contains("Note: third-party key signatures")
+                        || line.contains("setting ownertrust")
+                        || line.contains("inserting ownertrust")
+                        || line.contains("Total number processed")
+                        || line.contains("imported:")
+                        || (line.contains("keyserver receive failed")
+                            && line.contains("Connection timed out")));
+
                 if !is_gpg_info {
                     let _ = app.emit(&event, format!("ERROR: {}", line));
                 } else {
@@ -232,7 +234,12 @@ pub async fn repair_unlock_pacman(app: AppHandle, password: Option<String>) -> R
     if password.is_none() {
         let mut rx = crate::helper_client::invoke_helper(
             &app,
-            crate::helper_client::HelperCommand::RemoveLock,
+            crate::helper_client::HelperCommand::ExecuteBatch {
+                manifest: crate::models::TransactionManifest {
+                    remove_lock: true,
+                    ..Default::default()
+                },
+            },
             None,
         )
         .await?;
@@ -379,21 +386,6 @@ EOF
 }
 
 #[tauri::command]
-pub async fn initialize_system(
-    app: AppHandle,
-    state: tauri::State<'_, crate::repo_manager::RepoManager>,
-    password: Option<String>,
-) -> Result<String, String> {
-    // This is the "God Mode" init - it does Bootstrap + Keyring if needed
-    // But we'll mostly use it to call bootstrap_system which is already robustly built
-
-    let one_click = state.inner().is_one_click_enabled().await;
-
-    // We reuse bootstrap_system but ensured it's called with ONE password
-    crate::repo_setup::bootstrap_system(app, state, password, Some(one_click)).await
-}
-
-#[tauri::command]
 pub async fn repair_emergency_sync(app: AppHandle, password: Option<String>) -> Result<(), String> {
     let _ = app.emit("repair-log", "🚑 Starting Emergency Sync (pacman -Syu)...");
 
@@ -514,7 +506,8 @@ async fn check_sync_db_corrupt() -> bool {
         Err(_) => return false,
     };
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let corrupt = stderr.contains("Unrecognized archive format") || stderr.contains("could not open database");
+    let corrupt = stderr.contains("Unrecognized archive format")
+        || stderr.contains("could not open database");
 
     if !corrupt {
         if let Ok(mut guard) = SYNC_DB_HEALTHY_CACHE.lock() {
@@ -655,10 +648,7 @@ pub async fn fix_keyring_issues_alias(
 }
 
 #[tauri::command]
-pub async fn repair_reset_keyring(
-    app: AppHandle,
-    password: Option<String>,
-) -> Result<(), String> {
+pub async fn repair_reset_keyring(app: AppHandle, password: Option<String>) -> Result<(), String> {
     // Alias for fix_keyring_issues for compatibility with InstallMonitor
     fix_keyring_issues(app, password).await
 }
@@ -688,7 +678,10 @@ pub async fn needs_startup_unlock() -> bool {
 /// so install/update/sync workflow isn't broken after a previous cancel or crash.
 /// If `password` is Some (and non-empty), uses sudo path (app password box); otherwise Polkit.
 #[tauri::command]
-pub async fn unlock_pacman_if_stale(app: AppHandle, password: Option<String>) -> Result<(), String> {
+pub async fn unlock_pacman_if_stale(
+    app: AppHandle,
+    password: Option<String>,
+) -> Result<(), String> {
     if !std::path::Path::new("/var/lib/pacman/db.lck").exists() {
         return Ok(());
     }
@@ -704,7 +697,12 @@ pub async fn unlock_pacman_if_stale(app: AppHandle, password: Option<String>) ->
     let password = password.filter(|s| !s.trim().is_empty());
     let mut rx = crate::helper_client::invoke_helper(
         &app,
-        crate::helper_client::HelperCommand::RemoveLock,
+        crate::helper_client::HelperCommand::ExecuteBatch {
+            manifest: crate::models::TransactionManifest {
+                remove_lock: true,
+                ..Default::default()
+            },
+        },
         password,
     )
     .await?;
@@ -716,10 +714,15 @@ pub async fn unlock_pacman_if_stale(app: AppHandle, password: Option<String>) ->
 /// `keep`: number of versions to keep per package (0 = remove all). Helper may not yet honor this.
 #[tauri::command]
 pub async fn clear_pacman_package_cache(app: AppHandle, keep: Option<u32>) -> Result<(), String> {
-    let keep = keep.unwrap_or(0);
+    let _keep = keep.unwrap_or(0);
     let mut rx = crate::helper_client::invoke_helper(
         &app,
-        crate::helper_client::HelperCommand::ClearCache { keep },
+        crate::helper_client::HelperCommand::ExecuteBatch {
+            manifest: crate::models::TransactionManifest {
+                clear_cache: true,
+                ..Default::default()
+            },
+        },
         None,
     )
     .await?;
@@ -735,3 +738,18 @@ pub async fn clear_pacman_package_cache(app: AppHandle, keep: Option<u32>) -> Re
     Ok(())
 }
 
+/// Clear the native builder cache (~/.cache/monarch/build).
+#[tauri::command]
+pub async fn clear_build_cache() -> Result<(), String> {
+    if let Some(mut cache_dir) = dirs::cache_dir() {
+        cache_dir.push("monarch");
+        cache_dir.push("build");
+        if cache_dir.exists() {
+            std::fs::remove_dir_all(&cache_dir)
+                .map_err(|e| format!("Failed to remove build cache: {}", e))?;
+        }
+        Ok(())
+    } else {
+        Err("Could not determine cache directory.".to_string())
+    }
+}

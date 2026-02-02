@@ -86,7 +86,7 @@ pub(crate) fn build_pacman_cmd(
 ) -> (String, Vec<String>) {
     let pacman = "/usr/bin/pacman";
     let wrapper_path = "/usr/lib/monarch-store/monarch-wrapper";
-    let helper_path = crate::utils::MONARCH_PK_HELPER;
+    let _helper_path = crate::utils::MONARCH_PK_HELPER;
 
     if password.is_none() && std::path::Path::new(wrapper_path).exists() {
         // Phase 3: Branded Identity Refactor; --disable-internal-agent = DE agent = once-per-session
@@ -97,16 +97,6 @@ pub(crate) fn build_pacman_cmd(
                 .chain(std::iter::once(pacman.to_string()))
                 .chain(action_args.iter().map(|s| s.to_string()))
                 .collect(),
-        )
-    } else if password.is_none() && std::path::Path::new(helper_path).exists() {
-        let cmd = crate::helper_client::HelperCommand::RunCommand {
-            binary: pacman.to_string(),
-            args: action_args.iter().map(|s| s.to_string()).collect(),
-        };
-        let json = serde_json::to_string(&cmd).unwrap_or_default();
-        (
-            "/usr/bin/pkexec".to_string(),
-            vec!["--disable-internal-agent".to_string(), helper_path.to_string(), json],
         )
     } else if password.is_none() {
         (

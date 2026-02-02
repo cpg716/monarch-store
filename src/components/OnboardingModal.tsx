@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Server, Zap, Database, Globe, Lock, AlertTriangle, Terminal, RefreshCw, Star, Activity } from 'lucide-react';
+import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Zap, Lock, AlertTriangle, Terminal, RefreshCw, Activity } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { invoke } from '@tauri-apps/api/core';
 import { clsx } from 'clsx';
-import archLogo from '../assets/arch-logo.svg';
 import logoFull from '../assets/logo_full.png';
 import { useAppStore, type AppState } from '../store/internal_store';
 import { useSessionPassword } from '../context/useSessionPassword';
@@ -15,16 +14,6 @@ import { useErrorService } from '../context/ErrorContext';
 interface OnboardingModalProps {
     onComplete: () => void;
     reason?: string;
-}
-
-interface RepoFamily {
-    id: string;
-    name: string;
-    description: string;
-    enabled: boolean;
-    icon: any;
-    members: string[];
-    recommendation?: string | null;
 }
 
 export default function OnboardingModal({ onComplete, reason }: OnboardingModalProps) {
@@ -57,8 +46,6 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
 
     const [oneClickEnabled, setOneClickEnabled] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
-    const [repoFamilies, setRepoFamilies] = useState<RepoFamily[]>([]);
-    const [configuringStatus, setConfiguringStatus] = useState<string>("");
 
     // System info & CPU optimization (same as Settings > Performance)
     const [systemInfo, setSystemInfo] = useState<{ kernel: string; distro: string; cpu_optimization: string; pacman_version: string } | null>(null);
@@ -67,13 +54,6 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         return saved === 'true';
     });
 
-    // Chaotic & System State (step 2 can be skipped)
-    const [missingChaotic, setMissingChaotic] = useState<boolean>(false);
-    const [chaoticStatus, setChaoticStatus] = useState<"idle" | "checking" | "enabling" | "success" | "error">("checking");
-    const [chaoticLogs, setChaoticLogs] = useState<string[]>([]);
-    const [skippedChaotic, setSkippedChaotic] = useState(false);
-
-    // System Bootstrap State
     // System Bootstrap State
     const [bootstrapStatus, setBootstrapStatus] = useState<"idle" | "running" | "success" | "error">("idle");
     const [bootstrapError, setBootstrapError] = useState<string | null>(null);
@@ -102,14 +82,14 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         try {
             // One password for entire setup (Apple Store–like): ask once, reuse for all steps.
             const pwd = await requestSessionPassword();
-            await invoke("bootstrap_system", { password: pwd, oneClick: oneClickEnabled });
+            // Refactored: Call fix_keyring_issues instead of missing bootstrap_system
+            await invoke("fix_keyring_issues", { password: pwd });
             setBootstrapStatus("success");
             localStorage.setItem('monarch_infra_v2_2', 'true'); // Keep infra flag
             localStorage.setItem('monarch_onboarding_v3', 'true'); // Set migration flag early just in case
             return true;
         } catch (e: unknown) {
             errorService.reportError(e as Error | string);
-            setChaoticLogs(prev => [...prev, `Bootstrap Error: ${e}`]);
             setBootstrapError(String(e));
             setBootstrapStatus("error");
             return false;
@@ -128,136 +108,30 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                 setPrioritizeOptimized(true);
                 localStorage.setItem('prioritize-optimized-binaries', 'true');
             }
-            invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states').then(backendRepos => {
-                const families: RepoFamily[] = [
-                    {
-                        id: 'chaotic-aur',
-                        name: 'Chaotic-AUR',
-                        description: 'Pre-built binaries for Community Apps',
-                        members: ['chaotic-aur'],
-                        icon: Zap,
-                        enabled: true,
-                        recommendation: "Essential"
-                    },
-                    {
-                        id: 'official-arch',
-                        name: 'Official',
-                        description: 'The foundation (Core, Extra, Multilib)',
-                        members: ['core', 'extra', 'multilib'],
-                        icon: () => <img src={archLogo} className="w-3.5 h-3.5 object-contain brightness-0 invert" alt="Arch" />,
-                        enabled: true,
-                    },
-                    {
-                        id: 'cachyos',
-                        name: 'CachyOS',
-                        description: 'Performance optimized (x86_64-v3/v4)',
-                        members: ['cachyos', 'cachyos-v3', 'cachyos-core-v3', 'cachyos-extra-v3', 'cachyos-v4', 'cachyos-core-v4', 'cachyos-extra-v4', 'cachyos-znver4'],
-                        icon: Zap,
-                        enabled: false,
-                        recommendation: info.cpu_optimization.includes('v3') || info.cpu_optimization.includes('v4') ? "Performance Pick" : null
-                    },
-                    {
-                        id: 'manjaro',
-                        name: 'Manjaro',
-                        description: 'Stable Manjaro packages (Experimental on Arch)',
-                        members: ['manjaro-core', 'manjaro-extra'],
-                        icon: Database,
-                        enabled: false,
-                        recommendation: info.distro.toLowerCase().includes('manjaro') ? "Matches your OS" : null
-                    },
-                    { id: 'garuda', name: 'Garuda', description: 'Gaming & Performance focus', members: ['garuda'], icon: Server, enabled: false },
-                    { id: 'endeavouros', name: 'EndeavourOS', description: 'Minimalist & Lightweight', members: ['endeavouros'], icon: Globe, enabled: false },
-                ];
-
-                const mapped = families.map(fam => {
-                    const isEnabledInBackend = backendRepos.some(r => fam.members.includes(r.name.toLowerCase()) && r.enabled);
-                    // Smart Pre-selection: Enable if it's the foundation OR if it's CachyOS and CPU is optimized
-                    const isOptimizedCachy = fam.id === 'cachyos' && (info.cpu_optimization.includes('v3') || info.cpu_optimization.includes('v4'));
-                    const shouldAutoEnable = !isEnabledInBackend && (fam.id === 'official-arch' || fam.id === 'chaotic-aur' || isOptimizedCachy);
-                    return { ...fam, enabled: isEnabledInBackend || !!shouldAutoEnable };
-                });
-                setRepoFamilies(mapped);
-            }).catch((e) => errorService.reportError(e as Error | string));
-
         }).catch((e) => errorService.reportError(e as Error | string));
 
         invoke<boolean>('is_aur_enabled').then(setAurEnabled).catch((e) => errorService.reportError(e as Error | string));
-        // Note: Global telemetry state is initialized in the store, no need to set local state here.
-
-        invoke<boolean>('check_repo_status', { name: 'chaotic-aur' })
-            .then(exists => {
-                setMissingChaotic(!exists);
-                setChaoticStatus(exists ? 'success' : 'idle');
-            })
-            .catch((err) => {
-                errorService.reportError(err as Error | string);
-                setChaoticStatus('error');
-            });
     }, [errorService]);
-
-    const enableChaotic = async () => {
-        setChaoticStatus("enabling");
-        setChaoticLogs(prev => [...prev, "Checking system requirements..."]);
-        setClassifiedError(null);
-        try {
-            // If already bootstrapped or currently bootstrapping, wait/skip
-            if (bootstrapStatus !== 'success') {
-                setChaoticLogs(prev => [...prev, "System bootstrap required. Starting..."]);
-                const success = await enableSystem();
-
-                if (!success) throw new Error("Bootstrap failed. Check logs.");
-            }
-
-            setChaoticLogs(prev => [...prev, "System ready. Enabling Chaotic-AUR..."]);
-            // Reuse same session password (cached from enableSystem or first ask).
-            const pwd = await requestSessionPassword();
-            const res = await invoke<string>("enable_repo", { name: "chaotic-aur", password: pwd });
-            setChaoticLogs(prev => [...prev, res, "Setup complete!"]);
-            setChaoticStatus("success");
-            setMissingChaotic(false);
-        } catch (e: unknown) {
-            errorService.reportError(e as Error | string);
-            setChaoticLogs(prev => [...prev, `Error: ${e instanceof Error ? e.message : String(e)}`]);
-            setChaoticStatus("error");
-        }
-    };
-
-    const runConfigSteps = async (pwd: string | null) => {
-        setConfiguringStatus("Writing repo configs...");
-        await invoke('apply_os_config', { password: pwd || null });
-        setConfiguringStatus("Refreshing databases...");
-        await invoke('force_refresh_databases', { password: pwd || null });
-        setConfiguringStatus("Optimizing system...");
-        await invoke('optimize_system', { password: pwd || null });
-        setConfiguringStatus("");
-    };
 
     const handleFinish = async () => {
         setIsSaving(true);
-        setConfiguringStatus("");
         try {
             await invoke('set_aur_enabled', { enabled: aurEnabled });
-            for (const fam of repoFamilies) {
-                await invoke('toggle_repo_family', { family: fam.name, enabled: fam.enabled, skipOsSync: true });
-            }
-            // One password for all config steps (write configs, refresh DBs, optimize) — single prompt.
-            const pwd = await requestSessionPassword();
-            try {
-                await runConfigSteps(pwd);
-            } catch (e) {
-                errorService.reportError(e as Error | string);
-            }
+
+            // Finalize settings
             localStorage.setItem('monarch_onboarding_v3', 'true');
-            await setTelemetry(localToggle).catch(() => {}); // Persist telemetry choice before event
+            await setTelemetry(localToggle).catch(() => { }); // Persist telemetry choice before event
+
             invoke('track_event', {
-              event: 'onboarding_completed',
-              payload: {
-                step_count: steps.length,
-                aur_enabled: aurEnabled,
-                telemetry_enabled: localToggle,
-                completed_at_step: steps.length,
-              },
-            }).catch(() => {});
+                event: 'onboarding_completed',
+                payload: {
+                    step_count: steps.length,
+                    aur_enabled: aurEnabled,
+                    telemetry_enabled: localToggle,
+                    completed_at_step: steps.length,
+                },
+            }).catch(() => { });
+
             await new Promise(r => setTimeout(r, 800));
             onComplete();
         } catch (e) {
@@ -268,33 +142,24 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         }
     };
 
-
-    // Logical order: Password → Safety (bootstrap) → Chaotic (optional) → Repos → AUR → Telemetry → Theme
+    // Refactored Steps: Condensed and aligned with Host Detection philosophy
     const steps = [
         { title: "Session password", subtitle: "Enter once for this setup.", color: "bg-amber-600", icon: <Lock size={24} className="text-white" /> },
-        { title: "Security setup", subtitle: "Keyring & one-click install.", color: "bg-emerald-600", icon: <ShieldCheck size={24} className="text-white" /> },
-        { title: "Chaotic-AUR", subtitle: "Pre-built packages (optional).", color: "bg-slate-700", icon: <Zap size={24} className="text-white" /> },
-        { title: "Software sources", subtitle: "Choose which repos to use.", color: "bg-indigo-600", icon: <Database size={24} className="text-white" /> },
+        { title: "Security & Performance", subtitle: "Keyring & optimizations.", color: "bg-emerald-600", icon: <ShieldCheck size={24} className="text-white" /> },
         { title: "AUR", subtitle: "Community-built packages.", color: "bg-amber-600", icon: <Lock size={24} className="text-white" /> },
         { title: "Privacy", subtitle: "Anonymous usage stats.", color: "bg-teal-600", icon: <Activity size={24} className="text-white" /> },
         { title: "Theme", subtitle: "Light, dark & accent.", color: "bg-pink-600", icon: <Palette size={24} className="text-white" /> },
     ];
 
-    const canProceedFromStep2 = chaoticStatus === 'success' || skippedChaotic || !missingChaotic;
     const nextStep = () => {
         if (step === 0) { /* Password: always allow */ }
         else if (step === 1 && bootstrapStatus !== 'success') return;
-        else if (step === 2 && !canProceedFromStep2) return;
 
         if (step < steps.length - 1) {
             setStep(step + 1);
         } else {
             handleFinish();
         }
-    };
-
-    const toggleRepoFamily = (id: string) => {
-        setRepoFamilies(prev => prev.map(f => f.id === id ? { ...f, enabled: !f.enabled } : f));
     };
 
     const safeStep = Math.min(step, steps.length - 1);
@@ -540,7 +405,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                                     onClick={async () => {
                                                         const newVal = !oneClickEnabled;
                                                         setOneClickEnabled(newVal);
-                                                        try { await invoke('set_one_click_control', { enabled: newVal, password: null }); } catch (e) { errorService.reportError(e as Error | string); }
+                                                        try { await invoke('set_one_click_enabled', { enabled: newVal, password: null }); } catch (e) { errorService.reportError(e as Error | string); }
                                                     }}
                                                     className={clsx("w-9 h-4 rounded-full p-0.5 transition-all", oneClickEnabled ? "bg-emerald-500" : "bg-app-fg/20")}
                                                 >
@@ -567,107 +432,97 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                 </motion.div>
                             )}
 
-                            {/* Step 2: Chaotic-AUR (optional) */}
+                            {/* Step 2: AUR */}
                             {step === 2 && (
-                                <motion.div key="step2" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="space-y-2 w-full max-w-sm">
-                                    <h3 className="text-sm font-bold text-app-fg">Chaotic-AUR (optional)</h3>
-                                    <p className="text-app-muted text-[11px]">Pre-built community packages for faster installs. Enable or skip.</p>
-                                    {chaoticStatus === 'success' || !missingChaotic ? (
-                                        <div className="bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-lg flex items-center gap-2">
-                                            <Check size={16} className="text-emerald-500 shrink-0" />
-                                            <span className="text-xs font-medium text-app-fg">Chaotic-AUR is enabled.</span>
-                                        </div>
-                                    ) : (
-                                        <div className="space-y-2">
-                                            <div className="bg-app-card border border-app-border p-2.5 rounded-lg space-y-1.5">
-                                                {chaoticStatus === 'enabling' && (
-                                                    <div className="flex items-center gap-1.5 text-app-muted text-xs">
-                                                        <RefreshCw size={12} className="animate-spin" /> Enabling…
-                                                    </div>
-                                                )}
-                                                {chaoticStatus === 'error' && chaoticLogs.length > 0 && (
-                                                    <div className="max-h-14 overflow-y-auto rounded bg-black/20 p-1.5 font-mono text-[10px] text-red-400">{chaoticLogs.slice(-3).join('\n')}</div>
-                                                )}
-                                                <div className="flex gap-1.5">
-                                                    <button onClick={enableChaotic} disabled={chaoticStatus === 'enabling'} className="flex-1 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-white text-xs font-bold flex items-center justify-center gap-1.5">
-                                                        <Zap size={14} /> Enable Chaotic-AUR
-                                                    </button>
-                                                    <button onClick={() => { setSkippedChaotic(true); }} className="py-2 px-3 rounded-lg border border-app-border text-app-muted hover:text-app-fg text-xs font-medium">
-                                                        Skip
-                                                    </button>
-                                                </div>
+                                <motion.div key="step2" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="space-y-4 w-full max-w-sm">
+                                    <h3 className="text-sm font-bold text-app-fg">Arch User Repository</h3>
+                                    <p className="text-app-muted text-[11px] leading-snug">
+                                        Access community-built packages. Build from source; huge catalog of apps.
+                                    </p>
+                                    <div
+                                        onClick={() => setAurEnabled(!aurEnabled)}
+                                        className={clsx(
+                                            "cursor-pointer border rounded-lg p-3 transition-all flex items-center justify-between",
+                                            aurEnabled ? "border-amber-500 bg-amber-500/10" : "border-app-border bg-app-card"
+                                        )}
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <div className={clsx("p-1.5 rounded", aurEnabled ? "bg-amber-500/20 text-amber-500" : "bg-app-fg/5 text-app-muted")}>
+                                                <Lock size={14} />
                                             </div>
+                                            <span className="font-bold text-app-fg text-xs">Enable AUR support</span>
                                         </div>
-                                    )}
+                                        <div className={clsx("w-8 h-4 rounded-full p-0.5 transition-all shrink-0", aurEnabled ? "bg-amber-500" : "bg-app-fg/20")}>
+                                            <div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", aurEnabled ? "translate-x-3.5" : "translate-x-0")} />
+                                        </div>
+                                    </div>
                                 </motion.div>
                             )}
 
+                            {/* Step 3: Privacy */}
                             {step === 3 && (
-                                <motion.div key="step3" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="w-full max-w-sm flex flex-col">
-                                    <h3 className="text-sm font-bold text-app-fg mb-0.5">Software sources</h3>
-                                    <p className="text-app-muted text-[11px] mb-1.5">Pre-selected for your system. Tap to turn on or off.</p>
-                                    {repoFamilies.length === 0 ? (
-                                        <div className="py-4 text-center text-app-muted text-xs">Loading…</div>
-                                    ) : (
-                                    <div className="space-y-0.5 w-full">
-                                        {repoFamilies.map((fam) => (
-                                            <div key={fam.id} onClick={() => toggleRepoFamily(fam.id)} className={clsx("flex items-center justify-between p-2 rounded-lg border cursor-pointer transition-all", fam.enabled ? "bg-indigo-500/10 border-indigo-500/50" : "bg-app-card border-app-border hover:border-app-fg/30")}>
-                                                <div className="flex items-center gap-2 text-left min-w-0">
-                                                    <div className={clsx("p-1.5 rounded shrink-0 flex items-center justify-center", fam.enabled ? "bg-indigo-500 text-white" : "bg-app-fg/5 text-app-muted")}>
-                                                        {typeof fam.icon === 'function' ? <fam.icon /> : <fam.icon size={14} />}
-                                                    </div>
-                                                    <div className="min-w-0">
-                                                        <div className="flex items-center gap-1.5 flex-wrap">
-                                                            <h4 className="font-bold text-app-fg text-xs truncate">{fam.name}</h4>
-                                                            {fam.recommendation && <span className="text-[8px] bg-green-500/20 text-green-500 px-1.5 py-0.5 rounded border border-green-500/30 flex items-center gap-0.5 shrink-0"><Star size={6} fill="currentColor" /> {fam.recommendation}</span>}
-                                                        </div>
-                                                        <p className="text-[9px] text-app-muted leading-tight line-clamp-1">{fam.description}</p>
-                                                    </div>
-                                                </div>
-                                                <div className={clsx("w-8 h-4 rounded-full p-0.5 transition-colors shrink-0", fam.enabled ? "bg-indigo-500" : "bg-app-fg/20")}><div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", fam.enabled ? "translate-x-3.5" : "translate-x-0")} /></div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    )}
-                                </motion.div>
-                            )}
-
-                            {step === 4 && (
-                                <motion.div key="step4" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="space-y-2 w-full max-w-md">
-                                    <h3 className="text-base font-bold text-app-fg">Arch User Repository</h3>
-                                    <p className="text-app-muted text-sm">Build from source; huge catalog. Enable to search and install AUR packages.</p>
-                                    <div onClick={() => setAurEnabled(!aurEnabled)} className={clsx("cursor-pointer border-2 rounded-xl p-3 transition-all flex items-center justify-between", aurEnabled ? "border-amber-500 bg-amber-500/10" : "border-app-border bg-app-card")}>
-                                        <span className="font-bold text-app-fg text-sm">Enable AUR</span>
-                                        <div className={clsx("w-10 h-5 rounded-full p-1 shrink-0", aurEnabled ? "bg-amber-500" : "bg-app-fg/20")}><div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", aurEnabled ? "translate-x-5" : "translate-x-0")} /></div>
-                                    </div>
-                                </motion.div>
-                            )}
-
-                            {step === 5 && (
-                                <motion.div key="step5" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="space-y-2 w-full max-w-md">
+                                <motion.div key="step3" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="space-y-4 w-full max-w-sm">
                                     <h3 className="text-sm font-bold text-app-fg">Privacy</h3>
-                                    <p className="text-app-muted text-sm">Anonymous usage stats (no identity). Opt out anytime in Settings.</p>
-                                    <div onClick={handleToggle} className={clsx("cursor-pointer border rounded-lg p-2.5 transition-all flex items-center justify-between", localToggle ? "border-teal-500 bg-teal-500/10" : "border-app-border bg-app-card")}>
-                                        <span className="font-bold text-app-fg text-sm">Share anonymous statistics</span>
-                                        <div className={clsx("w-10 h-5 rounded-full p-1 shrink-0", localToggle ? "bg-teal-500" : "bg-app-fg/20")}><div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", localToggle ? "translate-x-5" : "translate-x-0")} /></div>
+                                    <p className="text-app-muted text-[11px] leading-snug">
+                                        Help us improve with anonymous usage statistics. No personal data is ever collected.
+                                    </p>
+                                    <div
+                                        onClick={handleToggle}
+                                        className={clsx(
+                                            "cursor-pointer border rounded-lg p-3 transition-all flex items-center justify-between",
+                                            localToggle ? "border-teal-500 bg-teal-500/10" : "border-app-border bg-app-card"
+                                        )}
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <div className={clsx("p-1.5 rounded", localToggle ? "bg-teal-500/20 text-teal-500" : "bg-app-fg/5 text-app-muted")}>
+                                                <Activity size={14} />
+                                            </div>
+                                            <span className="font-bold text-app-fg text-xs">Share anonymous stats</span>
+                                        </div>
+                                        <div className={clsx("w-8 h-4 rounded-full p-0.5 transition-all shrink-0", localToggle ? "bg-teal-500" : "bg-app-fg/20")}>
+                                            <div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", localToggle ? "translate-x-3.5" : "translate-x-0")} />
+                                        </div>
                                     </div>
                                 </motion.div>
                             )}
 
-                            {step === 6 && (
-                                <motion.div key="step6" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="w-full max-w-md space-y-2">
-                                    <h3 className="text-base font-bold text-app-fg">Theme</h3>
+                            {/* Step 4: Theme */}
+                            {step === 4 && (
+                                <motion.div key="step4" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="w-full max-w-sm space-y-4">
+                                    <h3 className="text-sm font-bold text-app-fg">Theme</h3>
                                     <div className="grid grid-cols-2 gap-2">
-                                        <button onClick={() => setThemeMode('light')} className={clsx("p-3 rounded-xl border-2 flex flex-col items-center gap-1 transition-all", themeMode === 'light' ? "border-app-accent bg-app-accent/10" : "border-app-border bg-app-card hover:border-app-fg/20")}>
-                                            <Sun size={24} /><span className="font-bold text-xs">Light</span>
+                                        <button
+                                            onClick={() => setThemeMode('light')}
+                                            className={clsx(
+                                                "p-3 rounded-lg border flex flex-col items-center gap-1.5 transition-all text-app-fg hover:bg-app-fg/5",
+                                                themeMode === 'light' ? "border-app-accent bg-app-accent/10" : "border-app-border bg-app-card"
+                                            )}
+                                        >
+                                            <Sun size={20} />
+                                            <span className="font-bold text-[10px] uppercase tracking-wider">Light</span>
                                         </button>
-                                        <button onClick={() => setThemeMode('dark')} className={clsx("p-3 rounded-xl border-2 flex flex-col items-center gap-1 transition-all", themeMode === 'dark' ? "border-app-accent bg-app-accent/10" : "border-app-border bg-app-card hover:border-app-fg/20")}>
-                                            <Moon size={24} /><span className="font-bold text-xs">Dark</span>
+                                        <button
+                                            onClick={() => setThemeMode('dark')}
+                                            className={clsx(
+                                                "p-3 rounded-lg border flex flex-col items-center gap-1.5 transition-all text-app-fg hover:bg-app-fg/5",
+                                                themeMode === 'dark' ? "border-app-accent bg-app-accent/10" : "border-app-border bg-app-card"
+                                            )}
+                                        >
+                                            <Moon size={20} />
+                                            <span className="font-bold text-[10px] uppercase tracking-wider">Dark</span>
                                         </button>
                                     </div>
-                                    <div className="flex gap-2 flex-wrap">
+                                    <div className="flex justify-center gap-2.5 pt-2">
                                         {['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'].map((c) => (
-                                            <button key={c} onClick={() => setAccentColor(c)} className={clsx("w-8 h-8 rounded-full border-2 transition-transform hover:scale-110", accentColor === c ? "border-app-fg ring-2 ring-app-fg/20" : "border-transparent")} style={{ backgroundColor: c }} />
+                                            <button
+                                                key={c}
+                                                onClick={() => setAccentColor(c)}
+                                                className={clsx(
+                                                    "w-7 h-7 rounded-full border-2 transition-transform hover:scale-110",
+                                                    accentColor === c ? "border-app-fg ring-2 ring-app-fg/20" : "border-transparent"
+                                                )}
+                                                style={{ backgroundColor: c }}
+                                            />
                                         ))}
                                     </div>
                                 </motion.div>
@@ -681,16 +536,15 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                             onClick={nextStep}
                             disabled={
                                 isSaving ||
-                                (step === 1 && bootstrapStatus !== 'success') ||
-                                (step === 2 && !canProceedFromStep2)
+                                (step === 1 && bootstrapStatus !== 'success')
                             }
                             className={clsx(
                                 "text-white px-5 py-2 rounded-lg font-bold text-xs active:scale-95 transition-all flex items-center gap-1.5 shadow-lg uppercase tracking-wider",
-                                (isSaving || (step === 1 && bootstrapStatus !== 'success') || (step === 2 && !canProceedFromStep2)) ? "opacity-40 grayscale cursor-not-allowed" : "hover:opacity-90 hover:scale-[1.02]"
+                                (isSaving || (step === 1 && bootstrapStatus !== 'success')) ? "opacity-40 grayscale cursor-not-allowed" : "hover:opacity-90 hover:scale-[1.02]"
                             )}
                             style={{ backgroundColor: accentColor }}
                         >
-                            {isSaving ? (configuringStatus || "Configuring…") : <>{step === steps.length - 1 ? "Get started" : "Next"} <ChevronRight size={14} /></>}
+                            {isSaving ? "Finalizing…" : <>{step === steps.length - 1 ? "Get started" : "Next"} <ChevronRight size={14} /></>}
                         </button>
                     </div>
                 </div>

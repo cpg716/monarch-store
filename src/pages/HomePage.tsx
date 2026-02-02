@@ -3,6 +3,7 @@ import TrendingSection from '../components/TrendingSection';
 import CategoryGrid from '../components/CategoryGrid';
 import { useSmartEssentials } from '../hooks/useSmartEssentials';
 import { useOnlineStatus } from '../hooks/useOnlineStatus'; // Vector 4: Offline Resilience
+import { useDistro } from '../hooks/useDistro';
 import { Package } from '../components/PackageCard';
 import { WifiOff } from 'lucide-react';
 
@@ -13,6 +14,7 @@ interface HomePageProps {
 }
 
 export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }: HomePageProps) {
+    const { distro } = useDistro();
     const { essentials, loading } = useSmartEssentials();
     const isOnline = useOnlineStatus();
 
@@ -27,7 +29,7 @@ export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }
                         <div>
                             <h2 className="text-xl font-bold text-slate-900 dark:text-white">Recommended Essentials</h2>
                             <p className="text-xs text-slate-500 dark:text-app-muted">
-                                {loading ? "Curating for you..." : "Optimized for your system."}
+                                {loading ? "Curating for you..." : `Optimized for your ${distro.pretty_name} system.`}
                             </p>
                         </div>
                     </div>

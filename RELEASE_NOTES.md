@@ -1,6 +1,30 @@
 # Release Notes
 
-**Current version:** v0.3.5-alpha
+**Current version:** v0.4.0-alpha
+
+---
+
+# Monarch Store Release Notes
+
+## v0.4.0-alpha (Universal MonARCH)
+**"The Host-Adaptive Update"**
+
+*   **Mission Control (New Settings)**: A tabbed settings overhaul for better management of Sources, AUR Builder, and System Maintenance.
+*   **Unified Update System**: Parallel-checks Repo/AUR/Flatpak. Enforces full system upgrade (`-Syu`) if any official package is updated (Safety Lock). Added "Built from Source" labels for AUR clarity.
+*   **Legacy Code Audit**: Successfully removed all "Ghost Commands" and legacy contexts (`RepoStatusContext`, `check_repo_status`) to ensure 100% runtime stability.
+*   **Native AUR Builder**: Replaced `yay` wrapper with a native, user-level builder using `libgit2` and `tokio`. Build logs now stream to the UI.
+*   **Flatpak Integration**: Full support for installing, removing, and updating Flatpak applications as first-class citizens.
+*   **Manjaro Guard**: Automatically blocks `chaotic-aur` on Manjaro to prevent `glibc` breakage.
+*   **Silent Guard (Atomic Batch Transactions)**: Complex operations now prompt for a password **at most once**. Polkit authorization is remembered for 5 minutes.
+
+## v0.3.5-alpha
+
+*   **The "Iron Core" Update**: Introduced `SafeUpdateTransaction` for atomic, robust package installation.
+rict "Atomic Update Protocol". We now check for locks and enforcement a full system upgrade (`-Syu`) for *every* sync transaction, ensuring zero "partial upgrade" breakages.
+- **Custom Title Bar & Permissions:** Integrated a premium client-side decoration (CSD) title bar. Fixed window control functionality (Minimize/Maximize/Close) and enabled backend permissions for the Tauri Store plugin.
+- **Wayland Ghost Protocol:** Fixed black flickering/artifacts on KDE Plasma (especially Nvidia) by intelligently detecting `WAYLAND_DISPLAY` and disabling transparency effects.
+- **The Chameleon (Native Themes):** Now uses XDG Portals (`ashpd`) to detect system Dark/Light mode correctly on all desktops (GNOME, KDE, Hyprland), ignoring legacy GTK theme signals.
+- **Native Dialogs:** Portal-based file pickers (`rfd`) are planned; dependency added. Theme detection uses XDG Portals (`ashpd`).
 
 ---
 

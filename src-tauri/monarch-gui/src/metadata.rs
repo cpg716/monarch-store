@@ -260,6 +260,47 @@ impl AppStreamLoader {
         input_lower
     }
 
+    /// Returns a human-readable name for a given package name if available.
+    /// e.g. "google-chrome" -> "Google Chrome", "visual-studio-code-bin" -> "VS Code"
+    pub fn get_friendly_name(&self, pkg_name: &str) -> Option<String> {
+        let pkg_lower = pkg_name.to_lowercase();
+
+        // 1. Static Map (The "Smart Search" Registry)
+        match pkg_lower.as_str() {
+            "google-chrome" | "google-chrome-stable" => Some("Google Chrome".to_string()),
+            "firefox" | "firefox-developer-edition" | "firefox-nightly" => {
+                Some("Mozilla Firefox".to_string())
+            }
+            "steam" | "steam-native-runtime" => Some("Steam".to_string()),
+            "vlc" | "vlc-git" => Some("VLC Media Player".to_string()),
+            "visual-studio-code-bin" | "code" | "vscode" => Some("VS Code".to_string()),
+            "discord" | "discord-canary" | "discord-ptb" => Some("Discord".to_string()),
+            "spotify" | "spotify-launcher" => Some("Spotify".to_string()),
+            "obs-studio" | "obs-studio-git" => Some("OBS Studio".to_string()),
+            "gimp" | "gimp-git" => Some("GIMP".to_string()),
+            "inkscape" | "inkscape-git" => Some("Inkscape".to_string()),
+            "blender" | "blender-git" => Some("Blender".to_string()),
+            "kdenlive" | "kdenlive-git" => Some("Kdenlive".to_string()),
+            "telegram-desktop" | "telegram-desktop-bin" => Some("Telegram Desktop".to_string()),
+            "signal-desktop" | "signal-desktop-beta-bin" => Some("Signal".to_string()),
+            "slack-desktop" => Some("Slack".to_string()),
+            "zoom" => Some("Zoom".to_string()),
+            "teams" | "teams-for-linux" => Some("Microsoft Teams".to_string()),
+            "notion-app-electron" | "notion-app" => Some("Notion".to_string()),
+            "postman-bin" => Some("Postman".to_string()),
+            "alacritty" | "alacritty-git" => Some("Alacritty".to_string()),
+            "kitty" | "kitty-git" => Some("Kitty Terminal".to_string()),
+            "neovim" | "neovim-git" => Some("Neovim".to_string()),
+            "brave-bin" | "brave-browser" => Some("Brave Browser".to_string()),
+            "libreoffice-fresh" | "libreoffice-still" => Some("LibreOffice".to_string()),
+            "onlyoffice-bin" => Some("OnlyOffice".to_string()),
+            "thunderbird" | "thunderbird-beta-bin" => Some("Mozilla Thunderbird".to_string()),
+            "audacity" | "audacity-git" => Some("Audacity".to_string()),
+            "lutris" | "lutris-git" => Some("Lutris".to_string()),
+            _ => None,
+        }
+    }
+
     pub fn find_icon_heuristic(&self, pkg_name: &str) -> Option<String> {
         // 1. O(1) Exact lookup in index
         if let Some(icon) = self.icon_index.get(pkg_name) {

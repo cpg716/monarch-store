@@ -31,6 +31,9 @@ export function useSettings() {
     const [oneClickEnabled, setOneClickEnabled] = useState(false);
     const [advancedMode, setAdvancedMode] = useState(false);
     const [isAurEnabled, setIsAurEnabled] = useState(false);
+    const [isFlatpakEnabled, setIsFlatpakEnabled] = useState(() => {
+        return localStorage.getItem('flatpak-enabled') === 'true';
+    });
     const [repos, setRepos] = useState<Repository[]>([]);
 
     // Repository order persistence
@@ -194,6 +197,11 @@ export function useSettings() {
         }
     };
 
+    const toggleFlatpak = async (enabled: boolean) => {
+        setIsFlatpakEnabled(enabled);
+        localStorage.setItem('flatpak-enabled', String(enabled));
+    };
+
     const toggleRepo = async (id: string) => {
         const repo = repos.find(r => r.id === id);
         if (!repo) return;
@@ -273,6 +281,7 @@ export function useSettings() {
         advancedMode, toggleAdvancedMode,
         telemetryEnabled, toggleTelemetry,
         isAurEnabled, toggleAur,
+        isFlatpakEnabled, toggleFlatpak,
         repos, toggleRepo, reorderRepos,
         isSyncing, triggerManualSync, repoCounts,
         infraStats,

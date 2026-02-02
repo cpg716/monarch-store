@@ -144,6 +144,10 @@ pub enum HelperCommand {
         cpu_optimization: Option<String>,
         target_repo: Option<String>,
     },
+    // ✅ NEW: Atomic Batch Transaction (Operation Silent Guard)
+    ExecuteBatch {
+        manifest: transactions::TransactionManifest,
+    },
     CheckUpdatesSafe {
         enabled_repos: Vec<String>,
     },
@@ -160,47 +164,6 @@ pub enum HelperCommand {
     },
     AlpmInstallFiles {
         paths: Vec<String>,
-    },
-    ForceRefreshDb,
-    // Legacy commands (deprecated but kept for compatibility)
-    InstallTargets {
-        packages: Vec<String>,
-    },
-    InstallFiles {
-        paths: Vec<String>,
-    },
-    Sysupgrade,
-    Refresh,
-    Initialize,
-    UninstallTargets {
-        packages: Vec<String>,
-    },
-    RemoveOrphans,
-    ClearCache {
-        keep: u32,
-    },
-    RemoveLock,
-    ConfigureRepo {
-        name: String,
-        enabled: bool,
-        url: String,
-    },
-    WriteFile {
-        path: String,
-        content: String,
-    },
-    RemoveFile {
-        path: String,
-    },
-    WriteFiles {
-        files: Vec<(String, String)>,
-    },
-    RemoveFiles {
-        paths: Vec<String>,
-    },
-    RunCommand {
-        binary: String,
-        args: Vec<String>,
     },
 }
 
@@ -931,198 +894,97 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 transactions::execute_alpm_install_files(allowed_paths, alpm)
             });
         }
-        // Legacy commands (deprecated but kept for compatibility — must still work for old GUI or fallback path)
-        HelperCommand::InstallTargets { packages } => {
-            if let Err(e) = ensure_db_ready() {
-                emit_classified_error(&e);
-                emit_progress(0, &e);
-                return;
+        HelperCommand::ExecuteBatch { manifest } => {
+            // Operation "Silent Guard": Execute all steps under ONE lock acquisition
+
+            // 0a. Remove Stale Lock (Pre-transaction maintenance)
+            if manifest.remove_lock {
+                let _ = remove_lock(); // Special logic in remove_lock handles safety
             }
-            let enabled_repos = transactions::get_enabled_repos_from_config();
-            if enabled_repos.is_empty() {
-                let msg = "Error: No repositories found in pacman.conf. Run onboarding or add repos first.";
-                emit_classified_error(msg);
-                emit_progress(0, msg);
-                return;
+
+            // 0b. Clear Cache (Maintenance)
+            if manifest.clear_cache {
+                let _ = clear_cache(alpm, 0); // Clear everything
             }
-            if let Err(e) =
-                transactions::execute_alpm_install(packages, true, enabled_repos, None, None, alpm)
+
+            // 1. Refresh DB
+            if manifest.refresh_db {
+                if let Err(e) = transactions::force_refresh_sync_dbs(alpm) {
+                    emit_progress(0, &format!("Error refreshing databases: {}", e));
+                    return;
+                }
+            }
+
+            // 2. System Upgrade
+            if manifest.update_system {
+                // We use the empty config repos here by default or pull from config as execute_alpm_upgrade does internally
+                let config_repos = transactions::get_enabled_repos_from_config();
+                if let Err(e) = transactions::execute_alpm_upgrade(None, config_repos, alpm) {
+                    emit_progress(0, &format!("Error upgrading system: {}", e));
+                    return;
+                }
+            }
+
+            // 3. Remove Targets
+            if !manifest.remove_targets.is_empty() {
+                if let Err(e) = transactions::execute_alpm_uninstall(
+                    manifest.remove_targets.clone(),
+                    true,
+                    alpm,
+                ) {
+                    emit_progress(0, &format!("Error removing packages: {}", e));
+                    return;
+                }
+            }
+
+            // 4. Install Targets (Repo + Local)
+            // Note: ALPM allows installing repo pkgs and local files in one transaction?
+            // The current helper functions are separate. We can call them sequentially since we hold the lock.
+            // The main() function holds the ALPM handle which implies the lock is held (if configured).
+            // Actually ALPM lock matches the handle lifetime or transaction lifetime.
+            // Our helper is short-lived process. One invocation = one ALPM instance = one lock.
+            // So calling these sequentially IS atomic regarding the lock.
+
+            let mut installed_anything = false;
+
+            // 4a. Install Repo Packages
+            if !manifest.install_targets.is_empty() {
+                let config_repos = transactions::get_enabled_repos_from_config();
+                // sync_first false because we handled it in step 1 if needed
+                // cpu strictness default (None)
+                if let Err(e) = transactions::execute_alpm_install(
+                    manifest.install_targets.clone(),
+                    false,
+                    config_repos,
+                    None,
+                    None,
+                    alpm,
+                ) {
+                    emit_progress(0, &format!("Error installing repo packages: {}", e));
+                    return;
+                }
+                installed_anything = true;
+            }
+
+            // 4b. Install Local Files (Built AUR packages)
+            if !manifest.local_paths.is_empty() {
+                if let Err(e) =
+                    transactions::execute_alpm_install_files(manifest.local_paths.clone(), alpm)
+                {
+                    emit_progress(0, &format!("Error installing local packages: {}", e));
+                    return;
+                }
+                installed_anything = true;
+            }
+
+            if !installed_anything
+                && !manifest.update_system
+                && !manifest.refresh_db
+                && manifest.remove_targets.is_empty()
             {
-                emit_classified_error(&e);
-                emit_progress(0, &format!("Error: {}", e));
-            }
-        }
-        HelperCommand::InstallFiles { .. } => {
-            emit_progress(
-                0,
-                "Error: InstallFiles is deprecated. Use AlpmInstallFiles instead.",
-            );
-        }
-        HelperCommand::Sysupgrade => {
-            if let Err(e) = ensure_db_ready() {
-                emit_progress(0, &e);
-                return;
-            }
-            let enabled_repos: Vec<String> = alpm
-                .syncdbs()
-                .iter()
-                .map(|db| db.name().to_string())
-                .collect();
-            if let Err(e) = transactions::execute_alpm_upgrade(None, enabled_repos, alpm) {
-                emit_progress(0, &format!("Error: {}", e));
-            }
-        }
-        HelperCommand::Refresh => {
-            let enabled_repos: Vec<String> = alpm
-                .syncdbs()
-                .iter()
-                .map(|db| db.name().to_string())
-                .collect();
-            if let Err(e) = transactions::execute_alpm_sync(enabled_repos, alpm) {
-                emit_progress(0, &format!("Error: {}", e));
-            }
-        }
-        HelperCommand::ForceRefreshDb => {
-            if let Err(e) = transactions::force_refresh_sync_dbs(alpm) {
-                emit_progress(0, &format!("Error: {}", e));
-            }
-        }
-        HelperCommand::UninstallTargets { .. } => {
-            emit_progress(
-                0,
-                "Error: UninstallTargets is deprecated. Use AlpmUninstall instead.",
-            );
-        }
-        HelperCommand::RemoveOrphans => {
-            emit_progress(
-                0,
-                "Error: RemoveOrphans is deprecated in Helper. Use GUI Shell Wrapper.",
-            );
-        }
-        HelperCommand::ClearCache { keep } => {
-            if let Err(e) = clear_cache(alpm, keep) {
-                emit_progress(0, &format!("Error: {}", e));
-            }
-        }
-        HelperCommand::RemoveLock => {
-            if let Err(e) = remove_lock() {
-                emit_progress(0, &format!("Error: {}", e));
-            }
-        }
-        HelperCommand::ConfigureRepo { name, enabled, url } => {
-            if let Err(e) = configure_repo(name, enabled, url) {
-                emit_progress(0, &format!("Error: {}", e));
-            }
-        }
-        HelperCommand::WriteFile { path, content } => {
-            // SECURITY: Only allow writing under /etc/pacman.d/monarch/. Never allow overwriting /etc/pacman.conf
-            // (Initialize adds Include line via read-modify-write; direct WriteFile would allow full replacement).
-            if path.starts_with("/etc/pacman.d/monarch/") {
-                if let Err(e) = std::fs::write(&path, content) {
-                    emit_progress(0, &format!("Error: {}", e.to_string()));
-                } else {
-                    emit_progress(100, &format!("Wrote {}", path));
-                }
+                emit_progress(100, "Transaction successful (No actions required)");
             } else {
-                emit_progress(
-                    0,
-                    "Error: Unauthorized path (only /etc/pacman.d/monarch/ allowed)",
-                );
-            }
-        }
-        HelperCommand::RemoveFile { path } => {
-            // SECURITY: Only allow removing from /etc/pacman.d/monarch for now
-            if path.starts_with("/etc/pacman.d/monarch/") {
-                if let Err(e) = std::fs::remove_file(&path) {
-                    emit_progress(0, &format!("Error: {}", e.to_string()));
-                } else {
-                    emit_progress(100, &format!("Removed {}", path));
-                }
-            } else {
-                emit_progress(0, "Error: Unauthorized path");
-            }
-        }
-        HelperCommand::WriteFiles { files } => {
-            for (path, content) in files {
-                if path.starts_with("/etc/pacman.d/monarch/") {
-                    if let Err(e) = std::fs::write(&path, content) {
-                        emit_progress(0, &format!("Error writing {}: {}", path, e));
-                    }
-                }
-            }
-            emit_progress(100, "Batch write complete");
-        }
-        HelperCommand::RemoveFiles { paths } => {
-            for path in paths {
-                if path.starts_with("/etc/pacman.d/monarch/") {
-                    let _ = std::fs::remove_file(&path);
-                }
-            }
-            emit_progress(100, "Batch remove complete");
-        }
-        HelperCommand::RunCommand { binary, args } => {
-            use std::io::Write;
-            use std::os::unix::process::CommandExt;
-            // SECURITY: Whitelist RunCommand to pacman and pacman-key only. A compromised GUI
-            // must not be able to execute arbitrary binaries as root.
-            let allowed_binaries = ["pacman", "pacman-key"];
-            let bin_name = std::path::Path::new(&binary)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            if !allowed_binaries.contains(&bin_name) {
-                emit_progress(
-                    0,
-                    &format!(
-                        "Error: RunCommand only allows pacman and pacman-key, got: {}",
-                        binary
-                    ),
-                );
-                return;
-            }
-            // Only allow absolute path to the actual binary (avoid PATH abuse)
-            let safe_binary = if bin_name == "pacman" {
-                "/usr/bin/pacman"
-            } else {
-                "/usr/bin/pacman-key"
-            };
-            emit_progress(0, &format!("Proxying execution to {}...", safe_binary));
-            let _ = std::io::stdout().flush();
-
-            let mut cmd = std::process::Command::new(safe_binary);
-            cmd.args(args);
-
-            let err = cmd.exec();
-            emit_progress(0, &format!("Error: Failed to exec proxy: {}", err));
-        }
-        HelperCommand::Initialize => {
-            emit_progress(10, "Initializing MonARCH system directories...");
-            let _ = std::fs::create_dir_all("/etc/pacman.d/monarch");
-            let _ = std::fs::create_dir_all("/var/lib/monarch/dbs");
-
-            emit_progress(50, "Checking /etc/pacman.conf...");
-            if let Ok(content) = std::fs::read_to_string("/etc/pacman.conf") {
-                if !content.contains("/etc/pacman.d/monarch/*.conf") {
-                    // Add Include before [core]
-                    let mut new_content = String::new();
-                    let mut added = false;
-                    for line in content.lines() {
-                        if !added && line.trim() == "[core]" {
-                            new_content.push_str("# MonARCH Managed Repositories\nInclude = /etc/pacman.d/monarch/*.conf\n\n");
-                            added = true;
-                        }
-                        new_content.push_str(line);
-                        new_content.push_str("\n");
-                    }
-                    if !added {
-                        // Fallback to append
-                        new_content.push_str("\nInclude = /etc/pacman.d/monarch/*.conf\n");
-                    }
-                    let _ = std::fs::write("/etc/pacman.conf", new_content);
-                    emit_progress(100, "MonARCH integrated with pacman.conf");
-                } else {
-                    emit_progress(100, "MonARCH already integrated");
-                }
+                emit_progress(100, "Batch Transaction Complete");
             }
         }
     }
@@ -1264,8 +1126,6 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-// State-changing functions now use run_pacman_command
-
 fn clear_cache(_alpm: &mut Alpm, _keep: u32) -> Result<(), String> {
     emit_progress(0, "Clearing package cache...");
     let cache_dir = "/var/cache/pacman/pkg";
@@ -1305,62 +1165,5 @@ fn remove_lock() -> Result<(), String> {
     } else {
         emit_progress(100, "No lock file found");
     }
-    Ok(())
-}
-
-fn configure_repo(name: String, enabled: bool, url: String) -> Result<(), String> {
-    let conf_path = "/etc/pacman.conf";
-    let content = std::fs::read_to_string(conf_path).map_err(|e| e.to_string())?;
-    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-
-    let mut found_index = None;
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed == format!("[{}]", name) || trimmed == format!("#[{}]", name) {
-            found_index = Some(i);
-            break;
-        }
-    }
-
-    if enabled {
-        if let Some(idx) = found_index {
-            if lines[idx].trim().starts_with('#') {
-                lines[idx] = lines[idx].replacen('#', "", 1);
-                let mut j = idx + 1;
-                while j < lines.len() && !lines[j].trim().starts_with('[') {
-                    if lines[j].trim().starts_with('#') {
-                        let trimmed = lines[j].trim();
-                        if trimmed.contains("Server")
-                            || trimmed.contains("SigLevel")
-                            || trimmed.contains("Include")
-                        {
-                            lines[j] = lines[j].replacen('#', "", 1);
-                        }
-                    }
-                    j += 1;
-                }
-            }
-        } else {
-            lines.push("".to_string());
-            lines.push(format!("[{}]", name));
-            lines.push("SigLevel = PackageOptional".to_string());
-            lines.push(format!("Server = {}", url));
-        }
-    } else {
-        if let Some(idx) = found_index {
-            if !lines[idx].trim().starts_with('#') {
-                lines[idx] = format!("#{}", lines[idx]);
-                let mut j = idx + 1;
-                while j < lines.len() && !lines[j].trim().starts_with('[') {
-                    if !lines[j].trim().starts_with('#') && !lines[j].trim().is_empty() {
-                        lines[j] = format!("#{}", lines[j]);
-                    }
-                    j += 1;
-                }
-            }
-        }
-    }
-
-    std::fs::write(conf_path, lines.join("\n")).map_err(|e| e.to_string())?;
     Ok(())
 }

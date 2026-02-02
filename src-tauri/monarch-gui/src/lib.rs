@@ -14,7 +14,6 @@ pub(crate) mod pkgstats_api;
 pub(crate) mod repair;
 pub(crate) mod repo_db;
 pub(crate) mod repo_manager;
-pub(crate) mod repo_setup;
 pub(crate) mod scm_api;
 pub(crate) mod utils;
 
@@ -61,6 +60,7 @@ pub fn run() {
             metadata::AppStreamLoader::new(),
         )))
         .manage(ScmState(scm_api::ScmClient::new()))
+        .manage(distro_context::get_distro_context()) // Operation True Identity: Shared Context
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -159,6 +159,8 @@ pub fn run() {
             commands::package::check_installed_status,
             commands::update::perform_system_update,
             commands::update::get_system_update_command,
+            commands::update::check_updates,
+            commands::update::apply_updates,
             commands::package::fetch_pkgbuild,
             commands::package::get_installed_packages,
             commands::package::check_for_updates,
@@ -231,15 +233,8 @@ pub fn run() {
             repair::needs_startup_unlock,
             repair::unlock_pacman_if_stale,
             repair::clear_pacman_package_cache,
-            repair::initialize_system,
-            repo_setup::bootstrap_system,
-            repo_setup::enable_repos_batch,
-            repo_setup::enable_repo,
-            repo_setup::reset_pacman_conf,
-            repo_setup::set_repo_priority,
-            repo_setup::check_repo_status,
-            repo_setup::set_one_click_control,
             repair::fix_keyring_issues_alias,
+            repair::clear_build_cache,
             repo_manager::apply_os_config,
             commands::system::emit_sync_progress,
             // Identity Matrix Command

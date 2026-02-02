@@ -105,46 +105,9 @@ pub enum HelperCommand {
     AlpmInstallFiles {
         paths: Vec<String>,
     },
-    ForceRefreshDb,
-    // Legacy commands (kept for compatibility)
-    InstallTargets {
-        packages: Vec<String>,
-    },
-    InstallFiles {
-        paths: Vec<String>,
-    },
-    Sysupgrade,
-    Refresh,
-    Initialize,
-    UninstallTargets {
-        packages: Vec<String>,
-    },
-    RemoveOrphans,
-    ClearCache {
-        keep: u32,
-    },
-    RemoveLock,
-    ConfigureRepo {
-        name: String,
-        enabled: bool,
-        url: String,
-    },
-    WriteFile {
-        path: String,
-        content: String,
-    },
-    RemoveFile {
-        path: String,
-    },
-    WriteFiles {
-        files: Vec<(String, String)>,
-    },
-    RemoveFiles {
-        paths: Vec<String>,
-    },
-    RunCommand {
-        binary: String,
-        args: Vec<String>,
+    // ✅ NEW: Atomic Batch Transaction (Operation Silent Guard)
+    ExecuteBatch {
+        manifest: crate::models::TransactionManifest,
     },
 }
 
@@ -206,8 +169,7 @@ pub async fn invoke_helper(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path =
-        std::path::Path::new(CMD_FILE_DIR).join(format!("{}{}.json", CMD_FILE_PREFIX, ts));
+    let path = std::path::Path::new(CMD_FILE_DIR).join(format!("{}{}.json", CMD_FILE_PREFIX, ts));
     {
         use std::io::Write;
         let mut file = std::fs::File::create(&path)
@@ -344,7 +306,9 @@ pub async fn invoke_helper(
                         let _ = a.emit("alpm-progress", &event);
                         // When helper sends event_type "error", message is JSON of ClassifiedError; emit for recovery UI
                         if event.event_type == "error" {
-                            if let Ok(classified) = serde_json::from_str::<serde_json::Value>(&event.message) {
+                            if let Ok(classified) =
+                                serde_json::from_str::<serde_json::Value>(&event.message)
+                            {
                                 let _ = a.emit("install-error-classified", &classified);
                             }
                         }

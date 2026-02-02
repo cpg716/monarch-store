@@ -427,9 +427,9 @@ mod tests {
     #[test]
     fn test_search_ranking() {
         let mut pkgs = vec![
-            make_pkg("open-chrome", PackageSource::Aur, Some(50)),
-            make_pkg("google-chrome", PackageSource::Chaotic, Some(1000)),
-            make_pkg("chrome-gnome-shell", PackageSource::Official, Some(200)),
+            make_pkg("open-chrome", PackageSource::aur(), Some(50)),
+            make_pkg("google-chrome", PackageSource::chaotic(), Some(1000)),
+            make_pkg("chrome-gnome-shell", PackageSource::official(), Some(200)),
         ];
 
         sort_packages_by_relevance(&mut pkgs, "chrome");
@@ -442,104 +442,20 @@ mod tests {
     #[test]
     fn test_deduplication_priority_swap() {
         // Manjaro (Low Priority: 4)
-        let manjaro = make_pkg("spotify", PackageSource::Manjaro, None);
+        let manjaro = make_pkg("spotify", PackageSource::manjaro(), None);
         // Chaotic (High Priority: 1)
-        let chaotic = make_pkg("spotify", PackageSource::Chaotic, None);
+        let chaotic = make_pkg("spotify", PackageSource::chaotic(), None);
 
         let results = merge_and_deduplicate(vec![manjaro], vec![chaotic]);
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].source, PackageSource::Chaotic); // Should have swapped to Chaotic
+        assert_eq!(results[0].source.source_type, "repo");
+        assert_eq!(results[0].source.id, "chaotic-aur");
         assert_eq!(results[0].alternatives.as_ref().unwrap().len(), 1);
         assert_eq!(
             results[0].alternatives.as_ref().unwrap()[0].source,
-            PackageSource::Manjaro
+            PackageSource::manjaro()
         );
-    }
-}
-
-pub async fn run_privileged_script_with_progress(
-    app: tauri::AppHandle,
-    event_name: &str,
-    script: &str,
-    password: Option<String>,
-    bypass_helper: bool,
-) -> Result<String, String> {
-    use tauri::Emitter;
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
-    let helper_exists = std::path::Path::new(MONARCH_PK_HELPER).exists();
-
-    // Acquire global lock to serialize privileged prompts (prevents multiple dialogs)
-    let _guard = PRIVILEGED_LOCK.lock().await;
-
-    let wrapper_path = "/usr/lib/monarch-store/monarch-wrapper";
-    let wrapper_exists = std::path::Path::new(wrapper_path).exists();
-
-    let (program, args) = if let Some(_) = &password {
-        ("sudo", vec!["-S", "bash", "-s"])
-    } else if wrapper_exists && !bypass_helper {
-        // Use wrapper so Polkit action com.monarch.store.script applies; DE agent = once-per-session.
-        ("pkexec", vec!["--disable-internal-agent", wrapper_path, "bash", "-s"])
-    } else if helper_exists && !bypass_helper {
-        ("pkexec", vec!["--disable-internal-agent", MONARCH_PK_HELPER, "bash", "-s"])
-    } else {
-        ("pkexec", vec!["--disable-internal-agent", "/bin/bash", "-s"])
-    };
-
-    let mut child = tokio::process::Command::new(program)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn {}: {}", program, e))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Some(pwd) = &password {
-            let _ = stdin.write_all(format!("{}\n", pwd).as_bytes()).await;
-        }
-        let _ = stdin.write_all(script.as_bytes()).await;
-    }
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Failed to capture stdout (was not piped)".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "Failed to capture stderr (was not piped)".to_string())?;
-
-    let app_clone = app.clone();
-    let event_name_clone = event_name.to_string();
-    let stdout_handle = tokio::spawn(async move {
-        let mut reader = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            let _ = app_clone.emit(&event_name_clone, &line);
-        }
-    });
-
-    let app_clone = app.clone();
-    let event_name_clone = event_name.to_string();
-    let stderr_handle = tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            let _ = app_clone.emit(&event_name_clone, format!("ERROR: {}", line));
-        }
-    });
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| format!("Failed to wait on {}: {}", program, e))?;
-
-    let _ = tokio::join!(stdout_handle, stderr_handle);
-
-    if status.success() {
-        Ok("Success".to_string())
-    } else {
-        Err("Privileged Action Failed. Check logs for details.".to_string())
     }
 }
 
@@ -559,11 +475,20 @@ pub async fn run_privileged_script(
         ("sudo", vec!["-S", "bash", "-s"])
     } else if wrapper_exists && !bypass_helper {
         // Use wrapper so Polkit action com.monarch.store.script applies; DE agent = once-per-session.
-        ("pkexec", vec!["--disable-internal-agent", wrapper_path, "bash", "-s"])
+        (
+            "pkexec",
+            vec!["--disable-internal-agent", wrapper_path, "bash", "-s"],
+        )
     } else if helper_exists && !bypass_helper {
-        ("pkexec", vec!["--disable-internal-agent", MONARCH_PK_HELPER, "bash", "-s"])
+        (
+            "pkexec",
+            vec!["--disable-internal-agent", MONARCH_PK_HELPER, "bash", "-s"],
+        )
     } else {
-        ("pkexec", vec!["--disable-internal-agent", "/bin/bash", "-s"])
+        (
+            "pkexec",
+            vec!["--disable-internal-agent", "/bin/bash", "-s"],
+        )
     };
 
     let mut child = tokio::process::Command::new(program)
@@ -668,10 +593,7 @@ pub async fn track_event_safe(
             "event_category".to_string(),
             Value::String(category.to_string()),
         );
-        map.insert(
-            "event_label".to_string(),
-            Value::String(label.to_string()),
-        );
+        map.insert("event_label".to_string(), Value::String(label.to_string()));
         let enriched = Value::Object(map);
 
         #[cfg(debug_assertions)]
@@ -691,9 +613,9 @@ pub async fn run_pacman_command_transparent(
     use crate::distro_context::DistroContext;
     use crate::distro_context::DistroId;
     use crate::error_classifier::ClassifiedError;
+    use std::sync::Arc;
     use tauri::Emitter;
     use tokio::io::{AsyncBufReadExt, BufReader};
-    use std::sync::Arc;
     use tokio::sync::Mutex;
 
     // 1. Manjaro Safety Guard (Protocol v0.3.5 Phase 4)
@@ -778,7 +700,7 @@ pub async fn run_pacman_command_transparent(
         // 6. Classify the error and emit structured event for UI recovery actions
         let errors = error_buffer.lock().await;
         let combined_output = errors.join("\n");
-        
+
         if let Some(classified) = ClassifiedError::from_output(&combined_output) {
             // Emit structured error event for the UI to show recovery options
             let _ = app.emit("install-error-classified", &classified);

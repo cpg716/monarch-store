@@ -10,8 +10,10 @@ import { useAppStore } from '../store/internal_store';
 import { useSessionPassword } from '../context/useSessionPassword';
 import { useErrorService } from '../context/ErrorContext';
 
+import { PackageSource } from '../types/alpm';
+
 interface InstallMonitorProps {
-    pkg: { name: string; source: string; repoName?: string; } | null;
+    pkg: { name: string; source: PackageSource; repoName?: string; } | null;
     onClose: () => void;
     mode?: 'install' | 'uninstall';
     onSuccess?: () => void;
@@ -50,7 +52,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const logBufferRef = useRef<string[]>([]);
     const logFlushScheduledRef = useRef(false);
     const LOG_CAP = 300;
-    const flushLogBufferRef = useRef<() => void>(() => {});
+    const flushLogBufferRef = useRef<() => void>(() => { });
     flushLogBufferRef.current = () => {
         if (logBufferRef.current.length === 0) {
             logFlushScheduledRef.current = false;
@@ -76,7 +78,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const progressStatusRef = useRef<{ target: number; status: string }>({ target: 0, status: '' });
     const progressFlushScheduledRef = useRef(false);
     const PROGRESS_FLUSH_MS = 200;
-    const flushProgressStatusRef = useRef<() => void>(() => {});
+    const flushProgressStatusRef = useRef<() => void>(() => { });
     flushProgressStatusRef.current = () => {
         progressFlushScheduledRef.current = false;
         const { target, status } = progressStatusRef.current;
@@ -117,12 +119,12 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         // ✅ NEW: Listen for structured ALPM progress events
         const unlistenAlpmProgress = listen('alpm-progress', (event: { payload: any }) => {
             const evt = event.payload as import('../types/alpm').AlpmProgressEvent;
-            
+
             // Don't flood logs with every download_progress tick (status line already shows %); throttle and cap to prevent freeze
             if (evt.event_type !== 'download_progress') {
                 appendLogThrottled(evt.message);
             }
-            
+
             // Handle different event types — throttle all progress/status to prevent freeze from hundreds of updates/sec
             switch (evt.event_type) {
                 case 'download_progress':
@@ -268,11 +270,11 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         });
 
         return () => {
-            unlistenAlpmProgress.then((f: () => void) => f()).catch(() => {});
-            unlistenOutput.then((f: () => void) => f()).catch(() => {});
-            unlistenRepair.then((f: () => void) => f()).catch(() => {});
-            unlistenComplete.then((f: () => void) => f()).catch(() => {});
-            unlistenClassifiedError.then((f: () => void) => f()).catch(() => {});
+            unlistenAlpmProgress.then((f: () => void) => f()).catch(() => { });
+            unlistenOutput.then((f: () => void) => f()).catch(() => { });
+            unlistenRepair.then((f: () => void) => f()).catch(() => { });
+            unlistenComplete.then((f: () => void) => f()).catch(() => { });
+            unlistenClassifiedError.then((f: () => void) => f()).catch(() => { });
         };
     }, [pkg, reducePasswordPrompts, requestSessionPassword]);
 
@@ -280,7 +282,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const handleRecoveryAction = async (action: string) => {
         setIsRecovering(true);
         setLogs(prev => [...prev, `\n--- RECOVERY: ${action.toUpperCase()} ---`]);
-        
+
         try {
             const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
             switch (action) {
@@ -289,39 +291,39 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     await invoke('repair_unlock_pacman', { password: pwd });
                     setLogs(prev => [...prev, '✓ Database unlocked successfully']);
                     break;
-                    
+
                 case 'RepairKeyring':
                     setLogs(prev => [...prev, 'Resetting security keyring...', 'This may take a moment...']);
                     await invoke('fix_keyring_issues', { password: pwd });
                     setLogs(prev => [...prev, '✓ Keyring repaired successfully']);
                     break;
-                    
+
                 case 'ForceRefreshDb':
                 case 'RefreshMirrors':
                     setLogs(prev => [...prev, 'Forcing database refresh...']);
                     await invoke('trigger_repo_sync', { forceRefresh: true });
                     setLogs(prev => [...prev, '✓ Databases refreshed']);
                     break;
-                    
+
                 case 'CleanCache':
                     setLogs(prev => [...prev, 'Clearing package cache...']);
                     await invoke('clear_cache', { keepVersions: 1 });
                     setLogs(prev => [...prev, '✓ Cache cleared']);
                     break;
-                    
+
                 default:
                     setLogs(prev => [...prev, 'Preparing to retry...']);
             }
-            
+
             // Reset state and retry the operation
             setLogs(prev => [...prev, '\n--- RETRYING OPERATION ---']);
             setClassifiedError(null);
             setStatus('running');
             setTargetProgress(5);
-            
+
             // Retry the original action
             await handleAction();
-            
+
         } catch (e) {
             setLogs(prev => [...prev, `Recovery failed: ${e}`]);
             setStatus('error');
@@ -389,7 +391,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const handleAction = async () => {
         if (!pkg) return;
         setStatus('running');
-        setLogs([`Starting ${mode === 'uninstall' ? 'uninstallation' : 'installation'} engine...`, `Target: ${pkg.name} (${pkg.source})`]);
+        setLogs([`Starting ${mode === 'uninstall' ? 'uninstallation' : 'installation'} engine...`, `Target: ${pkg.name} (${pkg.source.label || pkg.source.id})`]);
         setTargetProgress(5);
         setVisualProgress(0);
 
@@ -398,9 +400,15 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             if (mode === 'uninstall') {
                 await invoke('uninstall_package', {
                     name: pkg.name,
+                    source: pkg.source,
                     password: pwd
                 });
-                setCommandPreview(`$ pacman -Rns --noconfirm ${pkg.name}`);
+
+                if (pkg.source.source_type === 'flatpak') {
+                    setCommandPreview(`$ flatpak uninstall ${pkg.name} -y`);
+                } else {
+                    setCommandPreview(`$ pacman -Rns --noconfirm ${pkg.name}`);
+                }
             } else {
                 await invoke('install_package', {
                     name: pkg.name,
@@ -410,8 +418,10 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                 });
 
                 // Set Command Preview
-                if (pkg.source === 'aur') {
+                if (pkg.source.source_type === 'aur') {
                     setCommandPreview(`$ git clone https://aur.archlinux.org/${pkg.name}.git && makepkg -si`);
+                } else if (pkg.source.source_type === 'flatpak') {
+                    setCommandPreview(`$ flatpak install flathub ${pkg.name} -y`);
                 } else {
                     setCommandPreview(`$ pacman -S --noconfirm ${pkg.name}`);
                 }
@@ -485,7 +495,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         ? errorDetails.title
         : status === 'idle' ? `Ready to ${mode === 'uninstall' ? 'Uninstall' : 'Install'}`
             : status === 'success' ? `${mode === 'uninstall' ? 'Uninstallation' : 'Installation'} Complete`
-                : detailedStatus || (pkg.source === 'aur' ? 'Building App (This may take a while)...' : `${mode === 'uninstall' ? 'Uninstalling' : 'Installing'}...`);
+                : detailedStatus || (pkg.source.source_type === 'aur' ? 'Building App (This may take a while)...' : `${mode === 'uninstall' ? 'Uninstalling' : 'Installing'}...`);
 
     // RENDER STEPPER
     const renderStepper = () => (
@@ -649,7 +659,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 </>
                             )}
                             {status !== 'error' && (
-                                <p className="text-app-muted text-sm">{pkg.source.toUpperCase()} Source</p>
+                                <p className="text-app-muted text-sm">{pkg.source.label} Source</p>
                             )}
                         </div>
                     </div>
@@ -907,7 +917,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                             <span>Status: {status === 'running' ? 'Working...' : status.toUpperCase()}</span>
                                             <span>{Math.round(visualProgress)}%</span>
                                         </div>
-                                        {pkg.source === 'aur' && status === 'running' && (detailedStatus.includes('Building') || detailedStatus.includes('Compiling') || detailedStatus.includes('Cloning') || detailedStatus.includes('Downloading Source') || (visualProgress >= 25 && visualProgress <= 85)) && (
+                                        {pkg.source.source_type === 'aur' && status === 'running' && (detailedStatus.includes('Building') || detailedStatus.includes('Compiling') || detailedStatus.includes('Cloning') || detailedStatus.includes('Downloading Source') || (visualProgress >= 25 && visualProgress <= 85)) && (
                                             <>
                                                 <div className="text-xs text-blue-400 font-bold animate-pulse mb-1">Building from source…</div>
                                                 <div className="text-[10px] text-app-muted mb-2">Large packages can take several minutes. You can cancel to skip the rest.</div>
@@ -915,7 +925,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                         )}
                                         <div className="w-full bg-app-fg/10 h-2 rounded-full overflow-hidden">
                                             {/* Progress Steps for AUR */}
-                                            {pkg.source === 'aur' && status === 'running' && (
+                                            {pkg.source.source_type === 'aur' && status === 'running' && (
                                                 <div className="flex justify-between text-[10px] text-app-muted mt-1 px-1">
                                                     <span className={clsx(visualProgress > 10 && "text-blue-500 font-bold")}>Download</span>
                                                     <span className={clsx(visualProgress > 30 && "text-blue-500 font-bold")}>Prepare</span>
@@ -997,7 +1007,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                         <p className="text-sm text-app-muted mt-1">{classifiedError.description}</p>
                                     </div>
                                 </div>
-                                
+
                                 {/* One-Click Recovery Button */}
                                 {classifiedError.kind && (
                                     <div className="flex gap-2">
@@ -1038,7 +1048,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 )}
                             </div>
                         )}
-                        
+
                         {/* Fallback buttons when no classified error */}
                         {!classifiedError && (
                             <div className="flex justify-end gap-3">

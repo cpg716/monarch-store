@@ -36,29 +36,33 @@ mod tests {
     fn test_deduplication_exact_name() {
         let official = vec![make_pkg(
             "firefox",
-            PackageSource::Official,
+            PackageSource::official(),
             Some("firefox"),
         )];
-        let repo = vec![make_pkg("firefox", PackageSource::CachyOS, Some("firefox"))];
+        let repo = vec![make_pkg(
+            "firefox",
+            PackageSource::cachyos(),
+            Some("firefox"),
+        )];
 
         let result = utils::merge_and_deduplicate(official, repo);
 
         // Should strictly keep the 'base' (official) one
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].source, PackageSource::Official);
+        assert_eq!(result[0].source, PackageSource::official());
     }
 
     #[test]
     fn test_deduplication_app_id() {
         let official = vec![make_pkg(
             "brave",
-            PackageSource::Official,
+            PackageSource::official(),
             Some("com.brave.Browser"),
         )];
         // "brave-bin" is common in AUR/Chaotic, but maps to same AppID
         let repo = vec![make_pkg(
             "brave-bin",
-            PackageSource::Chaotic,
+            PackageSource::chaotic(),
             Some("com.brave.Browser"),
         )];
 
@@ -73,12 +77,12 @@ mod tests {
     fn test_deduplication_no_conflict() {
         let official = vec![make_pkg(
             "firefox",
-            PackageSource::Official,
+            PackageSource::official(),
             Some("firefox"),
         )];
         let repo = vec![make_pkg(
             "google-chrome",
-            PackageSource::Chaotic,
+            PackageSource::chaotic(),
             Some("chrome"),
         )];
 

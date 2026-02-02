@@ -1,6 +1,7 @@
 # Contributing to MonARCH Store 🦋
 
-**Last updated:** 2026-02-01 (v0.3.6-alpha). Doc and feature updates (**Iron Core**, **The Chameleon**, native portals, **SafeUpdateTransaction**) reflected in README, DOCUMENTATION, PROGRESS, RELEASE_NOTES, AGENTS, and docs (TROUBLESHOOTING, ARCHITECTURE, DEVELOPER).
+**Last updated:** 2026-02-02 (v0.4.0-alpha).
+Project architecture features (**Iron Core**, **The Chameleon**, **Mission Control**, **Silent Guard**) are documented across the repository. Contributors should prioritize the [**Developer Guide**](docs/DEVELOPER.md) and [**Architecture**](ARCHITECTURE.md) for deep dives.
 
 First off, thanks for taking the time to contribute! 🎉
 
@@ -98,9 +99,9 @@ Violating these rules will result in immediate PR closure.
 
 ## Architecture Overview
 
+- [**USER_GUIDE.md**](USER_GUIDE.md) — Fundamental app usage and feature overview for end-users.
 - [**docs/DEVELOPER.md**](docs/DEVELOPER.md) — **Developer documentation**: setup, project structure, code style, critical rules (single reference for contributors).
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Core philosophy, Soft Disable, Butterfly engine, installer pipeline.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System architecture (Tauri 2, monarch-gui + monarch-helper).
-- [docs/APP_AUDIT.md](docs/APP_AUDIT.md) — Full app audit (UI/UX, frontend, backend, features).
-- [docs/INSTALL_UPDATE_AUDIT.md](docs/INSTALL_UPDATE_AUDIT.md) — Install/update flow, Polkit, passwordless setup.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Core philosophy, Host-Adaptive model, Butterfly engine, installer pipeline.
 - [AGENTS.md](AGENTS.md) — Build commands, code style, package management rules.
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — User-facing issues (GPG, db lock, etc.)
+- [SECURITY.md](SECURITY.md) — Security policy and reporting.

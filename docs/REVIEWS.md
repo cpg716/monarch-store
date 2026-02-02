@@ -1,4 +1,4 @@
-# Hybrid Review System (v0.3.6)
+# Hybrid Review System (v0.4.0)
 
 MonARCH Store uses a unique **Hybrid Review System** to provide the best possible coverage of Linux applications.
 

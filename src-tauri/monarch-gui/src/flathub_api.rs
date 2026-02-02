@@ -1,8 +1,95 @@
+use crate::models::{PackageSource, UpdateItem};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
 use std::sync::Mutex;
+
+/// Fetch available Flatpak updates by parsing `flatpak remote-ls --updates`
+pub async fn get_updates() -> Result<Vec<UpdateItem>, String> {
+    // Run: flatpak remote-ls --updates --app --columns=application,version,installed-size,name
+    let output = tokio::process::Command::new("flatpak")
+        .args([
+            "remote-ls",
+            "--updates",
+            "--app",
+            "--columns=application,version,installed-size,name",
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run flatpak: {}", e))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut updates = Vec::new();
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        // Expected columns: application (ID), version, installed-size, name
+        // Sometimes version is missing or size is different format, but standard columns help.
+        // flatpak remote-ls output is tab-separated with --columns.
+
+        if parts.len() >= 3 {
+            let app_id = parts[0].trim().to_string();
+            let new_version = parts[1].trim().to_string();
+            let size_str = parts[2].trim();
+            // Convention: We use the App ID as the 'name' for the UpdateItem so the execution engine
+            // knows exactly what to update. Display names can be fetched from metadata if needed.
+            // parts[0] is the Application ID.
+            let name = app_id.clone();
+
+            let size = size_str.parse::<u64>().ok();
+
+            updates.push(UpdateItem {
+                name,
+                current_version: "Unknown".to_string(), // Filled below
+                new_version: new_version.clone(),
+                source: PackageSource::new(
+                    "flatpak",
+                    "flathub",
+                    &new_version,
+                    "Flatpak (Sandboxed)",
+                ),
+                size,
+                icon: None,
+            });
+        }
+    }
+
+    // Optimization: Fetch current versions to fill in the gaps
+    if !updates.is_empty() {
+        let installed = get_installed_versions().await.unwrap_or_default();
+        for update in &mut updates {
+            if let Some(ver) = installed.get(&update.name) {
+                update.current_version = ver.clone();
+            }
+        }
+    }
+
+    Ok(updates)
+}
+
+/// Helper to get installed versions for comparison
+async fn get_installed_versions() -> Result<HashMap<String, String>, String> {
+    let output = tokio::process::Command::new("flatpak")
+        .args(["list", "--app", "--columns=application,version"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut map = HashMap::new();
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 2 {
+            map.insert(parts[0].trim().to_string(), parts[1].trim().to_string());
+        }
+    }
+    Ok(map)
+}
 
 /// Flathub API client for fetching rich app metadata
 /// This is used as a METADATA SOURCE only - we don't install Flatpaks
@@ -32,18 +119,19 @@ pub struct FlathubScreenshot {
 }
 
 // Search Response Structures
-#[derive(Debug, Deserialize)]
-struct SearchResponse {
+#[derive(Debug, Deserialize, Clone)]
+pub struct SearchResponse {
     #[serde(default)]
-    hits: Vec<SearchResult>,
+    pub hits: Vec<SearchResult>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SearchResult {
+#[derive(Debug, Deserialize, Clone)]
+pub struct SearchResult {
     #[serde(rename = "app_id")]
-    app_id: String,
-    name: String,
-    // We only care about ID and name for mapping
+    pub app_id: String,
+    pub name: String,
+    pub summary: Option<String>,
+    pub icon: Option<String>,
 }
 
 /// Common package name to Flathub app ID mappings
@@ -173,43 +261,7 @@ impl FlathubApiClient {
 
     /// Perform a search on Flathub to find a matching AppStream ID
     async fn search_find_id(&self, query: &str) -> Option<String> {
-        let url = "https://flathub.org/api/v2/search";
-
-        // We use a short timeout because search is on the critical path for metadata loading
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .ok()?;
-
-        // Use POST for search with standard JSON payload
-        let response = client
-            .post(url)
-            .json(&serde_json::json!({ "query": query }))
-            .send()
-            .await
-            .ok()?;
-
-        if !response.status().is_success() {
-            return None;
-        }
-
-        // Get text first to handle variable response format
-        let body_text = response.text().await.ok()?;
-
-        // Strategy 1: Try as Array of SearchResult
-        let hits_opts: Option<Vec<SearchResult>> = serde_json::from_str(&body_text).ok();
-
-        let hits = if let Some(h) = hits_opts {
-            h
-        } else {
-            // Strategy 2: Try as Object with "hits"
-            let response_obj: Option<SearchResponse> = serde_json::from_str(&body_text).ok();
-            if let Some(r) = response_obj {
-                r.hits
-            } else {
-                return None; // Parse failed
-            }
-        };
+        let hits = self.search_flathub(query).await?;
 
         // Heuristic: Find first best match
         let query_lower = query.to_lowercase();
@@ -233,6 +285,47 @@ impl FlathubApiClient {
                     return Some(hit.app_id.clone());
                 }
             }
+        }
+
+        None
+    }
+
+    /// Public search function returning a list of results
+    pub async fn search_flathub(&self, query: &str) -> Option<Vec<SearchResult>> {
+        let url = "https://flathub.org/api/v2/search";
+
+        // We use a short timeout because search is on the critical path for metadata loading
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .ok()?;
+
+        // Use POST for search with standard JSON payload
+        let response = client
+            .post(url)
+            .json(&serde_json::json!({ "query": query }))
+            .send()
+            .await
+            .ok()?;
+
+        if !response.status().is_success() {
+            return None;
+        }
+
+        // Get text first to handle variable response format
+        let body_text = response.text().await.ok()?;
+
+        // Strategy 1: Try as Array of SearchResult
+        let hits_opts: Option<Vec<SearchResult>> = serde_json::from_str(&body_text).ok();
+
+        if let Some(h) = hits_opts {
+            return Some(h);
+        }
+
+        // Strategy 2: Try as Object with "hits"
+        let response_obj: Option<SearchResponse> = serde_json::from_str(&body_text).ok();
+        if let Some(r) = response_obj {
+            return Some(r.hits);
         }
 
         None
@@ -329,6 +422,8 @@ impl FlathubApiClient {
         }
     }
 
+    // ... (existing content)
+
     pub fn clear_cache(&self) {
         if let Ok(mut cache) = self.cache.lock() {
             cache.clear();
@@ -365,4 +460,98 @@ pub fn flathub_to_app_metadata(
         last_updated: None,
         description: flathub.description.clone(),
     }
+}
+
+// --- FLATPAK MANAGEMENT COMMANDS ---
+
+use std::process::Stdio;
+use tauri::{AppHandle, Emitter};
+use tokio::io::AsyncBufReadExt;
+
+async fn run_flatpak_command(
+    app: AppHandle,
+    args: Vec<&str>,
+    log_prefix: &str,
+) -> Result<(), String> {
+    let mut command = tokio::process::Command::new("flatpak");
+    command.args(&args);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    // Clean env to avoid localization issues in parsing if we parse, but for logging it's fine.
+    command.env("LC_ALL", "C");
+
+    let _ = app.emit(
+        "build://log",
+        format!("{} Running: flatpak {}", log_prefix, args.join(" ")),
+    );
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to start flatpak: {}", e))?;
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let app_c1 = app.clone();
+    let app_c2 = app.clone();
+    let prefix_c1 = log_prefix.to_string();
+    let prefix_c2 = log_prefix.to_string();
+
+    let mut reader_out = tokio::io::BufReader::new(stdout);
+    let mut reader_err = tokio::io::BufReader::new(stderr);
+
+    let h1 = tokio::spawn(async move {
+        let mut line = String::new();
+        while let Ok(n) = reader_out.read_line(&mut line).await {
+            if n == 0 {
+                break;
+            }
+            let _ = app_c1.emit("build://log", format!("{} {}", prefix_c1, line.trim()));
+            line.clear();
+        }
+    });
+
+    let h2 = tokio::spawn(async move {
+        let mut line = String::new();
+        while let Ok(n) = reader_err.read_line(&mut line).await {
+            if n == 0 {
+                break;
+            }
+            let _ = app_c2.emit("build://log", format!("{} ERR: {}", prefix_c2, line.trim()));
+            line.clear();
+        }
+    });
+
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    let _ = tokio::join!(h1, h2);
+
+    if status.success() {
+        let _ = app.emit("build://log", format!("{} Success.", log_prefix));
+        Ok(())
+    } else {
+        let msg = format!("{} Failed with code: {:?}", log_prefix, status.code());
+        let _ = app.emit("build://log", msg.clone());
+        Err(msg)
+    }
+}
+
+pub async fn install_flatpak(app: AppHandle, app_id: String) -> Result<(), String> {
+    // "flatpak install flathub <app_id> -y"
+    // Note: We assume 'flathub' remote exists. If not, we might need to add it, but standard Arch/Manjaro usually has it or user added it.
+    // Ideally we check remotes, but for now we follow spec.
+    run_flatpak_command(
+        app,
+        vec!["install", "flathub", &app_id, "-y"],
+        "[Flatpak Install]",
+    )
+    .await
+}
+
+pub async fn remove_flatpak(app: AppHandle, app_id: String) -> Result<(), String> {
+    run_flatpak_command(app, vec!["uninstall", &app_id, "-y"], "[Flatpak Remove]").await
+}
+
+pub async fn update_flatpak(app: AppHandle, app_id: String) -> Result<(), String> {
+    run_flatpak_command(app, vec!["update", &app_id, "-y"], "[Flatpak Update]").await
 }

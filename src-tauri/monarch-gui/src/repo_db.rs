@@ -161,8 +161,7 @@ pub async fn fetch_repo_packages<C: RepoClient>(
         let mut success_data = None;
 
         for (i, url) in mirrors_to_try.iter().enumerate() {
-            if i > 0 {
-            }
+            if i > 0 {}
 
             match client.fetch_bytes(url).await {
                 Ok(data) => {
@@ -185,10 +184,7 @@ pub async fn fetch_repo_packages<C: RepoClient>(
             Option::None => {
                 // FALLBACK: Try to use stale cache if download failed
                 if cache_path.exists() {
-                    log::warn!(
-                        "Network sync failed for {}. Using stale cache.",
-                        repo_name
-                    );
+                    log::warn!("Network sync failed for {}. Using stale cache.", repo_name);
                     std::fs::read(&cache_path).map_err(|e| e.to_string())?
                 } else {
                     return Err(format!(
@@ -361,7 +357,10 @@ impl MockRepoClient {
 #[async_trait::async_trait]
 impl RepoClient for MockRepoClient {
     async fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
-        let guard = self.responses.lock().map_err(|_| "MockRepoClient lock poisoned".to_string())?;
+        let guard = self
+            .responses
+            .lock()
+            .map_err(|_| "MockRepoClient lock poisoned".to_string())?;
         if let Some(res) = guard.get(url) {
             res.clone()
         } else {
@@ -389,7 +388,7 @@ mod tests {
             &mock_client,
             url,
             "test_repo",
-            PackageSource::CachyOS,
+            PackageSource::cachyos(),
             cache_path,
             true,
             0,
@@ -416,7 +415,7 @@ mod tests {
             &mock_client,
             url,
             "fail_repo",
-            PackageSource::CachyOS,
+            PackageSource::cachyos(),
             cache_path,
             true,
             0,

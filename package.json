@@ -3,7 +3,7 @@
   "private": false,
   "license": "MIT",
   "author": "cpg716 (https://github.com/cpg716) — developer and creator, with the help of AI coding tools",
-  "version": "0.3.6-alpha",
+  "version": "0.4.0-alpha",
   "type": "module",
   "scripts": {
     "dev": "vite --configLoader runner",

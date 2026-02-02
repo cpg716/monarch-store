@@ -128,12 +128,8 @@ pub async fn toggle_repo(
     state: State<'_, repo_manager::RepoManager>,
     name: String,
     enabled: bool,
-    password: Option<String>,
+    _password: Option<String>,
 ) -> Result<(), String> {
-    // Atomic toggle: when enabling, import keys first so next update doesn't hit Unknown Trust
-    if enabled {
-        let _ = crate::repo_setup::enable_repo(app.clone(), &name, password).await;
-    }
     state.inner().set_repo_state(&app, &name, enabled).await?;
     Ok(())
 }
@@ -147,13 +143,7 @@ pub async fn toggle_repo_family(
     skip_os_sync: Option<bool>,
     password: Option<String>,
 ) -> Result<(), String> {
-    // Atomic toggle: when enabling, import keys for all family repos first
-    if enabled {
-        let names = state.inner().get_repo_names_in_family(&family).await;
-        if !names.is_empty() {
-            let _ = crate::repo_setup::enable_repos_batch(app.clone(), names, password).await;
-        }
-    }
+    let _password = password;
     let skip = skip_os_sync.unwrap_or(false);
     state
         .inner()
@@ -343,18 +333,6 @@ pub async fn update_and_install_package(
         "install-output",
         "Synchronizing databases and updating system...",
     );
-
-    // Step 1: Update system (Sysupgrade)
-    let mut rx = crate::helper_client::invoke_helper(
-        &app,
-        crate::helper_client::HelperCommand::Sysupgrade,
-        password.clone(),
-    )
-    .await?;
-
-    while let Some(msg) = rx.recv().await {
-        let _ = app.emit("install-output", &msg.message);
-    }
 
     // Step 2: Install target package (only if Step 1 succeeded)
     let enabled_repos: Vec<String> = state_repo
@@ -814,7 +792,12 @@ pub async fn force_refresh_databases(
     let _ = app.emit("install-output", "Force refreshing sync databases...");
     let mut rx = crate::helper_client::invoke_helper(
         &app,
-        crate::helper_client::HelperCommand::ForceRefreshDb,
+        crate::helper_client::HelperCommand::ExecuteBatch {
+            manifest: crate::models::TransactionManifest {
+                refresh_db: true,
+                ..Default::default()
+            },
+        },
         password,
     )
     .await?;
@@ -832,7 +815,12 @@ pub async fn sync_system_databases(app: AppHandle, password: Option<String>) -> 
     let _ = app.emit("sync-progress", "Updating package databases...");
     let mut rx = crate::helper_client::invoke_helper(
         &app,
-        crate::helper_client::HelperCommand::Refresh,
+        crate::helper_client::HelperCommand::ExecuteBatch {
+            manifest: crate::models::TransactionManifest {
+                refresh_db: true,
+                ..Default::default()
+            },
+        },
         password,
     )
     .await?;

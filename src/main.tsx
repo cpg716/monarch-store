@@ -5,7 +5,6 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import LoadingScreen from "./components/LoadingScreen";
 
 import { ToastProvider } from './context/ToastContext';
-import { RepoStatusProvider } from './context/RepoStatusContext';
 import { ErrorProvider } from './context/ErrorContext';
 import { getErrorService } from './context/getErrorService';
 import { SessionPasswordProvider } from './context/SessionPasswordContext';
@@ -27,15 +26,13 @@ const isScreenshotLoading =
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <RepoStatusProvider>
-        <ToastProvider>
-          <ErrorProvider>
-            <SessionPasswordProvider>
-              {isScreenshotLoading ? <LoadingScreen /> : <App />}
-            </SessionPasswordProvider>
-          </ErrorProvider>
-        </ToastProvider>
-      </RepoStatusProvider>
+      <ToastProvider>
+        <ErrorProvider>
+          <SessionPasswordProvider>
+            {isScreenshotLoading ? <LoadingScreen /> : <App />}
+          </SessionPasswordProvider>
+        </ErrorProvider>
+      </ToastProvider>
     </ErrorBoundary>
   </React.StrictMode>,
 );

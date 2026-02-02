@@ -1,66 +1,92 @@
 # 🏗️ MonARCH Store Architecture
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Current Version:** v0.4.0-alpha
 
-## Core Philosophy: "Safe by Default, Powerful by Choice"
+## Core Philosophy: "Host-Adaptive & Universal"
 
-MonARCH Store is designed to solve the "Split-Brain" problem common in Arch Linux GUI store wrappers, where the GUI database falls out of sync with the system database, causing partial upgrade failures.
+MonARCH Store v0.4.0 represents a paradigm shift from "opinionated distribution management" to **Host-Adaptive Architecture**. The application no longer attempts to force a specific repository configuration (like Soft Disable) but instead respects the host system's `pacman.conf` and `flatpak` configuration as the source of truth.
 
-## 1. The "Soft Disable" Repository Model
+## 1. High-Level Overview
 
-Unlike standard managers that edit `/etc/pacman.conf` to remove repositories, MonARCH uses a **Soft Disable** approach:
+```mermaid
+graph TD
+    User[User] <--> Frontend[React Frontend]
+    Frontend <-->|Tauri IPC| Backend[Rust Backend]
+    Backend <-->|HTTP| ChaoticAPI[Chaotic-AUR API]
+    Backend <-->|HTTP| AURAPI[AUR RPC]
+    Backend <-->|Command| Flatpak[Flatpak CLI]
+    Backend <-->|Command| Pacman[Pacman / Paru]
+    Frontend <-->|REST| Supabase[Community Reviews]
+```
 
-*   **System State (True)**: All supported repositories (`chaotic-aur`, `cachyos`, `garuda`, `multilib`) are **permanently enabled** in `/etc/pacman.d/monarch_repos.conf` upon onboarding.
-*   **User View (Virtual)**: When a user "disables" a repo in the UI, MonARCH simply filters those packages from search results and browsing.
-*   **Benefit**: System updates (`pacman -Syu`) see *all* repositories, ensuring shared libraries (`glibc`, `openssl`) are updated atomically across the entire system, preventing breakage.
+## 2. The Host-Adaptive Repository Layer
+**Module:** `repo_manager.rs`
 
-## 2. "Chaotic-First" Installation Pipeline
+Instead of managing a private database of enabled/disabled repos, MonARCH now uses ALPM (Arch Linux Package Management) to inspect the system state:
+*   **Discovery Mode**: At startup, we read ALPM to see which repositories are *actually* enabled (`cachyos`, `garuda`, `multilib`).
+*   **Safety Guard**: We do not allow enabling `chaotic-aur` on Manjaro systems to prevent glibc incompatibility.
+*   **Result**: If you enable a repo in `/etc/pacman.conf` manually, MonARCH sees it. If you use our toggle, we write a drop-in file to `/etc/pacman.d/monarch/`.
 
-To provide a "Store-like" instant experience, MonARCH prioritizes pre-built binaries over source compilations:
+## 2. Unified Search Aggregator
+**Module:** `search.rs`
 
-1.  **Repo 0: Hardware Optimized** (CachyOS-v3/v4). If the user's CPU supports AVX2/AVX-512, these packages are ranked #0.
-2.  **Repo 1: Chaotic-AUR**. The largest pre-compiled binary repo for AUR packages. Ranked #1.
-3.  **Repo 2: Official Arch**. Standard stable packages. Ranked #2.
-4.  **Repo 3: AUR**. Source builds. Ranked #3 (Last Resort).
+The search engine now operates as a parallel aggregator:
 
-This ensures that clicking "Install" almost always results in a fast, binary download rather than a slow `makepkg` compilation.
+1.  **Frontend Request**: User types "firefox".
+2.  **Parallel Dispatch**: `tokio::join!` launches three concurrent tasks:
+    *   **ALPM/Repo**: Queries local sync databases for official packages.
+    *   **Flathub**: specific CLI/API search for Flatpaks.
+    *   **AUR**: Web query to the AUR RPC interface.
+3.  **Normalization & Merging**: 
+    *   Results are normalized (to lowercase) and keyed by name.
+    *   **Priority Merge**: Official packages overwrite Flatpaks, which overwrite AUR.
+    *   **Source Tracking**: A single `Package` struct now contains `available_sources: ["official", "flatpak", "aur"]`, allowing the UI to present a simple "Source" selector dropdown.
 
-## 2. The "Butterfly" Engine (Distro-Awareness)
+## 3. Native Integration Layers
 
-MonARCH is **Context-Aware** thanks to the `distro_detect.rs` module. It probes `/etc/os-release` at startup to build an `IdentityMatrix`:
+### 📦 Flatpak (The Safety Net)
+**Module:** `flathub_api.rs`
+*   **Integration**: Direct wrapper around the `flatpak` CLI.
+*   **Scope**: User-level operations (`flatpak install --user`) where possible to avoid sudo, or system-level with Polkit.
+*   **Use Case**: Proprietary apps (Spotify, Discord) and sandboxed environments.
 
-*   **IS_MANJARO**: Activates "Stability Guard" (Hide Chaotic-AUR, Warn on AUR).
-*   **IS_ARCH**: Activates "Power User Mode" (Enable all repos, assume base-devel).
-*   **IS_CACHYOS**: Activates "Speed Mode" (Prioritize v3/v4 repos).
+### 🛠️ Native AUR Builder
+**Module:** `aur_api.rs`
+*   **Cloning**: Uses `git2` (libgit2 bindings) for high-performance, native git operations.
+*   **Building**:
+    1.  **Preparation**: Clones to `~/.cache/monarch/aur/<pkg>`.
+    2.  **Inspection**: Parses `.SRCINFO` for dependencies and keys.
+    3.  **Key Import**: Auto-fetches GPG keys (`gpg --recv-keys`).
+    4.  ** Compilation**: Spawns `makepkg` as the **current user** (not root).
+    5.  **Streaming**: Real-time log output is streamed via Tauri Events (`hurd://log`) to the frontend console.
+    6.  **Installation**: Final `.pkg.tar.zst` is installed via the `monarch-helper` (Root/Polkit).
 
-## 3. The Installer Pipeline
+## 4. The Installation Pipeline (Iron Core)
 
-The installation flow uses the **monarch-helper** binary (invoked via `pkexec`) so that all ALPM write operations run in one privileged process. This prevents partial upgrades and split-brain states.
+All system modifications pass through a strict gatekeeper:
 
-*   **GUI (user)**: Validates package name, distro safety, and repo selection; builds a JSON command and writes it to a temp file.
-*   **Helper (root)**: Reads the command from the temp file, runs ALPM transactions. 
-    *   **Config Parsing**: Uses `pacman-conf` to accurately load all repositories and servers, supporting complex `Include` files.
-    *   **The Iron Core (v0.3.6)**: Uses `SafeUpdateTransaction` for atomic reliability.
-    *   **Lock Guard**: Checks `/var/lib/pacman/db.lck` before actions.
-    *   **Strict Safety**: Enforces manual `pacman -Syu` logic (iterating local packages and checking sync DBs for updates) to prevent partial upgrades.
-*   **Safety Rule**: We **never** run `pacman -Sy` alone. Repo installs use `pacman -Syu --needed` in a single transaction; system updates use one full upgrade. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md).
+*   **GUI (User)**: Prepares the intent (JSON).
+*   **Monarch-Helper (Root)**: Invoked via `pkexec`.
+*   **Atomic Transactions**: 
+    *   Standard Installs: `pacman -Syu --needed <pkg>` (Prevents partial upgrades).
+    *   System Update: `pacman -Syu`.
+    *   Lock Guard: Checks `/var/lib/pacman/db.lck`.
 
-### 4. Butterfly System Health & Omni-User (v0.3.5)
-MonARCH includes a permission-aware health monitoring ecosystem and a dual-core UX (simplicity by default, power by choice):
-*   **Butterfly Probes**: Verifies `pkexec`, `git`, and `polkit` health at startup to prevent silent failures.
-*   **Parallel ODRS Integration**: Ratings are fetched concurrently during onboarding/home view for faster load.
-*   **Permission-Safe Sensors**: Health checks are non-privileged, preventing false "Corrupted Keyring" warnings.
-*   **Unified Repair Wizard**: A single authorized maintenance flow for Keyring, Security Policies, and Repo sync.
-*   **Self-Healing**: During install, corrupt sync DBs or locked DB trigger silent repair (force refresh or unlock) and retry—no error pop-up. Helper `force_refresh_sync_dbs` reads `/etc/pacman.conf` directly so recovery works when ALPM is blind. At startup the app calls `needs_startup_unlock()`; if a stale lock exists and **Reduce password prompts** is on, the in-app password is used for unlock so the system prompt does not appear at launch.
-*   **Glass Cockpit**: Settings → General: **Show Detailed Transaction Logs**. Maintenance: **Advanced Repair** (Unlock DB, Fix Keys, Refresh DBs, Clear Cache, Clean Orphans). Repositories: **Test Mirrors** per repo (top 3 mirrors with latency; rate-mirrors/reflector).
+## 5. Unified Update System (Operation "Unified State")
+**Modules:** `commands/update.rs`, `transactions.rs`
 
-### 5. Frontend Stack
-*   **Stack**: React 19, TypeScript, Tailwind CSS 4, Vite 7, Zustand (state), Framer Motion. Key dirs: `src/components/`, `src/pages/`, `src/hooks/`, `src/store/`.
-*   **Layout**: `PackageDetailsFresh.tsx` and other pages use responsive Grid/Flexbox; glassmorphic styling with `backdrop-blur` and semi-transparent layers.
-*   **Components**: Atomic design with `PackageCard.tsx`, `InstallMonitor.tsx`, and shared hooks for metadata, ratings, and favorites.
+*   **Aggregator**: Parallel `check_updates` fetches from all 3 sources simultaneously.
+*   **Execution Engine**: `apply_updates` enforces the **Safety Lock**:
+    > If ANY official package needs updating, the entire batch runs as a system upgrade (`-Syu`), ensuring consistency.
 
-## 6. Linux Native Integration
+### 🔐 Operation "Silent Guard" (Permission Aggregation)
+To solve the "password fatigue" problem (multiple prompts for one action):
+1.  **Protocol**: Frontend sends a `TransactionManifest` (Refresh + Upgrade + Remove + Install) as one packet.
+2.  **Helper**: Acquires the ALPM lock once and executes all steps in sequence.
+3.  **Policy**: Polkit rule `auth_admin_keep` remembers the password for 5 minutes for `com.monarch.store.batch`.
 
-*   **Icons**: Uses standard XDG paths and metadata from AppStream and the Flathub API (for icons/descriptions only; we do not ship or install Flatpak apps).
-*   **Polkit**: Privileged operations use `pkexec` with **monarch-helper** at `/usr/lib/monarch-store/monarch-helper` when installed; Polkit policy and rules allow passwordless installs for authorized users. See [Install & Update Audit](docs/INSTALL_UPDATE_AUDIT.md).
-*   **Helper command**: The GUI writes the JSON command to a temp file and passes only the file path to the helper to avoid argv truncation and ensure reliable installs.
+## 6. Frontend Stack (The Chameleon)
+**Tech**: React 19, TypeScript, Tailwind 4.
+
+*   **Theme Detection**: Uses **XDG Desktop Portals** to detect Dark/Light mode on any desktop (GNOME, KDE, Hyprland).
+*   **Wayland Detection**: Adjusts window rendering strategies (flicker prevention) if `WAYLAND_DISPLAY` is present.
