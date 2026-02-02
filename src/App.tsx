@@ -190,7 +190,7 @@ function App() {
         // 1. Parallel background tasks (sync telemetry from backend so UI reflects user preference)
         fetchInfraStats();
         await useAppStore.getState().checkTelemetry();
-        invoke<{ name: string; enabled: boolean; source: string }[]>('get_repo_states')
+        invoke<{ name: string; enabled: boolean; source: any }[]>('get_repo_states')
           .then(repos => setEnabledRepos(repos.filter(r => r.enabled)))
           .catch((e) => errorService.reportError(e as Error | string));
 

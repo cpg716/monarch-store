@@ -14,7 +14,7 @@ interface SearchPageProps {
     packages: Package[];
     loading: boolean;
     onSelectPackage: (pkg: Package) => void;
-    enabledRepos: { name: string; enabled: boolean; source: string }[];
+    enabledRepos: { name: string; enabled: boolean; source: any }[];
     error?: string | null;
     onRetry?: () => void;
 }
@@ -150,18 +150,19 @@ export default function SearchPage({
                             // Unify Repos into Families
                             const families = new Map<string, { label: string; count: number; sources: string[] }>();
                             enabledRepos.forEach(repo => {
-                                let family = repo.source;
-                                let label = repo.source.charAt(0).toUpperCase() + repo.source.slice(1);
+                                const sourceObj = typeof repo.source === 'string' ? { id: repo.source, label: repo.source, source_type: repo.source } : repo.source;
+                                const family = sourceObj.id;
+                                let label = sourceObj.label || (family.charAt(0).toUpperCase() + family.slice(1));
 
-                                if (repo.source === 'chaotic') label = 'AUR-Binaries';
-                                if (repo.source === 'aur') label = 'AUR-Source';
-                                if (repo.source === 'official') label = 'Official';
-                                if (repo.source === 'manjaro') label = 'Manjaro';
-                                if (repo.source === 'cachyos') label = 'CachyOS';
+                                if (family === 'chaotic-aur') label = 'AUR-Binaries';
+                                if (family === 'aur') label = 'AUR-Source';
+                                if (family === 'official' || family === 'core') label = 'Official';
+                                if (family === 'manjaro') label = 'Manjaro';
+                                if (family === 'cachyos') label = 'CachyOS';
 
                                 const count = (packages || []).filter(p => {
-                                    if (typeof p.source === 'string') return p.source === repo.source;
-                                    return p.source.id === repo.source || p.source.source_type === repo.source;
+                                    const pSourceId = typeof p.source === 'string' ? p.source : p.source.id;
+                                    return pSourceId === family || (typeof p.source !== 'string' && p.source.source_type === family);
                                 }).length;
                                 if (count === 0) return;
 
