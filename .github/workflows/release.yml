@@ -29,10 +29,12 @@ jobs:
           sudo cp usr/include/alpm* /usr/include/
           sudo cp usr/lib/libalpm.so* /usr/lib/x86_64-linux-gnu/
           sudo ln -sf /usr/lib/x86_64-linux-gnu/libalpm.so.13 /usr/lib/x86_64-linux-gnu/libalpm.so
-          # Install libalpm.pc for pkg-config
+          # Install and patch libalpm.pc for pkg-config
           sudo mkdir -p /usr/lib/x86_64-linux-gnu/pkgconfig
           sudo cp usr/lib/pkgconfig/libalpm.pc /usr/lib/x86_64-linux-gnu/pkgconfig/
+          sudo sed -i 's|libdir=${exec_prefix}/lib|libdir=/usr/lib/x86_64-linux-gnu|' /usr/lib/x86_64-linux-gnu/pkgconfig/libalpm.pc
           # Set explicit linkage environment to bypass pkg-config failures
+          echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig" >> $GITHUB_ENV
           echo "LIBALPM_LIBS=-L/usr/lib/x86_64-linux-gnu -lalpm" >> $GITHUB_ENV
           echo "LIBALPM_CFLAGS=-I/usr/include" >> $GITHUB_ENV
 
