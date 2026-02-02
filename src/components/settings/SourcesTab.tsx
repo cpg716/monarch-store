@@ -73,11 +73,17 @@ export default function SourcesTab() {
                     {/* Chaotic-AUR */}
                     <SourceToggle
                         title="Chaotic-AUR"
-                        description="Pre-built community packages. Fast updates, no compiling required."
+                        description={chaoticRepo
+                            ? "Pre-built community packages. Fast updates, no compiling required."
+                            : "Pre-built community packages. Not detected on host system."}
                         enabled={chaoticRepo?.enabled || false}
                         onToggle={() => chaoticRepo && toggleRepo(chaoticRepo.id)}
-                        disabled={isChaoticBlocked}
-                        tooltip={isChaoticBlocked ? "Not available on Manjaro due to stability risks." : undefined}
+                        disabled={isChaoticBlocked || !chaoticRepo}
+                        tooltip={
+                            isChaoticBlocked ? "Not available on Manjaro due to stability risks." :
+                                !chaoticRepo ? "Not available in /etc/pacman.conf. Add the repo to your system configuration to enable." :
+                                    undefined
+                        }
                         icon={<Globe size={20} className="text-purple-500" />}
                         count={repoCounts['chaotic-aur']}
                     />

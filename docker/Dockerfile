@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y \
     gettext \
     git \
     sudo \
+    xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Install Rust (Stable)

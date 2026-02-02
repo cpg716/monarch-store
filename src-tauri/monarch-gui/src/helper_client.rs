@@ -207,23 +207,31 @@ pub async fn invoke_helper(
 
     if force_production && production_path.exists() {
         helper_bin = crate::utils::MONARCH_PK_HELPER.to_string();
-    } else if production_path.exists() {
-        // Installed app or dev with package installed: use production so Polkit matches.
-        helper_bin = crate::utils::MONARCH_PK_HELPER.to_string();
     } else if cfg!(debug_assertions) {
+        // DEV MODE: Always prefer local dev helper if available, ignoring installed production helper.
+        // This ensures developers are running the code they just modified.
         if let Some(dev) = dev_helper_path {
             helper_bin = dev;
         } else {
-            let _ = std::fs::remove_file(&cmd_path);
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let exe = std::env::current_exe().unwrap_or_default();
-            return Err(format!(
-                "Dev helper not found. Build it first: run 'npm run tauri dev' from the project root (builds the helper), or manually: cd src-tauri && cargo build -p monarch-helper. Expected at src-tauri/target/debug/monarch-helper (cwd={}, exe={})",
-                cwd.display(),
-                exe.display()
-            ));
+            // If dev helper missing, fallback to prod if exists, otherwise error
+            if production_path.exists() {
+                helper_bin = crate::utils::MONARCH_PK_HELPER.to_string();
+            } else {
+                let _ = std::fs::remove_file(&cmd_path);
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let exe = std::env::current_exe().unwrap_or_default();
+                return Err(format!(
+                    "Dev helper not found and no production fallback. Build it first: run 'npm run tauri dev' or build monarch-helper. (cwd={}, exe={})",
+                    cwd.display(),
+                    exe.display()
+                ));
+            }
         }
+    } else if production_path.exists() {
+        // RELEASE/INSTALLED: Use production helper
+        helper_bin = crate::utils::MONARCH_PK_HELPER.to_string();
     } else if let Some(dev) = dev_helper_path {
+        // Fallback for standalone release binary running near a dev helper? Unlikely but safe.
         helper_bin = dev;
     }
     // else: helper_bin stays MONARCH_PK_HELPER (spawn will fail if missing)

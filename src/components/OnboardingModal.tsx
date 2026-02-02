@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Zap, Lock, AlertTriangle, Terminal, RefreshCw, Activity } from 'lucide-react';
+import { ChevronRight, Check, Palette, ShieldCheck, Sun, Moon, Lock, Terminal, RefreshCw, Activity, Package, Info } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { useFocusTrap } from '../hooks/useFocusTrap';
@@ -16,79 +16,63 @@ interface OnboardingModalProps {
     reason?: string;
 }
 
-export default function OnboardingModal({ onComplete, reason }: OnboardingModalProps) {
+export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
     const [step, setStep] = useState(0);
     const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
-    const [aurEnabled, setAurEnabled] = useState(false);
     const { requestSessionPassword } = useSessionPassword();
     const errorService = useErrorService();
 
-    // Use store directly for critical reactivity
+    // Store State
     const telemetryEnabled = useAppStore((state: AppState) => state.telemetryEnabled);
     const setTelemetry = useAppStore((state: AppState) => state.setTelemetry);
-    const reducePasswordPrompts = useAppStore((state: AppState) => state.reducePasswordPrompts);
+
     const setReducePasswordPrompts = useAppStore((state: AppState) => state.setReducePasswordPrompts);
 
-    // Atomic local state for ZERO LATENCY UI
-    const [localToggle, setLocalToggle] = useState(telemetryEnabled);
-    useEffect(() => { setLocalToggle(telemetryEnabled); }, [telemetryEnabled]);
+    const [localTelemetry, setLocalTelemetry] = useState(telemetryEnabled);
+    useEffect(() => { setLocalTelemetry(telemetryEnabled); }, [telemetryEnabled]);
 
-    const handleToggle = async () => {
-        const target = !localToggle;
-        setLocalToggle(target); // Immediate visual flip
-        try {
-            await setTelemetry(target);
-        } catch (e) {
-            errorService.reportError(e as Error | string);
-            setLocalToggle(telemetryEnabled); // Rollback visual on error
-        }
+    const handleTelemetryToggle = async () => {
+        const target = !localTelemetry;
+        setLocalTelemetry(target);
+        try { await setTelemetry(target); } catch { setLocalTelemetry(telemetryEnabled); }
     };
 
+    // Sources State
+    const [aurEnabled, setAurEnabled] = useState(false);
+    const [flatpakEnabled, setFlatpakEnabled] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('flatpak-enabled') === 'true');
     const [oneClickEnabled, setOneClickEnabled] = useState(true);
+
     const [isSaving, setIsSaving] = useState(false);
-
-    // System info & CPU optimization (same as Settings > Performance)
     const [systemInfo, setSystemInfo] = useState<{ kernel: string; distro: string; cpu_optimization: string; pacman_version: string } | null>(null);
-    const [prioritizeOptimized, setPrioritizeOptimized] = useState(() => {
-        const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('prioritize-optimized-binaries') : null;
-        return saved === 'true';
-    });
 
-    // System Bootstrap State
+    // Bootstrap State
     const [bootstrapStatus, setBootstrapStatus] = useState<"idle" | "running" | "success" | "error">("idle");
     const [bootstrapError, setBootstrapError] = useState<string | null>(null);
-    const [classifiedError, setClassifiedError] = useState<any | null>(null);
 
+    // Initial Load
+    // Initial Load
     useEffect(() => {
-        let unlisten: any;
-        const setup = async () => {
-            const { listen } = await import('@tauri-apps/api/event');
-            unlisten = await listen('repair-error-classified', (event) => {
-                setClassifiedError(event.payload);
-            });
-        };
-        setup();
-        return () => { if (unlisten) unlisten(); };
+        invoke<any>('get_system_info').then(setSystemInfo).catch(e => errorService.reportError(e));
+        invoke<boolean>('is_aur_enabled').then(setAurEnabled).catch(e => errorService.reportError(e));
     }, []);
 
-    // Call these hooks unconditionally and early (Rules of Hooks)
     useEscapeKey(onComplete, true);
     const focusTrapRef = useFocusTrap(true);
 
     const enableSystem = async (): Promise<boolean> => {
         setBootstrapStatus("running");
         setBootstrapError(null);
-        setClassifiedError(null);
         try {
-            // One password for entire setup (Apple Store–like): ask once, reuse for all steps.
             const pwd = await requestSessionPassword();
-            // Refactored: Call fix_keyring_issues instead of missing bootstrap_system
             await invoke("fix_keyring_issues", { password: pwd });
+            // Also set the one-click preference in backend if enabled
+            if (oneClickEnabled) {
+                await invoke('set_one_click_enabled', { enabled: true, password: null }).catch(() => { });
+            }
             setBootstrapStatus("success");
-            localStorage.setItem('monarch_infra_v2_2', 'true'); // Keep infra flag
-            localStorage.setItem('monarch_onboarding_v3', 'true'); // Set migration flag early just in case
+            localStorage.setItem('monarch_infra_v2_2', 'true');
             return true;
-        } catch (e: unknown) {
+        } catch (e) {
             errorService.reportError(e as Error | string);
             setBootstrapError(String(e));
             setBootstrapStatus("error");
@@ -96,40 +80,17 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         }
     };
 
-    // Initial Load & System Detection
-    useEffect(() => {
-        invoke<any>('get_system_info').then(info => {
-            setSystemInfo(info);
-            // On CachyOS or when CPU supports v3/v4/znver4, default "prioritize optimized" to ON
-            const isCachyOS = (info.distro || '').toLowerCase().includes('cachyos');
-            const hasCpuOpt = info.cpu_optimization && info.cpu_optimization !== 'None';
-            const saved = localStorage.getItem('prioritize-optimized-binaries');
-            if (saved === null && (isCachyOS || hasCpuOpt)) {
-                setPrioritizeOptimized(true);
-                localStorage.setItem('prioritize-optimized-binaries', 'true');
-            }
-        }).catch((e) => errorService.reportError(e as Error | string));
-
-        invoke<boolean>('is_aur_enabled').then(setAurEnabled).catch((e) => errorService.reportError(e as Error | string));
-    }, [errorService]);
-
     const handleFinish = async () => {
         setIsSaving(true);
         try {
             await invoke('set_aur_enabled', { enabled: aurEnabled });
-
-            // Finalize settings
+            localStorage.setItem('flatpak-enabled', String(flatpakEnabled));
             localStorage.setItem('monarch_onboarding_v3', 'true');
-            await setTelemetry(localToggle).catch(() => { }); // Persist telemetry choice before event
+            await setTelemetry(localTelemetry).catch(() => { });
 
             invoke('track_event', {
                 event: 'onboarding_completed',
-                payload: {
-                    step_count: steps.length,
-                    aur_enabled: aurEnabled,
-                    telemetry_enabled: localToggle,
-                    completed_at_step: steps.length,
-                },
+                payload: { aur_enabled: aurEnabled, flatpak_enabled: flatpakEnabled, telemetry_enabled: localTelemetry }
             }).catch(() => { });
 
             await new Promise(r => setTimeout(r, 800));
@@ -142,24 +103,17 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         }
     };
 
-    // Refactored Steps: Condensed and aligned with Host Detection philosophy
     const steps = [
-        { title: "Session password", subtitle: "Enter once for this setup.", color: "bg-amber-600", icon: <Lock size={24} className="text-white" /> },
-        { title: "Security & Performance", subtitle: "Keyring & optimizations.", color: "bg-emerald-600", icon: <ShieldCheck size={24} className="text-white" /> },
-        { title: "AUR", subtitle: "Community-built packages.", color: "bg-amber-600", icon: <Lock size={24} className="text-white" /> },
+        { title: "Welcome & Setup", subtitle: "Security, permissions & one-click.", color: "bg-blue-600", icon: <ShieldCheck size={24} className="text-white" /> },
+        { title: "Package Sources", subtitle: "AUR, Flatpak & Repositories.", color: "bg-amber-600", icon: <Package size={24} className="text-white" /> },
         { title: "Privacy", subtitle: "Anonymous usage stats.", color: "bg-teal-600", icon: <Activity size={24} className="text-white" /> },
         { title: "Theme", subtitle: "Light, dark & accent.", color: "bg-pink-600", icon: <Palette size={24} className="text-white" /> },
     ];
 
     const nextStep = () => {
-        if (step === 0) { /* Password: always allow */ }
-        else if (step === 1 && bootstrapStatus !== 'success') return;
-
-        if (step < steps.length - 1) {
-            setStep(step + 1);
-        } else {
-            handleFinish();
-        }
+        if (step === 0 && bootstrapStatus !== 'success') return; // Must complete setup
+        if (step < steps.length - 1) setStep(step + 1);
+        else handleFinish();
     };
 
     const safeStep = Math.min(step, steps.length - 1);
@@ -171,380 +125,205 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                 ref={focusTrapRef}
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="w-full max-w-2xl h-[min(65vh,380px)] max-h-[min(65vh,380px)] bg-app-card border border-app-border rounded-xl shadow-2xl overflow-hidden flex flex-col md:flex-row flex-shrink-0"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="onboarding-title"
+                className="w-full max-w-3xl h-[min(70vh,500px)] max-h-[min(70vh,500px)] bg-app-card border border-app-border rounded-xl shadow-2xl overflow-hidden flex flex-col md:flex-row flex-shrink-0"
+                role="dialog" aria-modal="true"
             >
-                {/* Left panel: step branding (old style), never scrolls */}
+                {/* Branding Panel */}
                 <div className={clsx("w-full md:w-5/12 flex flex-col transition-colors duration-500 relative overflow-hidden shrink-0", stepInfo.color)}>
-                    <div className="absolute inset-0 opacity-5 pointer-events-none" aria-hidden>
-                        <svg width="100%" height="100%"><pattern id="onboarding-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" strokeWidth="1" /></pattern><rect width="100%" height="100%" fill="url(#onboarding-grid)" /></svg>
+                    <div className="absolute inset-0 opacity-5 pointer-events-none">
+                        <svg width="100%" height="100%"><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" strokeWidth="1" /></pattern><rect width="100%" height="100%" fill="url(#grid)" /></svg>
                     </div>
-                    {/* Frosted top band: readable on all step colors */}
-                    <div className="relative z-10 shrink-0 bg-white/50 backdrop-blur-lg pt-4 pb-3 px-4 md:pt-5 md:pb-4 md:px-5 flex justify-center items-center rounded-b-xl shadow-[inset_0_1px_0_0_rgba(255,255,255,0.6)]">
-                        <img
-                            src={logoFull}
-                            alt="MonARCH Store"
-                            className="h-12 w-auto object-contain drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)]"
-                        />
+                    <div className="relative z-10 bg-white/50 backdrop-blur-lg p-5 flex justify-center items-center shadow-sm">
+                        <img src={logoFull} alt="MonARCH Store" className="h-10 w-auto object-contain" />
                     </div>
-                    <div className="relative z-10 flex flex-col flex-1 min-h-0 p-4 md:p-6 pt-2 md:pt-3">
-                        {reason && (
-                            <div className="bg-amber-500/20 text-white p-2.5 rounded-xl border border-amber-500/30 mb-3 text-[10px] leading-tight shrink-0">
-                                {reason}
-                            </div>
-                        )}
-                        <div id="onboarding-title" className="text-white/70 font-black tracking-widest text-[10px] uppercase mb-3 shrink-0" aria-live="polite">Step {safeStep + 1} / {steps.length}</div>
-                        <div className="flex-1 flex flex-col items-center justify-center text-center space-y-3 min-h-0 py-2">
-                            <div className="bg-white/20 p-4 md:p-5 rounded-full backdrop-blur-sm shrink-0">{stepInfo.icon}</div>
-                            <h2 className="text-lg md:text-xl font-black text-white leading-tight">{stepInfo.title}</h2>
-                            <p className="text-white/80 text-xs md:text-sm max-w-[200px]">{stepInfo.subtitle}</p>
-                        </div>
-                        <div className="flex justify-center gap-1.5 shrink-0">
-                            {steps.map((_, i) => (
-                                <div key={i} className={clsx("h-1 rounded-full transition-all", i === step ? "w-5 bg-white" : "w-1 bg-white/40")} />
-                            ))}
-                        </div>
+                    <div className="relative z-10 flex-1 flex flex-col p-6 items-center justify-center text-center space-y-4">
+                        <div className="bg-white/20 p-5 rounded-full backdrop-blur-sm">{stepInfo.icon}</div>
+                        <h2 className="text-2xl font-black text-white">{stepInfo.title}</h2>
+                        <p className="text-white/80 text-sm max-w-[200px]">{stepInfo.subtitle}</p>
+                    </div>
+                    <div className="p-4 flex justify-center gap-2">
+                        {steps.map((_, i) => <div key={i} className={clsx("h-1.5 rounded-full transition-all", i === step ? "w-6 bg-white" : "w-1.5 bg-white/40")} />)}
                     </div>
                 </div>
-                {/* Right panel: compact content */}
-                <div className="w-full md:w-7/12 flex flex-col min-h-0 flex-1 bg-app-bg overflow-hidden">
-                    <div className="flex-1 min-h-0 overflow-y-auto p-2.5 md:p-3 flex flex-col items-center justify-center">
+
+                {/* Content Panel */}
+                <div className="w-full md:w-7/12 bg-app-bg flex flex-col min-h-0">
+                    <div className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center">
                         <AnimatePresence mode="wait">
-                            {/* Step 0: Session password */}
+
+                            {/* STEP 0: WELCOME & SETUP */}
                             {step === 0 && (
-                                <motion.div key="step0" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="space-y-1.5 w-full max-w-sm">
-                                    <h3 className="text-sm font-bold text-app-fg">Session password (optional)</h3>
-                                    <p className="text-app-muted text-[11px] leading-snug">
-                                        Enter once for this setup; we won’t store it. You can change this in Settings later.
-                                    </p>
-                                    <div className="bg-amber-500/10 border border-amber-500/20 p-2.5 rounded-lg space-y-2">
-                                        <div className="flex items-center justify-between gap-2">
-                                            <div className="min-w-0">
-                                                <h4 className="text-xs font-bold text-amber-500 flex items-center gap-1.5">
-                                                    <Lock size={12} />
-                                                    Fewer password prompts
-                                                </h4>
-                                                <p className="text-[10px] text-app-muted">One entry for installs during this session.</p>
+                                <motion.div key="step0" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full space-y-6">
+                                    <div className="space-y-2 text-center">
+                                        <h3 className="text-lg font-bold text-app-fg">Initialize System</h3>
+                                        <p className="text-sm text-app-muted">Prepare keyrings and security policies for software installation.</p>
+                                    </div>
+
+                                    {/* Merged Password & One-Click Toggle */}
+                                    <div className="bg-app-card border border-app-border p-4 rounded-xl space-y-4">
+                                        <div className="flex items-center justify-between gap-4">
+                                            <div className="space-y-0.5">
+                                                <div className="font-bold text-sm text-app-fg flex items-center gap-2">
+                                                    <Lock size={14} className="text-blue-500" /> One-Click Authentication
+                                                </div>
+                                                <p className="text-[11px] text-app-muted max-w-[220px]">
+                                                    {oneClickEnabled
+                                                        ? "Enabled: Ask for password once per launch."
+                                                        : "Off: System will prompt for every action."
+                                                    }
+                                                </p>
                                             </div>
                                             <button
-                                                type="button"
-                                                role="switch"
-                                                aria-checked={reducePasswordPrompts}
-                                                aria-label={reducePasswordPrompts ? "Disable fewer password prompts" : "Enable fewer password prompts"}
-                                                onClick={() => setReducePasswordPrompts(!reducePasswordPrompts)}
-                                                className={clsx(
-                                                    "w-9 h-4 rounded-full p-0.5 transition-all shrink-0",
-                                                    reducePasswordPrompts ? "bg-amber-500" : "bg-app-fg/20"
-                                                )}
+                                                onClick={() => {
+                                                    setOneClickEnabled(!oneClickEnabled);
+                                                    setReducePasswordPrompts(!oneClickEnabled);
+                                                }}
+                                                className={clsx("w-11 h-6 rounded-full p-1 transition-colors shrink-0", oneClickEnabled ? "bg-blue-600" : "bg-app-fg/20")}
                                             >
-                                                <div className={clsx(
-                                                    "w-3 h-3 bg-white rounded-full transition-transform duration-200",
-                                                    reducePasswordPrompts ? "translate-x-4" : "translate-x-0"
-                                                )} />
+                                                <div className={clsx("w-4 h-4 bg-white rounded-full transition-transform", oneClickEnabled ? "translate-x-5" : "translate-x-0")} />
                                             </button>
                                         </div>
-                                        {reducePasswordPrompts && (
-                                            <div className="pt-1.5 border-t border-amber-500/20">
-                                                <button
-                                                    type="button"
-                                                    onClick={async () => {
-                                                        try {
-                                                            await requestSessionPassword();
-                                                        } catch (e) {
-                                                            errorService.reportError(e as Error | string);
-                                                        }
-                                                    }}
-                                                    className="w-full py-2 rounded-lg font-semibold text-xs bg-amber-500/20 text-amber-500 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
-                                                >
-                                                    Enter password now
-                                                </button>
+                                    </div>
+
+                                    {/* Action Area */}
+                                    <div className="space-y-3">
+                                        {bootstrapStatus === 'success' ? (
+                                            <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-xl flex items-center gap-3">
+                                                <div className="p-2 bg-emerald-500 rounded-full text-white"><Check size={18} /></div>
+                                                <div>
+                                                    <div className="font-bold text-emerald-500 text-sm">System Ready</div>
+                                                    <div className="text-[11px] text-emerald-500/80">Keyrings and policies configured.</div>
+                                                </div>
                                             </div>
+                                        ) : (
+                                            <>
+                                                {bootstrapError && <div className="text-xs text-red-500 bg-red-500/10 p-3 rounded-lg">{bootstrapError}</div>}
+                                                <button
+                                                    onClick={enableSystem}
+                                                    disabled={bootstrapStatus === 'running'}
+                                                    className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50"
+                                                >
+                                                    {bootstrapStatus === 'running' ? <RefreshCw size={18} className="animate-spin" /> : <ShieldCheck size={18} />}
+                                                    {bootstrapStatus === 'running' ? "Configuring..." : "Setup Security & Continue"}
+                                                </button>
+                                                <p className="text-[10px] text-center text-app-muted">This will require your password once.</p>
+                                            </>
                                         )}
                                     </div>
                                 </motion.div>
                             )}
 
-                            {/* Step 1: Security setup (bootstrap / One-Click) */}
+                            {/* STEP 1: SOURCES (AUR + Flatpak + Host Logic) */}
                             {step === 1 && (
-                                <motion.div key="step1" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="space-y-1.5 w-full max-w-sm">
-                                    <h3 className="text-sm font-bold text-app-fg">Security & one-click install</h3>
-                                    <p className="text-app-muted text-[11px]">We’ll set up keyrings and permissions so installs work. One click = one password for this session.</p>
+                                <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full space-y-5">
+                                    <div className="text-center space-y-1">
+                                        <h3 className="text-lg font-bold text-app-fg">Package Sources</h3>
+                                        <p className="text-sm text-app-muted">Expand your catalog beyond official repositories.</p>
+                                    </div>
 
-                                    {bootstrapStatus !== 'success' ? (
-                                        <div className="bg-app-card border border-app-border p-2.5 rounded-lg flex flex-col items-center gap-1.5 w-full">
-                                            <div className="p-2 rounded-full bg-emerald-500/10 text-emerald-500">
-                                                <ShieldCheck size={28} className={bootstrapStatus === 'running' ? "animate-pulse" : ""} />
-                                            </div>
-                                            {!bootstrapStatus || bootstrapStatus === 'idle' || bootstrapStatus === 'error' ? (
-                                                <>
-                                                    <div className="bg-app-bg border border-app-border p-2 rounded-lg space-y-1.5 w-full">
-                                                        <div className="flex items-center justify-between gap-2">
-                                                            <div className="min-w-0">
-                                                                <h4 className="text-xs font-bold text-app-fg">One-click install</h4>
-                                                                <p className="text-[10px] text-app-muted">
-                                                                    {oneClickEnabled
-                                                                        ? "Recommended: one password for this session."
-                                                                        : <span className="text-orange-500 font-semibold">Off: you’ll be asked each time.</span>
-                                                                    }
-                                                                </p>
-                                                            </div>
-                                                            <button
-                                                                onClick={() => setOneClickEnabled(!oneClickEnabled)}
-                                                                className={clsx(
-                                                                    "w-9 h-4 rounded-full p-0.5 transition-all shrink-0",
-                                                                    oneClickEnabled ? "bg-blue-600" : "bg-app-fg/20"
-                                                                )}
-                                                            >
-                                                                <div className={clsx(
-                                                                    "w-3 h-3 bg-white rounded-full transition-transform",
-                                                                    oneClickEnabled ? "translate-x-4" : "translate-x-0"
-                                                                )} />
-                                                            </button>
-                                                        </div>
-                                                    </div>
-
-                                                    {systemInfo?.cpu_optimization && systemInfo.cpu_optimization !== 'None' && (
-                                                        (systemInfo.distro || '').toLowerCase().includes('cachyos') ? (
-                                                            <div className="bg-app-bg border border-app-border p-2 rounded-lg w-full flex items-center gap-1.5">
-                                                                <Zap size={10} className="text-purple-500 shrink-0" />
-                                                                <p className="text-[10px] text-app-muted">
-                                                                    <span className="font-semibold text-app-fg">Optimized binaries:</span> automatic on CachyOS. Change in Settings.
-                                                                </p>
-                                                            </div>
-                                                        ) : (
-                                                            <div className="bg-app-bg border border-app-border p-2 rounded-lg w-full flex items-center justify-between gap-2">
-                                                                <div className="min-w-0">
-                                                                    <h4 className="text-xs font-bold text-app-fg flex items-center gap-1">
-                                                                        <Zap size={10} className="text-purple-500 shrink-0" />
-                                                                        Optimized binaries
-                                                                    </h4>
-                                                                    <p className="text-[10px] text-app-muted">Use {systemInfo.cpu_optimization.toUpperCase()} for better performance.</p>
-                                                                </div>
-                                                                <button
-                                                                    type="button"
-                                                                    role="switch"
-                                                                    aria-checked={prioritizeOptimized}
-                                                                    onClick={() => {
-                                                                        const newVal = !prioritizeOptimized;
-                                                                        setPrioritizeOptimized(newVal);
-                                                                        localStorage.setItem('prioritize-optimized-binaries', String(newVal));
-                                                                    }}
-                                                                    className={clsx(
-                                                                        "w-9 h-4 rounded-full p-0.5 transition-all shrink-0",
-                                                                        prioritizeOptimized ? "bg-purple-500" : "bg-app-fg/20"
-                                                                    )}
-                                                                >
-                                                                    <div className={clsx(
-                                                                        "w-3 h-3 bg-white rounded-full transition-transform",
-                                                                        prioritizeOptimized ? "translate-x-4" : "translate-x-0"
-                                                                    )} />
-                                                                </button>
-                                                            </div>
-                                                        )
-                                                    )}
-
-                                                    <div className="flex flex-col gap-2 w-full">
-                                                        {classifiedError ? (
-                                                            <div className="bg-red-500/10 border border-red-500/20 p-2.5 rounded-lg space-y-1 animate-in slide-in-from-bottom-2">
-                                                                <div className="flex items-center gap-1.5 text-red-500 font-bold text-[10px] uppercase tracking-wider">
-                                                                    <AlertTriangle size={12} />
-                                                                    {classifiedError.title}
-                                                                </div>
-                                                                <p className="text-[10px] text-red-500/90 leading-tight">{classifiedError.description}</p>
-                                                                <div className="h-10 overflow-hidden bg-black/20 rounded p-1.5 font-mono text-[8px] opacity-60">
-                                                                    {classifiedError.raw_message}
-                                                                </div>
-                                                            </div>
-                                                        ) : bootstrapError && (
-                                                            <div className="bg-red-500/10 border border-red-500/20 p-2 rounded-lg text-[10px] text-red-500 font-mono overflow-hidden max-h-14">
-                                                                <span className="font-bold block mb-0.5">Error:</span>
-                                                                {bootstrapError}
-                                                            </div>
-                                                        )}
-
-                                                        <button onClick={enableSystem} className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5">
-                                                            <Terminal size={14} /> {bootstrapStatus === 'error' ? "Retry" : "Set up keyring"}
-                                                        </button>
-
-                                                        {bootstrapStatus === 'error' && (
-                                                            <button
-                                                                onClick={() => setBootstrapStatus('success')}
-                                                                className="w-full py-1.5 text-[10px] font-semibold text-app-muted hover:text-app-fg transition-colors"
-                                                            >
-                                                                Skip (may leave repos broken)
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <div className="text-center py-2">
-                                                    <RefreshCw className="animate-spin mx-auto text-emerald-500 mb-0.5" size={22} />
-                                                    <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">Setting up...</p>
-                                                </div>
-                                            )}
-                                        </div>
-                                    ) : (
-                                        <div className="bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-lg flex flex-col gap-1.5 w-full">
-                                            <div className="flex items-center gap-2 w-full">
-                                                <div className="p-2 bg-emerald-500 rounded-full shrink-0">
-                                                    <Check size={16} className="text-white" />
-                                                </div>
+                                    <div className="space-y-3">
+                                        {/* AUR Toggle */}
+                                        <div onClick={() => setAurEnabled(!aurEnabled)} className={clsx("cursor-pointer border rounded-xl p-3.5 flex items-center justify-between transition-colors", aurEnabled ? "bg-amber-500/10 border-amber-500/50" : "bg-app-card border-app-border")}>
+                                            <div className="flex gap-3 items-center">
+                                                <div className={clsx("p-2 rounded-lg", aurEnabled ? "bg-amber-500 text-white" : "bg-app-fg/5 text-app-muted")}><Terminal size={18} /></div>
                                                 <div>
-                                                    <h4 className="text-xs font-bold text-emerald-500">Ready</h4>
-                                                    <p className="text-[10px] text-app-muted">Security set up.</p>
+                                                    <div className="font-bold text-sm text-app-fg">AUR Support</div>
+                                                    <div className="text-[10px] text-app-muted">Community packages (build from source).</div>
                                                 </div>
                                             </div>
-                                            <div className="w-full bg-app-card/50 p-2 rounded-lg border border-app-border flex items-center justify-between">
-                                                <div>
-                                                    <h4 className="text-[10px] font-bold text-app-fg">One-click</h4>
-                                                    <p className="text-[9px] text-app-muted">{oneClickEnabled ? "On" : "Off"}</p>
-                                                </div>
-                                                <button
-                                                    onClick={async () => {
-                                                        const newVal = !oneClickEnabled;
-                                                        setOneClickEnabled(newVal);
-                                                        try { await invoke('set_one_click_enabled', { enabled: newVal, password: null }); } catch (e) { errorService.reportError(e as Error | string); }
-                                                    }}
-                                                    className={clsx("w-9 h-4 rounded-full p-0.5 transition-all", oneClickEnabled ? "bg-emerald-500" : "bg-app-fg/20")}
-                                                >
-                                                    <div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", oneClickEnabled ? "translate-x-4" : "translate-x-0")} />
-                                                </button>
+                                            <div className={clsx("w-10 h-5 rounded-full p-1 transition-colors", aurEnabled ? "bg-amber-500" : "bg-app-fg/20")}>
+                                                <div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", aurEnabled ? "translate-x-5" : "translate-x-0")} />
                                             </div>
-                                            {systemInfo?.cpu_optimization && systemInfo.cpu_optimization !== 'None' && (
-                                                (systemInfo.distro || '').toLowerCase().includes('cachyos') ? (
-                                                    <div className="w-full bg-app-card/50 p-2 rounded-lg border border-app-border flex items-center gap-1.5">
-                                                        <Zap size={10} className="text-purple-500 shrink-0" />
-                                                        <p className="text-[9px] text-app-muted">Optimized binaries: automatic on CachyOS.</p>
-                                                    </div>
-                                                ) : (
-                                                    <div className="w-full bg-app-card/50 p-2 rounded-lg border border-app-border flex items-center justify-between">
-                                                        <span className="text-[10px] font-medium text-app-fg">Optimized: {systemInfo.cpu_optimization.toUpperCase()}</span>
-                                                        <button type="button" role="switch" aria-checked={prioritizeOptimized} onClick={() => { const v = !prioritizeOptimized; setPrioritizeOptimized(v); localStorage.setItem('prioritize-optimized-binaries', String(v)); }} className={clsx("w-9 h-4 rounded-full p-0.5 shrink-0", prioritizeOptimized ? "bg-purple-500" : "bg-app-fg/20")}>
-                                                            <div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", prioritizeOptimized ? "translate-x-4" : "translate-x-0")} />
-                                                        </button>
-                                                    </div>
-                                                )
-                                            )}
                                         </div>
-                                    )}
+
+                                        {/* Flatpak Toggle */}
+                                        <div onClick={() => setFlatpakEnabled(!flatpakEnabled)} className={clsx("cursor-pointer border rounded-xl p-3.5 flex items-center justify-between transition-colors", flatpakEnabled ? "bg-sky-500/10 border-sky-500/50" : "bg-app-card border-app-border")}>
+                                            <div className="flex gap-3 items-center">
+                                                <div className={clsx("p-2 rounded-lg", flatpakEnabled ? "bg-sky-500 text-white" : "bg-app-fg/5 text-app-muted")}><Package size={18} /></div>
+                                                <div>
+                                                    <div className="font-bold text-sm text-app-fg">Flatpak Support</div>
+                                                    <div className="text-[10px] text-app-muted">Sandboxed, universal applications.</div>
+                                                </div>
+                                            </div>
+                                            <div className={clsx("w-10 h-5 rounded-full p-1 transition-colors", flatpakEnabled ? "bg-sky-500" : "bg-app-fg/20")}>
+                                                <div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", flatpakEnabled ? "translate-x-5" : "translate-x-0")} />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Host-Adaptive Info Block */}
+                                    <div className="bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl p-3.5 flex gap-3">
+                                        <div className="shrink-0"><Info size={18} className="text-blue-500" /></div>
+                                        <div className="space-y-1">
+                                            <h4 className="font-bold text-xs text-app-fg flex items-center gap-1.5">
+                                                Host-Adaptive Repositories
+                                                <span className="px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-600 text-[9px] uppercase tracking-wide">{systemInfo?.distro || "Linux"}</span>
+                                            </h4>
+                                            <p className="text-[10px] text-app-muted leading-relaxed">
+                                                We detected your distribution. To use extra repositories like
+                                                <span className="font-mono text-app-fg mx-1">Chaotic-AUR</span> or
+                                                <span className="font-mono text-app-fg mx-1">CachyOS</span>,
+                                                add them to your system's <code className="bg-black/10 dark:bg-white/10 px-1 rounded">/etc/pacman.conf</code>.
+                                                MonARCH will detect and enable them automatically.
+                                            </p>
+                                        </div>
+                                    </div>
                                 </motion.div>
                             )}
 
-                            {/* Step 2: AUR */}
+                            {/* STEP 2: PRIVACY */}
                             {step === 2 && (
-                                <motion.div key="step2" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="space-y-4 w-full max-w-sm">
-                                    <h3 className="text-sm font-bold text-app-fg">Arch User Repository</h3>
-                                    <p className="text-app-muted text-[11px] leading-snug">
-                                        Access community-built packages. Build from source; huge catalog of apps.
-                                    </p>
-                                    <div
-                                        onClick={() => setAurEnabled(!aurEnabled)}
-                                        className={clsx(
-                                            "cursor-pointer border rounded-lg p-3 transition-all flex items-center justify-between",
-                                            aurEnabled ? "border-amber-500 bg-amber-500/10" : "border-app-border bg-app-card"
-                                        )}
-                                    >
-                                        <div className="flex items-center gap-2">
-                                            <div className={clsx("p-1.5 rounded", aurEnabled ? "bg-amber-500/20 text-amber-500" : "bg-app-fg/5 text-app-muted")}>
-                                                <Lock size={14} />
+                                <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full space-y-6">
+                                    <div className="text-center space-y-1">
+                                        <h3 className="text-lg font-bold text-app-fg">Privacy</h3>
+                                        <p className="text-sm text-app-muted">We respect your data. Opt-in only.</p>
+                                    </div>
+                                    <div onClick={handleTelemetryToggle} className={clsx("cursor-pointer border rounded-xl p-4 flex items-center justify-between transition-colors", localTelemetry ? "bg-teal-500/10 border-teal-500/50" : "bg-app-card border-app-border")}>
+                                        <div className="flex gap-3 items-center">
+                                            <div className={clsx("p-2 rounded-lg", localTelemetry ? "bg-teal-500 text-white" : "bg-app-fg/5 text-app-muted")}><Activity size={18} /></div>
+                                            <div>
+                                                <div className="font-bold text-sm text-app-fg">Anonymous Telemetry</div>
+                                                <div className="text-[10px] text-app-muted">Share basic usage stats to help improvement.</div>
                                             </div>
-                                            <span className="font-bold text-app-fg text-xs">Enable AUR support</span>
                                         </div>
-                                        <div className={clsx("w-8 h-4 rounded-full p-0.5 transition-all shrink-0", aurEnabled ? "bg-amber-500" : "bg-app-fg/20")}>
-                                            <div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", aurEnabled ? "translate-x-3.5" : "translate-x-0")} />
+                                        <div className={clsx("w-10 h-5 rounded-full p-1 transition-colors", localTelemetry ? "bg-teal-500" : "bg-app-fg/20")}>
+                                            <div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", localTelemetry ? "translate-x-5" : "translate-x-0")} />
                                         </div>
                                     </div>
                                 </motion.div>
                             )}
 
-                            {/* Step 3: Privacy */}
+                            {/* STEP 3: THEME */}
                             {step === 3 && (
-                                <motion.div key="step3" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="space-y-4 w-full max-w-sm">
-                                    <h3 className="text-sm font-bold text-app-fg">Privacy</h3>
-                                    <p className="text-app-muted text-[11px] leading-snug">
-                                        Help us improve with anonymous usage statistics. No personal data is ever collected.
-                                    </p>
-                                    <div
-                                        onClick={handleToggle}
-                                        className={clsx(
-                                            "cursor-pointer border rounded-lg p-3 transition-all flex items-center justify-between",
-                                            localToggle ? "border-teal-500 bg-teal-500/10" : "border-app-border bg-app-card"
-                                        )}
-                                    >
-                                        <div className="flex items-center gap-2">
-                                            <div className={clsx("p-1.5 rounded", localToggle ? "bg-teal-500/20 text-teal-500" : "bg-app-fg/5 text-app-muted")}>
-                                                <Activity size={14} />
-                                            </div>
-                                            <span className="font-bold text-app-fg text-xs">Share anonymous stats</span>
-                                        </div>
-                                        <div className={clsx("w-8 h-4 rounded-full p-0.5 transition-all shrink-0", localToggle ? "bg-teal-500" : "bg-app-fg/20")}>
-                                            <div className={clsx("w-3 h-3 bg-white rounded-full transition-transform", localToggle ? "translate-x-3.5" : "translate-x-0")} />
-                                        </div>
+                                <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="w-full space-y-6">
+                                    <div className="text-center space-y-1">
+                                        <h3 className="text-lg font-bold text-app-fg">Appearance</h3>
+                                        <p className="text-sm text-app-muted">Make it yours.</p>
                                     </div>
-                                </motion.div>
-                            )}
-
-                            {/* Step 4: Theme */}
-                            {step === 4 && (
-                                <motion.div key="step4" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="w-full max-w-sm space-y-4">
-                                    <h3 className="text-sm font-bold text-app-fg">Theme</h3>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        <button
-                                            onClick={() => setThemeMode('light')}
-                                            className={clsx(
-                                                "p-3 rounded-lg border flex flex-col items-center gap-1.5 transition-all text-app-fg hover:bg-app-fg/5",
-                                                themeMode === 'light' ? "border-app-accent bg-app-accent/10" : "border-app-border bg-app-card"
-                                            )}
-                                        >
-                                            <Sun size={20} />
-                                            <span className="font-bold text-[10px] uppercase tracking-wider">Light</span>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <button onClick={() => setThemeMode('light')} className={clsx("p-4 rounded-xl border flex flex-col items-center gap-2", themeMode === 'light' ? "border-pink-500 bg-pink-500/5 text-pink-600" : "border-app-border bg-app-card text-app-muted opacity-60 hover:opacity-100")}>
+                                            <Sun size={24} /> <span className="text-xs font-bold uppercase">Light</span>
                                         </button>
-                                        <button
-                                            onClick={() => setThemeMode('dark')}
-                                            className={clsx(
-                                                "p-3 rounded-lg border flex flex-col items-center gap-1.5 transition-all text-app-fg hover:bg-app-fg/5",
-                                                themeMode === 'dark' ? "border-app-accent bg-app-accent/10" : "border-app-border bg-app-card"
-                                            )}
-                                        >
-                                            <Moon size={20} />
-                                            <span className="font-bold text-[10px] uppercase tracking-wider">Dark</span>
+                                        <button onClick={() => setThemeMode('dark')} className={clsx("p-4 rounded-xl border flex flex-col items-center gap-2", themeMode === 'dark' ? "border-pink-500 bg-pink-500/5 text-pink-600" : "border-app-border bg-app-card text-app-muted opacity-60 hover:opacity-100")}>
+                                            <Moon size={24} /> <span className="text-xs font-bold uppercase">Dark</span>
                                         </button>
                                     </div>
-                                    <div className="flex justify-center gap-2.5 pt-2">
-                                        {['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'].map((c) => (
-                                            <button
-                                                key={c}
-                                                onClick={() => setAccentColor(c)}
-                                                className={clsx(
-                                                    "w-7 h-7 rounded-full border-2 transition-transform hover:scale-110",
-                                                    accentColor === c ? "border-app-fg ring-2 ring-app-fg/20" : "border-transparent"
-                                                )}
-                                                style={{ backgroundColor: c }}
-                                            />
+                                    <div className="flex justify-center gap-3 pt-2">
+                                        {['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'].map(c => (
+                                            <button key={c} onClick={() => setAccentColor(c)} className={clsx("w-8 h-8 rounded-full border-2 hover:scale-110 transition-transform", accentColor === c ? "border-app-fg ring-2 ring-app-fg/20" : "border-transparent")} style={{ backgroundColor: c }} />
                                         ))}
                                     </div>
                                 </motion.div>
                             )}
+
                         </AnimatePresence>
                     </div>
+
                     {/* Footer */}
-                    <div className="shrink-0 flex justify-between items-center px-2.5 md:px-3 py-2 border-t border-app-border bg-app-bg">
-                        <button onClick={() => setStep(step - 1)} disabled={step === 0 || isSaving} className={clsx("text-xs font-bold transition-colors px-3 py-1.5 rounded-lg", step === 0 ? "opacity-0 pointer-events-none" : "text-app-muted hover:text-app-fg hover:bg-app-fg/5")}>Back</button>
-                        <button
-                            onClick={nextStep}
-                            disabled={
-                                isSaving ||
-                                (step === 1 && bootstrapStatus !== 'success')
-                            }
-                            className={clsx(
-                                "text-white px-5 py-2 rounded-lg font-bold text-xs active:scale-95 transition-all flex items-center gap-1.5 shadow-lg uppercase tracking-wider",
-                                (isSaving || (step === 1 && bootstrapStatus !== 'success')) ? "opacity-40 grayscale cursor-not-allowed" : "hover:opacity-90 hover:scale-[1.02]"
-                            )}
-                            style={{ backgroundColor: accentColor }}
-                        >
-                            {isSaving ? "Finalizing…" : <>{step === steps.length - 1 ? "Get started" : "Next"} <ChevronRight size={14} /></>}
+                    <div className="p-4 border-t border-app-border bg-app-bg flex justify-between items-center">
+                        <button onClick={() => setStep(step - 1)} disabled={step === 0 || isSaving} className={clsx("px-4 py-2 rounded-lg text-xs font-bold transition-all", step === 0 ? "opacity-0 pointer-events-none" : "text-app-muted hover:bg-app-fg/5")}>Back</button>
+                        <button onClick={nextStep} disabled={isSaving || (step === 0 && bootstrapStatus !== 'success')} className={clsx("px-6 py-2 rounded-lg text-xs font-bold text-white shadow-lg transition-all flex items-center gap-2", (isSaving || (step === 0 && bootstrapStatus !== 'success')) ? "opacity-30 cursor-not-allowed grayscale" : "hover:opacity-90 active:scale-95")} style={{ backgroundColor: accentColor }}>
+                            {isSaving ? "Finalizing..." : <>{step === steps.length - 1 ? "Start Using MonARCH" : "Next Step"} <ChevronRight size={14} /></>}
                         </button>
                     </div>
                 </div>

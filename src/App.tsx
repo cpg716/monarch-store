@@ -242,7 +242,7 @@ function App() {
           if (needsSync) {
             try {
               const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-              // Write monarch repo configs to disk first so launch sync includes them (e.g. Chaotic-AUR).
+              // Refresh databases on launch (Atomic Sync). App respects system pacman.conf.
               await invoke('apply_os_config', { password: pwd ?? null });
               await invoke('sync_system_databases', { password: pwd });
             } catch (e) {

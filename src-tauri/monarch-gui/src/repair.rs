@@ -429,12 +429,10 @@ pub async fn check_initialization_status() -> Result<InitializationStatus, Strin
         reasons.push("System GPG keyring is missing or uninitialized.".to_string());
     }
 
-    // 3. Check Migration (Modular Include)
-    let conf = std::fs::read_to_string("/etc/pacman.conf").unwrap_or_default();
-    let needs_migration = !conf.contains("/etc/pacman.d/monarch/*.conf");
-    if needs_migration {
-        reasons.push("System is not using the MonARCH modular pacman configuration.".to_string());
-    }
+    // 3. [REMOVED] Check Migration (Modular Include) - Host-Adaptive Model does not enforce this.
+    // let conf = std::fs::read_to_string("/etc/pacman.conf").unwrap_or_default();
+    // let needs_migration = !conf.contains("/etc/pacman.d/monarch/*.conf");
+    let needs_migration = false;
 
     // 4. Check Sync DB health (read-only; detects corrupt core.db / extra.db / multilib.db)
     let needs_sync_db_repair = check_sync_db_corrupt().await;

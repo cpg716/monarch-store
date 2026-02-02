@@ -80,12 +80,13 @@ fn is_corrupt_db_error(err: &str) -> bool {
     err.contains("Unrecognized archive format") || err.contains("could not open database")
 }
 
-fn check_db_freshness(repos_to_check: &[String]) -> bool {
+fn check_db_freshness(alpm: &Alpm) -> bool {
     let sync_dir = std::path::Path::new("/var/lib/pacman/sync");
     let one_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
     let mut any_db_exists = false;
 
-    for repo in repos_to_check {
+    for db in alpm.syncdbs().iter() {
+        let repo = db.name();
         let db_file = sync_dir.join(format!("{}.db", repo));
         let Ok(metadata) = std::fs::metadata(&db_file) else {
             logger::trace(&format!(
@@ -111,26 +112,6 @@ fn check_db_freshness(repos_to_check: &[String]) -> bool {
     false
 }
 
-pub fn get_enabled_repos_from_config() -> Vec<String> {
-    extract_repos_from_config()
-}
-
-fn extract_repos_from_config() -> Vec<String> {
-    let mut repos = Vec::new();
-    if let Ok(content) = std::fs::read_to_string("/etc/pacman.conf") {
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with('[') && line.ends_with(']') {
-                let section = &line[1..line.len() - 1];
-                if section != "options" {
-                    repos.push(section.to_string());
-                }
-            }
-        }
-    }
-    repos
-}
-
 pub fn force_refresh_sync_dbs(alpm: &mut Alpm) -> Result<(), String> {
     emit_simple_progress(5, "Force refreshing sync databases...");
     let sync_dir = std::path::Path::new("/var/lib/pacman/sync");
@@ -144,25 +125,32 @@ pub fn force_refresh_sync_dbs(alpm: &mut Alpm) -> Result<(), String> {
     }
     emit_simple_progress(25, "Cleared local sync database cache");
 
-    let enabled_repos = extract_repos_from_config();
-    if enabled_repos.is_empty() {
-        return Err("No repositories found in pacman.conf".to_string());
+    match alpm.syncdbs_mut().update(true) {
+        Ok(_) => {
+            emit_simple_progress(100, "Sync databases refreshed");
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
     }
-
-    if let Err(e) = execute_alpm_sync(enabled_repos, alpm) {
-        return Err(e);
-    }
-    emit_simple_progress(100, "Sync databases refreshed");
-    Ok(())
 }
 
-fn ensure_keyrings_updated(enabled_repos: &[String]) -> Result<(), String> {
+fn ensure_keyrings_updated(alpm: &Alpm) -> Result<(), String> {
     emit_simple_progress(1, "Pre-Flight: Verifying security keys...");
     let mut targets = vec!["archlinux-keyring"];
-    if enabled_repos.iter().any(|r| r.contains("chaotic")) {
+
+    let has_chaotic = alpm
+        .syncdbs()
+        .iter()
+        .any(|db| db.name().contains("chaotic"));
+    let has_cachy = alpm
+        .syncdbs()
+        .iter()
+        .any(|db| db.name().contains("cachyos"));
+
+    if has_chaotic {
         targets.push("chaotic-keyring");
     }
-    if enabled_repos.iter().any(|r| r.contains("cachyos")) {
+    if has_cachy {
         targets.push("cachyos-keyring");
     }
 
@@ -185,20 +173,18 @@ fn ensure_keyrings_updated(enabled_repos: &[String]) -> Result<(), String> {
 pub fn execute_alpm_install(
     packages: Vec<String>,
     sync_first: bool,
-    enabled_repos: Vec<String>,
-    cpu_optimization: Option<String>,
+    _cpu_optimization: Option<String>,
     target_repo: Option<String>,
     alpm: &mut Alpm,
 ) -> Result<(), String> {
-    if let Err(e) = ensure_keyrings_updated(&enabled_repos) {
+    if let Err(e) = ensure_keyrings_updated(alpm) {
         logger::warn(&format!("Keyring pre-flight failed: {}", e));
     }
 
     emit_simple_progress(5, "Initializing transaction...");
-    let config_repos = get_enabled_repos_from_config();
 
     if sync_first {
-        if check_db_freshness(&config_repos) {
+        if check_db_freshness(alpm) {
             emit_simple_progress(10, "Synchronizing databases...");
             if let Err(e) = alpm.syncdbs_mut().update(false) {
                 let err = e.to_string();
@@ -212,44 +198,35 @@ pub fn execute_alpm_install(
         }
     }
 
-    let priority_order = build_priority_order(&enabled_repos, &cpu_optimization);
     emit_simple_progress(20, "Resolving packages...");
 
-    let mut found_packages = Vec::new();
+    // ATTEMPT 1: Lookup in current DBs
+    let mut found_packages = lookup_packages(alpm, &packages, &target_repo);
 
-    for pkg_name in &packages {
-        let mut found = false;
-        if let Some(tr) = &target_repo {
-            if let Some(db) = alpm.syncdbs().iter().find(|d| d.name() == tr) {
-                if let Ok(pkg) = db.pkg(pkg_name.as_str()) {
-                    found_packages.push(pkg);
-                    found = true;
-                }
-            }
-        } else {
-            for db_name in &priority_order {
-                if let Some(db) = alpm.syncdbs().iter().find(|d| d.name() == db_name.as_str()) {
-                    if let Ok(pkg) = db.pkg(pkg_name.as_str()) {
-                        found_packages.push(pkg);
-                        found = true;
-                        break;
-                    }
-                }
-            }
+    // If failed, FORCE SYNC and RETRY
+    if found_packages.len() != packages.len() {
+        emit_simple_progress(15, "Package not found locally. Syncing databases...");
+        if let Err(e) = alpm.syncdbs_mut().update(true) {
+            logger::warn(&format!("Database sync warning: {}", e));
+            // Don't error out yet, maybe the package is there but sync failed partially
         }
-        if !found {
-            return Err(format!(
-                "Package {} not found in enabled repositories",
-                pkg_name
-            ));
-        }
+        // ATTEMPT 2: Retry Lookup
+        found_packages = lookup_packages(alpm, &packages, &target_repo);
+    }
+
+    // Final Check
+    if found_packages.len() != packages.len() {
+        return Err(format!(
+            "Package(s) not found in enabled repositories even after sync: {:?}",
+            packages
+        ));
     }
 
     alpm.trans_init(TransFlag::ALL_DEPS)
         .map_err(|e| e.to_string())?;
 
-    for pkg in found_packages {
-        alpm.trans_add_pkg(pkg).map_err(|e| e.to_string())?;
+    for pkg in &found_packages {
+        alpm.trans_add_pkg(*pkg).map_err(|e| e.to_string())?;
     }
 
     // Safety: If we synced databases (sync_first), we MUST perform a full system upgrade
@@ -262,8 +239,7 @@ pub fn execute_alpm_install(
             for db in alpm.syncdbs() {
                 if let Ok(sync_pkg) = db.pkg(local.name()) {
                     if sync_pkg.version() > local.version() {
-                        // Try to add update. If already added (e.g. it's the target pkg), this might error or be no-op.
-                        // We ignore error to be safe.
+                        // Try to add update. available package is usually a reference
                         let _ = alpm.trans_add_pkg(sync_pkg);
                         break;
                     }
@@ -323,7 +299,7 @@ pub fn execute_alpm_install(
     }
 }
 
-pub fn execute_alpm_check_updates_safe(_enabled_repos: Vec<String>, _system_alpm: &mut Alpm) {
+pub fn execute_alpm_check_updates_safe(_alpm: &mut Alpm) {
     emit_simple_progress(
         5,
         "Safe Update Check: Initializing temporary environment...",
@@ -428,18 +404,14 @@ pub fn execute_alpm_uninstall(
     }
 }
 
-pub fn execute_alpm_upgrade(
-    packages: Option<Vec<String>>,
-    enabled_repos: Vec<String>,
-    alpm: &mut Alpm,
-) -> Result<(), String> {
+pub fn execute_alpm_upgrade(packages: Option<Vec<String>>, alpm: &mut Alpm) -> Result<(), String> {
     if packages.is_some() {
         logger::info(
             "AlpmUpgrade with package list: doing full system upgrade (Arch does not support partial upgrades).",
         );
     }
 
-    ensure_keyrings_updated(&enabled_repos)?;
+    ensure_keyrings_updated(alpm)?;
 
     // RETRY LOOP: Scoped manually to avoid borrow checker issues
     let mut retry_needed = false;
@@ -571,11 +543,9 @@ pub fn execute_alpm_upgrade(
 }
 
 pub fn execute_alpm_install_files(paths: Vec<String>, alpm: &mut Alpm) -> Result<(), String> {
-    ensure_keyrings_updated(&vec![])?;
+    ensure_keyrings_updated(alpm)?;
     emit_simple_progress(5, "Initializing local install...");
 
-    alpm.trans_init(TransFlag::ALL_DEPS)
-        .map_err(|e| e.to_string())?;
     for path in paths {
         let pkg = alpm
             .pkg_load(path.as_str(), true, SigLevel::USE_DEFAULT)
@@ -611,10 +581,6 @@ pub fn execute_alpm_sync(repos: Vec<String>, alpm: &mut Alpm) -> Result<(), Stri
     }
 }
 
-fn build_priority_order(repos: &[String], _cpu: &Option<String>) -> Vec<String> {
-    repos.to_vec()
-}
-
 fn setup_progress_callbacks(alpm: &mut Alpm) -> Result<(), String> {
     // Callback signatures fixed for alpm 5.x
     // Ignoring download events for now to simplify type checking
@@ -632,4 +598,32 @@ fn setup_progress_callbacks(alpm: &mut Alpm) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+fn lookup_packages<'a>(
+    alpm: &'a Alpm,
+    packages: &[String],
+    target_repo: &Option<String>,
+) -> Vec<&'a alpm::Package> {
+    let mut found_packages: Vec<&'a alpm::Package> = Vec::new();
+    for pkg_name in packages {
+        if let Some(tr) = target_repo {
+            for db in alpm.syncdbs() {
+                if db.name() == tr {
+                    if let Ok(pkg) = db.pkg(pkg_name.as_str()) {
+                        found_packages.push(pkg);
+                        break;
+                    }
+                }
+            }
+        } else {
+            for db in alpm.syncdbs() {
+                if let Ok(pkg) = db.pkg(pkg_name.as_str()) {
+                    found_packages.push(pkg);
+                    break;
+                }
+            }
+        }
+    }
+    found_packages
 }

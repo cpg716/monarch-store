@@ -68,6 +68,16 @@ impl PackageSource {
     pub fn cachyos() -> Self {
         Self::new("repo", "cachyos", "latest", "CachyOS")
     }
+
+    #[allow(dead_code)]
+    pub fn aur() -> Self {
+        Self::new("aur", "aur", "latest", "AUR")
+    }
+
+    #[allow(dead_code)]
+    pub fn manjaro() -> Self {
+        Self::new("repo", "manjaro", "latest", "Manjaro Official")
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

@@ -2,7 +2,7 @@ import { createContext, useState, useCallback, useRef, ReactNode } from 'react';
 import { Lock } from 'lucide-react';
 import { useAppStore } from '../store/internal_store';
 
-const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours (effectively "until app close")
 
 // Module-level cache so password is not in React state; cleared on use or expiry
 let cachedPassword: string | null = null;
@@ -68,8 +68,8 @@ export function SessionPasswordProvider({ children }: { children: ReactNode }) {
                                 <Lock size={24} className="text-amber-500" />
                             </div>
                             <div>
-                                <h3 className="font-bold text-app-fg text-lg">Password for this session</h3>
-                                <p className="text-xs text-app-muted mt-0.5">Enter once; used for installs and repairs for about 15 minutes. Not stored. Less secure than system prompt each time.</p>
+                                <h3 className="font-bold text-app-fg text-lg">MonARCH One-Click Auth</h3>
+                                <p className="text-xs text-app-muted mt-0.5">Enter your password once to authorize MonARCH for this session. It will be cleared from memory when you close the app.</p>
                             </div>
                         </div>
                         <input

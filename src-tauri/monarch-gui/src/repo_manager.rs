@@ -96,15 +96,9 @@ impl RepoManager {
         std::fs::create_dir_all(&config_path).unwrap_or_default();
         // let config_file = config_path.join("repos.json"); // Not used for state init anymore directly here, but later
 
-        // Default Repos - We only actively manage Chaotic-AUR.
+        // Default Repos - We only actively manage specific ones if found.
         // Everything else must be discovered from the host system.
         let mut initial_repos = vec![
-            RepoConfig {
-                name: "chaotic-aur".to_string(),
-                url: "https://cdn-mirror.chaotic.cx/chaotic-aur/x86_64/chaotic-aur.db".to_string(),
-                source: PackageSource::chaotic(),
-                enabled: false, // Default to false, check disk
-            },
             // Official Repos (We keep these for UI structure, but their enabled state comes from system)
             RepoConfig {
                 name: "core".to_string(),
@@ -132,20 +126,8 @@ impl RepoManager {
             },
         ];
 
-        // TRUTH FROM DISK (Modular Config Strategy)
-        // 1. Check /etc/pacman.d/monarch/50-{name}.conf for Monarch-managed repos (like chaotic-aur)
-        let monarch_conf_dir = std::path::Path::new("/etc/pacman.d/monarch");
-
-        for repo in &mut initial_repos {
-            // Chaotic-AUR is managed by Monarch via specialized config files
-            if repo.name == "chaotic-aur" {
-                let conf_name = format!("50-{}.conf", repo.name);
-                let path = monarch_conf_dir.join(conf_name);
-                if path.exists() {
-                    repo.enabled = true;
-                }
-            }
-        }
+        // host-adaptive: we no longer check /etc/pacman.d/monarch for manual config files.
+        // The authority is ALPM (below).
 
         // 2. DISCOVER HOST REPOS via ALPM
         // We look at what the system currently has enabled to populate the list with valid local repos.
@@ -552,7 +534,8 @@ impl RepoManager {
         // We no longer modify pacman.conf or manage .conf files directly via HelperCommand::{WriteFiles, RemoveFiles}.
         // The application now uses Host Detection to respect system-provided repositories.
 
-        // If we still need to trigger a sync (e.g. after user manually added a repo), we use ExecuteBatch.
+        // Host-Adaptive: We assume the user has configured pacman.conf manually or via other tools.
+        // We do trigger a DB refresh to ensure our cache is up to date with the system.
         let mut rx = invoke_helper(
             app,
             HelperCommand::ExecuteBatch {

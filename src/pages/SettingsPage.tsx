@@ -175,7 +175,7 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                                     <ToggleSetting
                                         icon={<Key size={20} className="text-amber-500" />}
                                         title="One-Click Authentication"
-                                        description="Store password in volatile memory for the current session to reduce prompts."
+                                        description="Authorize MonARCH once per session instead of system prompting for every action."
                                         enabled={reducePasswordPrompts}
                                         onToggle={() => setReducePasswordPrompts(!reducePasswordPrompts)}
                                     />

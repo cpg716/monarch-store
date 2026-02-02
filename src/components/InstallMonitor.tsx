@@ -664,6 +664,16 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => setShowLogs(!showLogs)}
+                            className={clsx(
+                                "p-2 rounded-lg transition-colors border",
+                                showLogs ? "bg-app-fg/10 text-app-fg border-app-fg/10" : "text-app-muted hover:bg-app-fg/5 border-transparent"
+                            )}
+                            title={showLogs ? "Hide Logs" : "Show Transaction Logs"}
+                        >
+                            <Terminal size={18} />
+                        </button>
                         {status === 'running' && (
                             <>
                                 <button

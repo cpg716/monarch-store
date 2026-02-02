@@ -810,7 +810,7 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
         HelperCommand::AlpmInstall {
             packages,
             sync_first,
-            enabled_repos,
+            enabled_repos: _,
             cpu_optimization,
             target_repo,
         } => {
@@ -821,17 +821,16 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 transactions::execute_alpm_install(
                     packages.clone(),
                     sync_first,
-                    enabled_repos.clone(),
                     cpu_optimization.clone(),
                     target_repo.clone(),
                     alpm,
                 )
             });
         }
-        HelperCommand::CheckUpdatesSafe { enabled_repos } => {
+        HelperCommand::CheckUpdatesSafe { enabled_repos: _ } => {
             // Safe Check: Does NOT require ensure_db_ready() because it uses a temp DB path
             // and does not lock the main pacman lock.
-            transactions::execute_alpm_check_updates_safe(enabled_repos, alpm);
+            transactions::execute_alpm_check_updates_safe(alpm);
         }
         HelperCommand::AlpmUninstall {
             packages,
@@ -922,9 +921,7 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
 
             // 2. System Upgrade
             if manifest.update_system {
-                // We use the empty config repos here by default or pull from config as execute_alpm_upgrade does internally
-                let config_repos = transactions::get_enabled_repos_from_config();
-                if let Err(e) = transactions::execute_alpm_upgrade(None, config_repos, alpm) {
+                if let Err(e) = transactions::execute_alpm_upgrade(None, alpm) {
                     emit_progress(0, &format!("Error upgrading system: {}", e));
                     return;
                 }
@@ -952,15 +949,12 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
 
             let mut installed_anything = false;
 
-            // 4a. Install Repo Packages
             if !manifest.install_targets.is_empty() {
-                let config_repos = transactions::get_enabled_repos_from_config();
                 // sync_first false because we handled it in step 1 if needed
                 // cpu strictness default (None)
                 if let Err(e) = transactions::execute_alpm_install(
                     manifest.install_targets.clone(),
                     false,
-                    config_repos,
                     None,
                     None,
                     alpm,

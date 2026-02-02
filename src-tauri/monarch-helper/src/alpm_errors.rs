@@ -20,7 +20,9 @@ pub fn classify_alpm_error(error_msg: &str) -> AlpmClassifiedError {
         return AlpmClassifiedError {
             kind: "DatabaseLocked".to_string(),
             title: "Database Locked".to_string(),
-            description: "Another package manager is running or a previous operation was interrupted.".to_string(),
+            description:
+                "Another package manager is running or a previous operation was interrupted."
+                    .to_string(),
             recovery_action: Some("UnlockDatabase".to_string()),
             raw_message: error_msg.to_string(),
         };
@@ -52,7 +54,9 @@ pub fn classify_alpm_error(error_msg: &str) -> AlpmClassifiedError {
         return AlpmClassifiedError {
             kind: "KeyringError".to_string(),
             title: "Security Key Issue".to_string(),
-            description: "Package signatures could not be verified. Your keyring may need to be refreshed.".to_string(),
+            description:
+                "Package signatures could not be verified. Your keyring may need to be refreshed."
+                    .to_string(),
             recovery_action: Some("RepairKeyring".to_string()),
             raw_message: error_msg.to_string(),
         };
@@ -67,7 +71,7 @@ pub fn classify_alpm_error(error_msg: &str) -> AlpmClassifiedError {
         return AlpmClassifiedError {
             kind: "PackageNotFound".to_string(),
             title: "Package Not Found".to_string(),
-            description: "The package could not be found. It may have been renamed, removed, or your repositories need syncing.".to_string(),
+            description: "The package could not be found. It may have been renamed, removed, or your repositories need syncing. Ensure the repository is enabled in /etc/pacman.conf.".to_string(),
             recovery_action: Some("ForceRefreshDb".to_string()),
             raw_message: error_msg.to_string(),
         };
@@ -104,7 +108,9 @@ pub fn classify_alpm_error(error_msg: &str) -> AlpmClassifiedError {
     }
 
     // makepkg "An unknown error has occurred" — toolchain, permissions, or stale build dir
-    if msg_lower.contains("unknown error has occurred") || msg_lower.contains("an unknown error has occurred") {
+    if msg_lower.contains("unknown error has occurred")
+        || msg_lower.contains("an unknown error has occurred")
+    {
         return AlpmClassifiedError {
             kind: "MakepkgUnknownError".to_string(),
             title: "AUR Build Failed (Unknown Error)".to_string(),
