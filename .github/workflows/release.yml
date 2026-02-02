@@ -27,15 +27,15 @@ jobs:
             sudo apt-get install -y --no-install-recommends pkg-config
           fi
 
-      - name: synthesize libalpm (Hardened Hybrid v14)
+      - name: synthesize libalpm (Hardened Hybrid v16)
         run: |
           mkdir -p alpm-tmp
           cd alpm-tmp
-          wget https://archive.archlinux.org/packages/p/pacman/pacman-6.0.1-4-x86_64.pkg.tar.zst
-          tar -I zstd -xvf pacman-6.0.1-4-x86_64.pkg.tar.zst
+          wget https://archive.archlinux.org/packages/p/pacman/pacman-7.1.1-1-x86_64.pkg.tar.zst
+          tar -I zstd -xvf pacman-7.1.1-1-x86_64.pkg.tar.zst
           sudo cp usr/include/alpm* /usr/include/
           sudo cp usr/lib/libalpm.so* /usr/lib/x86_64-linux-gnu/
-          sudo ln -sf /usr/lib/x86_64-linux-gnu/libalpm.so.13 /usr/lib/x86_64-linux-gnu/libalpm.so
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libalpm.so.16 /usr/lib/x86_64-linux-gnu/libalpm.so
           # Install and hardened patch libalpm.pc for pkg-config
           sudo mkdir -p /usr/lib/x86_64-linux-gnu/pkgconfig
           sudo cp usr/lib/pkgconfig/libalpm.pc /usr/lib/x86_64-linux-gnu/pkgconfig/
