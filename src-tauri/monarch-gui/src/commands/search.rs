@@ -154,6 +154,14 @@ pub async fn search_packages(
                         match_key = Some(k.clone());
                         break;
                     }
+
+                    // Check explicit Mapping (repo_base -> com.brave.Browser)
+                    if let Some(mapped) = crate::flathub_api::get_flathub_app_id(repo_base) {
+                        if mapped.eq_ignore_ascii_case(&hit.app_id) {
+                            match_key = Some(k.clone());
+                            break;
+                        }
+                    }
                 }
             }
 
