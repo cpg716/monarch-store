@@ -32,13 +32,9 @@ jobs:
           wget https://gitlab.archlinux.org/pacman/pacman/-/archive/v7.0.0/pacman-v7.0.0.tar.gz
           tar -xzf pacman-v7.0.0.tar.gz
           cd pacman-v7.0.0
-          meson setup build --prefix=/usr --buildtype=release -Ddoc=disabled -Ddoxygen=disabled
+          meson setup build --prefix=/usr --libdir=/usr/lib --buildtype=release -Ddoc=disabled -Ddoxygen=disabled
           ninja -C build
           sudo ninja -C build install
-          # Fix pkg-config setup for Ubuntu runner interaction
-          echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig" >> $GITHUB_ENV
-          echo "LIBALPM_LIBS=$(pkg-config --libs libalpm)" >> $GITHUB_ENV
-          echo "LIBALPM_CFLAGS=$(pkg-config --cflags libalpm)" >> $GITHUB_ENV
 
       - uses: actions/checkout@v4
 
@@ -83,9 +79,12 @@ jobs:
           # Pass hardened environment variables into the action sub-shell
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: /usr/bin/clang
           RUSTFLAGS: ""
+          # Bypass pkg-config and force manual linkage
+          LIBALPM_NO_PKG_CONFIG: "1"
+          ALPM_LIB_DIR: "/usr/lib"
+          ALPM_INCLUDE_DIR: "/usr/include"
+          # Standard env vars for safety
           PKG_CONFIG_PATH: "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig"
-          LIBALPM_LIBS: "-L/usr/lib/x86_64-linux-gnu -L/usr/lib -lalpm"
-          LIBALPM_CFLAGS: "-I/usr/include"
         with:
           projectPath: './src-tauri/monarch-gui'
           tagName: v0.3.6-alpha
