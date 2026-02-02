@@ -107,7 +107,7 @@ interface CategoryViewProps {
 interface RepoState {
     name: string;
     enabled: boolean;
-    source: string;
+    source: any;
 }
 
 // ... imports
@@ -137,9 +137,10 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
     const LIMIT = 50;
 
     // Helper
-    const getRepoLabel = (source: string) => {
+    const getRepoLabel = (source: any) => {
+        const sourceId = typeof source === 'string' ? source : source.id;
         const labels: Record<string, string> = {
-            'chaotic': 'Chaotic-AUR',
+            'chaotic-aur': 'Chaotic-AUR',
             'official': 'Official',
             'aur': 'AUR',
             'cachyos': 'CachyOS',
@@ -147,7 +148,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
             'endeavour': 'EndeavourOS',
             'manjaro': 'Manjaro'
         };
-        return labels[source] || source.charAt(0).toUpperCase() + source.slice(1);
+        return labels[sourceId] || (typeof sourceId === 'string' ? sourceId.charAt(0).toUpperCase() + sourceId.slice(1) : 'Unknown');
     };
 
     // Helper for display labels
@@ -355,87 +356,87 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
 
             <div className="flex-1 overflow-y-auto p-8">
                 <div className="max-w-7xl mx-auto w-full">
-                {initialLoad && packages.length === 0 ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-                        {[...Array(10)].map((_, i) => (
-                            <PackageCardSkeleton key={i} />
-                        ))}
-                    </div>
-                ) : error ? (
-                    <EmptyState
-                        variant="error"
-                        title="Failed to load Apps"
-                        description={`We couldn't load apps for ${displayLabel}.\n${error}`}
-                        actionLabel="Retry"
-                        onAction={() => fetchApps(true)}
-                    />
-                ) : packages.length === 0 ? (
-                    <EmptyState
-                        title="No apps found"
-                        description={`No applications found${!repoFilter.includes('all') ? ` in selected repos` : ' in this category'}. Try selecting a different repo.`}
-                        actionLabel={!repoFilter.includes('all') ? "Show All Repos" : undefined}
-                        onAction={!repoFilter.includes('all') ? () => setRepoFilter(['all']) : undefined}
-                    />
-                ) : (
-                    <>
-                        {/* Conditional Featured Section */}
-                        {(() => {
-                            // Only split view if sorting by "featured" and on first page (or full list)
-                            // If we have paginated data, the "featured" items should be at the top of the first page.
-                            const showFeaturedSplit = sortBy === 'featured';
-                            const featured = showFeaturedSplit ? packages.filter(p => p.is_featured) : [];
-                            const others = showFeaturedSplit ? packages.filter(p => !p.is_featured) : packages;
+                    {initialLoad && packages.length === 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                            {[...Array(10)].map((_, i) => (
+                                <PackageCardSkeleton key={i} />
+                            ))}
+                        </div>
+                    ) : error ? (
+                        <EmptyState
+                            variant="error"
+                            title="Failed to load Apps"
+                            description={`We couldn't load apps for ${displayLabel}.\n${error}`}
+                            actionLabel="Retry"
+                            onAction={() => fetchApps(true)}
+                        />
+                    ) : packages.length === 0 ? (
+                        <EmptyState
+                            title="No apps found"
+                            description={`No applications found${!repoFilter.includes('all') ? ` in selected repos` : ' in this category'}. Try selecting a different repo.`}
+                            actionLabel={!repoFilter.includes('all') ? "Show All Repos" : undefined}
+                            onAction={!repoFilter.includes('all') ? () => setRepoFilter(['all']) : undefined}
+                        />
+                    ) : (
+                        <>
+                            {/* Conditional Featured Section */}
+                            {(() => {
+                                // Only split view if sorting by "featured" and on first page (or full list)
+                                // If we have paginated data, the "featured" items should be at the top of the first page.
+                                const showFeaturedSplit = sortBy === 'featured';
+                                const featured = showFeaturedSplit ? packages.filter(p => p.is_featured) : [];
+                                const others = showFeaturedSplit ? packages.filter(p => !p.is_featured) : packages;
 
-                            return (
-                                <>
-                                    {showFeaturedSplit && featured.length > 0 && (
-                                        <div className="mb-8">
-                                            <h2 className="text-lg font-bold text-app-fg mb-4 flex items-center gap-2">
-                                                <span className="text-yellow-500">★</span> Featured Applications
-                                            </h2>
-                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-                                                {featured.map((pkg) => (
-                                                    <PackageCard
-                                                        key={`feat-${pkg.name}`}
-                                                        pkg={pkg}
-                                                        onClick={() => handleSelectPackage(pkg)}
-                                                        chaoticInfo={chaoticInfoMap.get(pkg.name)}
-                                                    />
-                                                ))}
-                                            </div>
-                                            <div className="h-px bg-app-border/50 my-6" />
-                                            <h2 className="text-lg font-bold text-app-fg mb-4">All Applications</h2>
-                                        </div>
-                                    )}
-
-                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-                                        {others.map((pkg, index) => {
-                                            const isLast = index === others.length - 1;
-                                            return (
-                                                <div key={pkg.name} ref={isLast ? lastElementRef : null}>
-                                                    <PackageCard
-                                                        pkg={pkg}
-                                                        onClick={() => handleSelectPackage(pkg)}
-                                                        chaoticInfo={chaoticInfoMap.get(pkg.name)}
-                                                    />
+                                return (
+                                    <>
+                                        {showFeaturedSplit && featured.length > 0 && (
+                                            <div className="mb-8">
+                                                <h2 className="text-lg font-bold text-app-fg mb-4 flex items-center gap-2">
+                                                    <span className="text-yellow-500">★</span> Featured Applications
+                                                </h2>
+                                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                                                    {featured.map((pkg) => (
+                                                        <PackageCard
+                                                            key={`feat-${pkg.name}`}
+                                                            pkg={pkg}
+                                                            onClick={() => handleSelectPackage(pkg)}
+                                                            chaoticInfo={chaoticInfoMap.get(pkg.name)}
+                                                        />
+                                                    ))}
                                                 </div>
-                                            );
-                                        })}
-                                    </div>
-                                </>
-                            );
-                        })()}
+                                                <div className="h-px bg-app-border/50 my-6" />
+                                                <h2 className="text-lg font-bold text-app-fg mb-4">All Applications</h2>
+                                            </div>
+                                        )}
 
-                        {/* Loading More Indicator */}
-                        {loading && !initialLoad && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 mt-4">
-                                {[...Array(5)].map((_, i) => (
-                                    <PackageCardSkeleton key={`more-${i}`} />
-                                ))}
-                            </div>
-                        )}
-                    </>
-                )}
+                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                                            {others.map((pkg, index) => {
+                                                const isLast = index === others.length - 1;
+                                                return (
+                                                    <div key={pkg.name} ref={isLast ? lastElementRef : null}>
+                                                        <PackageCard
+                                                            pkg={pkg}
+                                                            onClick={() => handleSelectPackage(pkg)}
+                                                            chaoticInfo={chaoticInfoMap.get(pkg.name)}
+                                                        />
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </>
+                                );
+                            })()}
+
+                            {/* Loading More Indicator */}
+                            {loading && !initialLoad && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 mt-4">
+                                    {[...Array(5)].map((_, i) => (
+                                        <PackageCardSkeleton key={`more-${i}`} />
+                                    ))}
+                                </div>
+                            )}
+                        </>
+                    )}
                 </div>
             </div>
         </div>
