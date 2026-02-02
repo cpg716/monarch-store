@@ -29,9 +29,9 @@ jobs:
 
       - name: build libalpm from source (v7.0.0)
         run: |
-          wget https://github.com/archlinux/pacman/archive/refs/tags/v7.0.0.tar.gz
-          tar -xzf v7.0.0.tar.gz
-          cd pacman-7.0.0
+          wget https://gitlab.archlinux.org/pacman/pacman/-/archive/v7.0.0/pacman-v7.0.0.tar.gz
+          tar -xzf pacman-v7.0.0.tar.gz
+          cd pacman-v7.0.0
           meson setup build --prefix=/usr --buildtype=release -Ddoc=disabled -Ddoxygen=disabled
           ninja -C build
           sudo ninja -C build install
