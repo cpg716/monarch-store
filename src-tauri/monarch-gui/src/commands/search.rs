@@ -135,34 +135,63 @@ pub async fn search_packages(
     // B. Process Flatpak
     if let Some(hits) = flatpak_res {
         for hit in hits {
-            // Try to map Flatpak AppID to a known package name if possible (Reverse Map)
-            // Or simple normalization of Name ("Firefox" -> "firefox")
-            // We also check mapped ID from flathub_api if available in future,
-            // but here we just use the hit.name or app_id as potential key.
+            // --- SMART MERGE LOGIC ---
+            // 1. Exact Name Match
+            let direct_key = normalize_name(&hit.name);
 
-            // Heuristic: Use normalized name
-            let key = normalize_name(&hit.name);
+            // 2. App ID Suffix Match (e.g. com.visualstudio.code -> code)
+            let suffix_key = hit
+                .app_id
+                .split('.')
+                .last()
+                .map(normalize_name)
+                .unwrap_or_default();
 
-            // Check if exists
-            if let Some(existing) = package_map.get_mut(&key) {
-                // UPDATE existing
-                // Add Flatpak to sources
-                if let Some(sources) = &mut existing.available_sources {
-                    if !sources.iter().any(|s| s.source_type == "flatpak") {
-                        sources.push(PackageSource::new(
-                            "flatpak",
-                            "flathub",
-                            "latest",
-                            "Flatpak (Sandboxed)",
-                        ));
+            // 3. Find Match in Map
+            let mut match_key = None;
+
+            // Priority 1: Direct Name Match
+            if package_map.contains_key(&direct_key) {
+                match_key = Some(direct_key.clone());
+            }
+            // Priority 2: Suffix Match (if different)
+            else if !suffix_key.is_empty() && package_map.contains_key(&suffix_key) {
+                match_key = Some(suffix_key.clone());
+            }
+            // Priority 3: Scan for matching App ID (Metadata link)
+            else {
+                for (k, pkg) in &package_map {
+                    if let Some(pkg_id) = &pkg.app_id {
+                        if pkg_id.eq_ignore_ascii_case(&hit.app_id) {
+                            match_key = Some(k.clone());
+                            break;
+                        }
                     }
                 }
-                // Update App ID if not set
-                if existing.app_id.is_none() {
-                    existing.app_id = Some(hit.app_id);
+            }
+
+            if let Some(key) = match_key {
+                // UPDATE existing
+                if let Some(existing) = package_map.get_mut(&key) {
+                    // Add Flatpak to sources
+                    if let Some(sources) = &mut existing.available_sources {
+                        if !sources.iter().any(|s| s.source_type == "flatpak") {
+                            sources.push(PackageSource::new(
+                                "flatpak",
+                                "flathub",
+                                "latest",
+                                "Flatpak (Sandboxed)",
+                            ));
+                        }
+                    }
+                    // Update App ID if not set
+                    if existing.app_id.is_none() {
+                        existing.app_id = Some(hit.app_id);
+                    }
                 }
             } else {
                 // NEW Flatpak-only package
+                // Use direct name as key
                 let p = Package {
                     name: hit.name.clone(),
                     display_name: Some(hit.name), // Flatpak names are display names
@@ -201,7 +230,7 @@ pub async fn search_packages(
                         "Flatpak (Sandboxed)",
                     )]),
                 };
-                package_map.insert(key, p);
+                package_map.insert(direct_key, p);
             }
         }
     }
@@ -851,6 +880,8 @@ pub async fn get_package_variants(
 ) -> Result<Vec<models::PackageVariant>, String> {
     let pkg_lower = pkg_name.to_lowercase();
     let base_name = utils::strip_package_suffix(&pkg_lower);
+    // Resolve Mapping (e.g. brave -> com.brave.Browser)
+    let mapped_id = crate::flathub_api::get_flathub_app_id(base_name);
     let app_id = state_meta
         .inner()
         .0
@@ -972,9 +1003,19 @@ pub async fn get_package_variants(
             .and_then(|loader| loader.find_app_id(&p.name));
 
         let matches_app_id = app_id.is_some() && p_app_id == app_id;
+
+        // Smart Flatpak Match: Check if App ID ends with base name OR matches explicit mapping
+        let is_flatpak_match = p.source.source_type == "flatpak"
+            && (p.name.to_lowercase().ends_with(&format!(".{}", base_name))
+                || mapped_id
+                    .as_deref()
+                    .map(|id| id.eq_ignore_ascii_case(&p.name))
+                    .unwrap_or(false));
+
         let matches_name = p_lower == pkg_lower
             || p_lower == base_name
-            || utils::strip_package_suffix(&p_lower) == base_name;
+            || utils::strip_package_suffix(&p_lower) == base_name
+            || is_flatpak_match;
 
         if matches_app_id || matches_name {
             let key = format!("{:?}-{}", p_source, p.name);
