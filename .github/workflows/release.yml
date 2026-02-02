@@ -79,12 +79,10 @@ jobs:
           # Pass hardened environment variables into the action sub-shell
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: /usr/bin/clang
           RUSTFLAGS: ""
-          # Bypass pkg-config and force manual linkage
-          LIBALPM_NO_PKG_CONFIG: "1"
-          ALPM_LIB_DIR: "/usr/lib"
-          ALPM_INCLUDE_DIR: "/usr/include"
-          # Standard env vars for safety
-          PKG_CONFIG_PATH: "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig"
+          # Explicitly set PKG_CONFIG_PATH to find our built libalpm
+          PKG_CONFIG_PATH: "/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig"
+          # Also set standard variables just in case
+          LIBALPM_NO_PKG_CONFIG: "0" 
         with:
           projectPath: './src-tauri/monarch-gui'
           tagName: v0.3.6-alpha
