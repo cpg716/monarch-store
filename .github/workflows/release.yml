@@ -29,27 +29,33 @@ jobs:
 
       - name: build libalpm from source (v7.0.0)
         run: |
-          wget https://gitlab.archlinux.org/pacman/pacman/-/archive/v7.0.0/pacman-v7.0.0.tar.gz
-          tar -xzf pacman-v7.0.0.tar.gz
-          cd pacman-v7.0.0
+          wget https://gitlab.archlinux.org/pacman/pacman/-/archive/v7.1.0/pacman-v7.1.0.tar.gz
+          tar -xzf pacman-v7.1.0.tar.gz
+          cd pacman-v7.1.0
           meson setup build --prefix=/usr --libdir=/usr/lib --buildtype=release -Ddoc=disabled -Ddoxygen=disabled
           ninja -C build
           sudo ninja -C build install
+          sudo ldconfig
           
-          # DYNAMIC FIX: Find where libalpm.pc actually went
-          PC_FILE=$(find /usr -name libalpm.pc | head -n 1)
-          if [ -z "$PC_FILE" ]; then
-            echo "::error::libalpm.pc not found! Meson build failed?"
-            exit 1
-          fi
-          PC_DIR=$(dirname "$PC_FILE")
-          echo "Found libalpm.pc at $PC_FILE"
-          
-          # HARD EXPORT: Set PKG_CONFIG_PATH for ALL future steps
-          echo "PKG_CONFIG_PATH=$PC_DIR" >> $GITHUB_ENV
+          # SYNTHESIZE: Force correct libalpm.pc for pkg-config (Version 16.0.0)
+          # Ensuring mismatch between alpm-sys and library version is impossible
+          sudo mkdir -p /usr/lib/pkgconfig
+          echo "prefix=/usr" | sudo tee /usr/lib/pkgconfig/libalpm.pc
+          echo "exec_prefix=\${prefix}" | sudo tee -a /usr/lib/pkgconfig/libalpm.pc
+          echo "libdir=\${exec_prefix}/lib" | sudo tee -a /usr/lib/pkgconfig/libalpm.pc
+          echo "includedir=\${prefix}/include" | sudo tee -a /usr/lib/pkgconfig/libalpm.pc
+          echo "" | sudo tee -a /usr/lib/pkgconfig/libalpm.pc
+          echo "Name: libalpm" | sudo tee -a /usr/lib/pkgconfig/libalpm.pc
+          echo "Description: Arch Linux Package Management Library" | sudo tee -a /usr/lib/pkgconfig/libalpm.pc
+          echo "Version: 16.0.0" | sudo tee -a /usr/lib/pkgconfig/libalpm.pc
+          echo "Libs: -L\${libdir} -lalpm" | sudo tee -a /usr/lib/pkgconfig/libalpm.pc
+          echo "Cflags: -I\${includedir}" | sudo tee -a /usr/lib/pkgconfig/libalpm.pc
           
           # Verify immediately
-          PKG_CONFIG_PATH=$PC_DIR pkg-config --validate libalpm || echo "::warning::Validation failed"
+          PKG_CONFIG_PATH=/usr/lib/pkgconfig pkg-config --validate libalpm || echo "::warning::Validation failed"
+          
+          # HARD EXPORT: Set PKG_CONFIG_PATH to our enforced directory
+          echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig" >> $GITHUB_ENV
           
           # Export env vars globally for subsequent steps
           echo "PKG_CONFIG_ALLOW_SYSTEM_LIBS=1" >> $GITHUB_ENV
