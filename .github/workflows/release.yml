@@ -36,6 +36,14 @@ jobs:
           ninja -C build
           sudo ninja -C build install
           
+          # DEBUG: Verify installation
+          echo "=== DEBUG: Listing /usr/lib/pkgconfig ==="
+          ls -la /usr/lib/pkgconfig || true
+          echo "=== DEBUG: Content of libalpm.pc ==="
+          cat /usr/lib/pkgconfig/libalpm.pc || true
+          echo "=== DEBUG: pkg-config check ==="
+          PKG_CONFIG_PATH=/usr/lib/pkgconfig pkg-config --validate libalpm || echo "Validation failed"
+          
           # Export env vars globally for subsequent steps
           echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig" >> $GITHUB_ENV
           echo "ALPM_LIB_DIR=/usr/lib" >> $GITHUB_ENV
