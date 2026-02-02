@@ -135,37 +135,49 @@ pub async fn search_packages(
     // B. Process Flatpak
     if let Some(hits) = flatpak_res {
         for hit in hits {
-            // --- SMART MERGE LOGIC ---
-            // 1. Exact Name Match
+            // --- SMART MERGE LOGIC (Global Fix) ---
             let direct_key = normalize_name(&hit.name);
+            let flatpak_base = crate::utils::strip_package_suffix(&direct_key);
 
-            // 2. App ID Suffix Match (e.g. com.visualstudio.code -> code)
-            let suffix_key = hit
-                .app_id
-                .split('.')
-                .last()
-                .map(normalize_name)
-                .unwrap_or_default();
-
-            // 3. Find Match in Map
+            // 1. Find Match in Map
             let mut match_key = None;
 
             // Priority 1: Direct Name Match
             if package_map.contains_key(&direct_key) {
                 match_key = Some(direct_key.clone());
             }
-            // Priority 2: Suffix Match (if different)
-            else if !suffix_key.is_empty() && package_map.contains_key(&suffix_key) {
-                match_key = Some(suffix_key.clone());
-            }
-            // Priority 3: Scan for matching App ID (Metadata link)
+            // Priority 2: Fuzzy Base Name Match (e.g. Brave -> brave == brave-bin -> brave)
             else {
+                for k in package_map.keys() {
+                    let repo_base = crate::utils::strip_package_suffix(k);
+                    if repo_base == flatpak_base {
+                        match_key = Some(k.clone());
+                        break;
+                    }
+                }
+            }
+
+            // Priority 3: Scan for matching App ID or Suffix
+            if match_key.is_none() {
+                let suffix_part = hit
+                    .app_id
+                    .split('.')
+                    .last()
+                    .map(normalize_name)
+                    .unwrap_or_default();
+
                 for (k, pkg) in &package_map {
+                    // Check explicit App ID match
                     if let Some(pkg_id) = &pkg.app_id {
                         if pkg_id.eq_ignore_ascii_case(&hit.app_id) {
                             match_key = Some(k.clone());
                             break;
                         }
+                    }
+                    // Check if App ID Suffix matches Repo Key (e.g. com.visualstudio.code -> code)
+                    if !suffix_part.is_empty() && k == &suffix_part {
+                        match_key = Some(k.clone());
+                        break;
                     }
                 }
             }
