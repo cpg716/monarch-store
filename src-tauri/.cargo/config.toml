@@ -6,12 +6,12 @@
 # Use mold (fastest linker) for up to 7x faster linking during development
 # Requires: sudo pacman -S mold clang
 # Fallback: If you encounter symbol errors, switch to lld or gcc
-linker = "clang"
-rustflags = [
-  "-C", "link-arg=-fuse-ld=/usr/bin/mold",
-  "-C", "link-arg=-Wl,-z,relro,-z,now",   # Full RELRO
-  "-C", "link-arg=-Wl,-z,noexecstack",    # No executable stack
-]
+# linker = "clang"
+# rustflags = [
+#   "-C", "link-arg=-fuse-ld=/usr/bin/mold",
+#   "-C", "link-arg=-Wl,-z,relro,-z,now",   # Full RELRO
+#   "-C", "link-arg=-Wl,-z,noexecstack",    # No executable stack
+# ]
 
 # Alternative: Use lld (more stable, still fast)
 # linker = "clang"

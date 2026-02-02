@@ -57,7 +57,6 @@ jobs:
           TAURI_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_KEY_PASSWORD }}
           APPIMAGE_EXTRACT_AND_RUN: 1
           # Pass hardened environment variables into the action sub-shell
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: /usr/bin/clang
           RUSTFLAGS: ""
         with:
           projectPath: './src-tauri/monarch-gui'
