@@ -1016,6 +1016,14 @@ pub async fn get_package_variants(
 
         let matches_app_id = app_id.is_some() && p_app_id == app_id;
 
+        // DEBUG LOG
+        println!("DEBUG: Variant Check - PKG='{}' Source='{:?}' AppID='{:?}' MappedID='{:?}' BaseName='{}' (MatchAppID={}, EndsWith={}, MappedMatch={})",
+            p.name, p.source.source_type, p_app_id, mapped_id, base_name,
+            matches_app_id,
+            p.name.to_lowercase().ends_with(&format!(".{}", base_name)),
+            mapped_id.as_deref().map(|id| id.eq_ignore_ascii_case(&p.name)).unwrap_or(false)
+        );
+
         // Smart Flatpak Match: Check if App ID ends with base name OR matches explicit mapping
         let is_flatpak_match = p.source.source_type == "flatpak"
             && (p.name.to_lowercase().ends_with(&format!(".{}", base_name))
