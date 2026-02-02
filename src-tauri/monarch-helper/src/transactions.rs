@@ -596,7 +596,13 @@ pub fn execute_alpm_sync(repos: Vec<String>, alpm: &mut Alpm) -> Result<(), Stri
         if alpm.syncdbs().iter().any(|db| db.name() == repo_name) {
             continue;
         }
-        let _ = alpm.register_syncdb(repo_name, SigLevel::USE_DEFAULT);
+        // CRITICAL: Do NOT register a DB if it's not already there.
+        // It was likely unregistered because it had NO SERVERS.
+        // Re-registering it here without adding servers causes "no servers configured" errors.
+        logger::warn(&format!(
+            "Skipping sync for repo '{}' as it has no server configuration.",
+            repo_name
+        ));
     }
 
     match alpm.syncdbs_mut().update(true) {

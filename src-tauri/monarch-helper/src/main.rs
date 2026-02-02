@@ -167,18 +167,23 @@ pub enum HelperCommand {
     },
 }
 
-#[derive(Debug, Serialize)]
-struct ProgressMessage {
-    progress: u8,
-    message: String,
-}
+// Struct for legacy or simple progress messages if ever needed again
+// #[derive(Debug, Serialize)]
+// struct ProgressMessage {
+//     progress: u8,
+//     message: String,
+// }
 
 fn emit_progress(progress: u32, message: &str) {
-    let msg = ProgressMessage {
-        progress: progress as u8,
+    let event = transactions::AlpmProgressEvent {
+        event_type: "progress".to_string(),
+        package: None,
+        percent: Some(progress as u8),
+        downloaded: None,
+        total: None,
         message: message.to_string(),
     };
-    if let Ok(json) = serde_json::to_string(&msg) {
+    if let Ok(json) = serde_json::to_string(&event) {
         progress::send_progress_line(json);
     }
 }
@@ -990,27 +995,29 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
     }
 }
 
-/// Remove any registered syncdb that has no Server URLs. Such dbs cause "no servers configured for repository" during sync.
 fn remove_syncdbs_with_no_servers(alpm: &mut Alpm) {
-    loop {
-        let empty_name = alpm
-            .syncdbs()
-            .iter()
-            .find(|db| db.servers().iter().next().is_none())
-            .map(|db| db.name().to_string());
-        let name = match empty_name {
-            Some(n) => n,
-            None => break,
-        };
+    let mut names_to_remove = Vec::new();
+    for db in alpm.syncdbs().iter() {
+        if db.servers().iter().next().is_none() {
+            names_to_remove.push(db.name().to_string());
+        }
+    }
+
+    for name in names_to_remove {
+        // We use a separate loop and find the DB again to avoid iterator invalidation
+        let mut found_db_to_unregister = None;
         for db in alpm.syncdbs_mut() {
-            if db.name() == name.as_str() {
-                db.unregister();
-                logger::warn(&format!(
-                    "Unregistered repo '{}' (no Server URLs); skipping to avoid sync failure.",
-                    name
-                ));
+            if db.name() == name {
+                found_db_to_unregister = Some(db);
                 break;
             }
+        }
+        if let Some(db) = found_db_to_unregister {
+            logger::warn(&format!(
+                "Unregistering repo '{}' because it has no servers.",
+                name
+            ));
+            let _ = db.unregister();
         }
     }
 }
@@ -1038,7 +1045,13 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
         .filter(|s| !s.is_empty())
         .collect();
 
+    emit_progress(
+        5,
+        &format!("Detected {} system repositories.", repo_names.len()),
+    );
+
     for repo_name in repo_names {
+        logger::trace(&format!("Querying details for repo: {}", repo_name));
         // 2. Get details for each repo
         let details_out = Command::new("pacman-conf")
             .arg("--repo")
@@ -1053,23 +1066,29 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
         let details_str = String::from_utf8_lossy(&details_out.stdout);
         let mut servers = Vec::new();
         let mut siglevel = SigLevel::USE_DEFAULT;
-        let mut usage = alpm::Usage::ALL; // Default
+        let mut usage = alpm::Usage::ALL;
 
         for line in details_str.lines() {
             let line = line.trim();
-            if let Some(val) = line.strip_prefix("Server = ") {
-                // pacman-conf expands $repo and $arch, which is great.
-                // But libalpm also handles them. passing expanded is fine.
+            if line.contains("Server = ") || line.contains("Server=") {
+                let val = if line.contains("Server = ") {
+                    line.splitn(2, "Server = ").nth(1).unwrap_or("")
+                } else {
+                    line.splitn(2, "Server=").nth(1).unwrap_or("")
+                }
+                .trim();
+
                 let server = val.split('#').next().unwrap_or(val).trim();
                 if !server.is_empty() {
                     servers.push(server.to_string());
                 }
-            } else if let Some(val) = line.strip_prefix("SigLevel = ") {
-                // Basic mapping. Real mapping is complex bitflags.
-                // If it contains "Never", disable verification.
-                // If it contains "Optional", make it optional.
-                // If "Required", make required.
-                // Default to USE_DEFAULT if complex.
+            } else if line.contains("SigLevel = ") || line.contains("SigLevel=") {
+                let val = if line.contains("SigLevel = ") {
+                    line.splitn(2, "SigLevel = ").nth(1).unwrap_or("")
+                } else {
+                    line.splitn(2, "SigLevel=").nth(1).unwrap_or("")
+                }
+                .trim();
                 let val_lower = val.to_lowercase();
                 if val_lower.contains("never") {
                     siglevel = SigLevel::NONE;
@@ -1077,12 +1096,16 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
                 {
                     siglevel = SigLevel::PACKAGE_OPTIONAL;
                 } else if val_lower.contains("required") {
-                    siglevel = SigLevel::USE_DEFAULT; // Safe fallback as PACKAGE_REQUIRED is not direct const
+                    siglevel = SigLevel::USE_DEFAULT;
                 }
-            } else if let Some(val) = line.strip_prefix("Usage = ") {
-                // Map usage if needed (Sync/Search/Install/Upgrade/All)
-                // libalpm doesn't easily expose Usage parsing from string, keeping default ALL is usually safe for helper.
-                // We could parse it but typically it's specific.
+            } else if line.contains("Usage = ") || line.contains("Usage=") {
+                let val = if line.contains("Usage = ") {
+                    line.splitn(2, "Usage = ").nth(1).unwrap_or("")
+                } else {
+                    line.splitn(2, "Usage=").nth(1).unwrap_or("")
+                }
+                .trim();
+
                 if val.contains("Sync") {
                     usage |= alpm::Usage::SYNC;
                 }
@@ -1102,15 +1125,23 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
         }
 
         if !servers.is_empty() {
-            // Check if already registered (shouldn't be, unless register_repositories called twice)
-            let already_exists = alpm.syncdbs().iter().any(|db| db.name() == repo_name);
+            emit_progress(
+                5,
+                &format!(
+                    "Registering {} ({} mirrors found)...",
+                    repo_name,
+                    servers.len()
+                ),
+            );
 
+            // Register or find existing
+            let already_exists = alpm.syncdbs().iter().any(|db| db.name() == repo_name);
             if !already_exists {
-                // Register
                 let _ = alpm.register_syncdb(repo_name.to_string(), siglevel)?;
             }
 
-            // Add servers and usage (retrieve mutably to ensure access)
+            // We still need to find it mutably after registration to add servers/usage
+            // because of borrow checker constraints in a loop.
             for db in alpm.syncdbs_mut() {
                 if db.name() == repo_name {
                     let _ = db.set_usage(usage);
@@ -1120,6 +1151,12 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
                     break;
                 }
             }
+        } else {
+            emit_progress(
+                5,
+                &format!("Warning: No mirrors found for repository '{}'.", repo_name),
+            );
+            logger::warn(&format!("No servers found for repo: {}", repo_name));
         }
     }
 
