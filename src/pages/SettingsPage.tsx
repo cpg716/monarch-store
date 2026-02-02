@@ -21,7 +21,12 @@ import ConfirmationModal from '../components/ConfirmationModal';
 
 type TabId = 'general' | 'sources' | 'builder' | 'maintenance' | 'about';
 
-export default function SettingsPage() {
+interface SettingsPageProps {
+    onRestartOnboarding?: () => void;
+    onRepairComplete?: () => Promise<void>;
+}
+
+export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: SettingsPageProps) {
     const [activeTab, setActiveTab] = useState<TabId>('general');
     const { themeMode, setThemeMode } = useTheme();
     const { success, error, show } = useToast();
@@ -33,7 +38,6 @@ export default function SettingsPage() {
         advancedMode, toggleAdvancedMode
     } = useSettings();
     const {
-        verboseLogsEnabled, setVerboseLogsEnabled,
         reducePasswordPrompts, setReducePasswordPrompts,
     } = useAppStore();
 
@@ -64,6 +68,7 @@ export default function SettingsPage() {
         try {
             await invoke('fix_keyring_issues');
             success("Keyring issues resolved successfully.");
+            if (onRepairComplete) await onRepairComplete();
         } catch (e) {
             error("Repair failed: " + String(e));
         } finally {
@@ -76,6 +81,7 @@ export default function SettingsPage() {
         try {
             await invoke('repair_unlock_pacman');
             success("Pacman database unlocked.");
+            if (onRepairComplete) await onRepairComplete();
         } catch (e) {
             error("Unlock failed: " + String(e));
         } finally {
@@ -311,6 +317,14 @@ export default function SettingsPage() {
                                     The ultimate software management interface for Arch-based Linux distributions.
                                     Designed for performance, built for security, and tailored for you.
                                 </p>
+                                <div className="pt-2">
+                                    <button
+                                        onClick={onRestartOnboarding}
+                                        className="px-6 py-2.5 bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-600 dark:text-white/60 text-sm font-bold rounded-xl transition-all border border-slate-200 dark:border-white/10"
+                                    >
+                                        Restart Onboarding Wizard
+                                    </button>
+                                </div>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
