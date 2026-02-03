@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     file \
     libssl-dev \
     libgtk-3-dev \
+    librsvg2-dev \
     libwebkit2gtk-4.0-dev \
     build-essential \
     squashfs-tools \
