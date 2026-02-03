@@ -247,6 +247,51 @@
   animation: butterfly 0.8s ease-in-out infinite;
 }
 
+.text-accent {
+  color: var(--app-accent);
+}
+
+.bg-accent {
+  background-color: var(--app-accent);
+}
+
+.border-accent {
+  border-color: var(--app-accent);
+}
+
+.btn-accent {
+  background: var(--app-accent);
+  color: #fff;
+  transition: filter 0.2s ease;
+}
+
+.btn-accent:hover {
+  filter: brightness(1.05);
+}
+
+.btn-accent:active {
+  filter: brightness(0.95);
+}
+
+input[data-monarch-search] {
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+input[data-monarch-search]:focus {
+  border-color: var(--app-accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-accent) 25%, transparent);
+}
+
+.accent-hover-outline {
+  transition: border-color 0.25s ease, background-color 0.25s ease, color 0.25s ease, opacity 0.25s ease;
+}
+
+.accent-hover-outline:hover {
+  border-color: var(--app-accent);
+  background-color: color-mix(in srgb, var(--app-accent) 12%, transparent);
+  color: var(--app-accent);
+}
+
 @layer base {
   body {
     background-color: var(--app-bg);

@@ -2,8 +2,9 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1. Install System Dependencies
+# 1. Install System Dependencies (ca-certificates for git clone / HTTPS; libssl for Rust)
 RUN apt-get update && apt-get install -y \
+    ca-certificates \
     curl \
     wget \
     file \

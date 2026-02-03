@@ -115,8 +115,16 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
 
     // --- Effects ---
 
-    // 1. Fetch Variants & Initial Selection
+    // 1. Fetch Variants & Initial Selection (use available_sources from unified search when present)
     useEffect(() => {
+        // Pre-populate from pkg.available_sources when present (unified search pipeline)
+        const fromAvailableSources = (pkg.available_sources || []).map(s => ({
+            source: s,
+            version: s.version,
+            pkg_name: s.source_type === 'flatpak' ? (pkg.app_id || pkg.name) : pkg.name,
+            repo_name: s.id === 'chaotic-aur' ? 'chaotic-aur' : undefined,
+        } as PackageVariant));
+
         invoke<PackageVariant[]>('get_package_variants', { pkgName: pkg.name })
             .then(async (fetchedVars) => {
                 const propAlternatives = (pkg.alternatives || []).map(a => ({
@@ -126,7 +134,11 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                     repo_name: a.source === 'chaotic' ? 'chaotic-aur' : undefined
                 } as PackageVariant));
 
-                const combined = [...fetchedVars, ...propAlternatives];
+                const combined = fetchedVars.length > 0
+                    ? [...fetchedVars, ...propAlternatives]
+                    : fromAvailableSources.length > 0
+                        ? fromAvailableSources
+                        : [...fetchedVars, ...propAlternatives];
                 // Deduplicate
                 let vars = combined.filter((v, index, self) =>
                     index === self.findIndex((t) => (
@@ -260,9 +272,12 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
     const [sortOrder, setSortOrder] = useState<'newest' | 'oldest' | 'highest' | 'lowest'>('newest');
     const [filterRating, setFilterRating] = useState<number | null>(null);
 
-    const screenshots = (fullMeta?.screenshots && fullMeta.screenshots.length > 0)
-        ? fullMeta.screenshots
-        : (pkg.screenshots && pkg.screenshots.length > 0) ? pkg.screenshots : [];
+    // Pipeline: pkg.screenshots first (passed from search), then metadata fetch
+    const screenshots = (pkg.screenshots && pkg.screenshots.length > 0)
+        ? pkg.screenshots
+        : (fullMeta?.screenshots && fullMeta.screenshots.length > 0)
+            ? fullMeta.screenshots
+            : [];
 
     // Filter and Sort Logic
     const processedReviews = reviews
@@ -306,8 +321,8 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                     <ArrowLeft size={24} />
                 </button>
 
-                {/* Header Info Container - Forced horizontal layout on all screen sizes */}
-                <div className="relative z-20 w-full max-w-7xl mx-auto px-6 flex flex-row items-start gap-4 md:gap-10">
+                {/* Header Info Container - Responsive layout */}
+                <div className="relative z-20 w-full max-w-7xl mx-auto px-6 flex flex-col lg:flex-row items-start gap-6 lg:gap-10">
 
                     {/* Icon Card - Scalable & Robust */}
                     <motion.div
@@ -324,18 +339,18 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                     </motion.div>
 
                     {/* Text & Actions */}
-                    <div className="flex-1 min-w-0 pb-1">
+                    <div className="flex-1 min-w-0 pb-1 w-full">
                         <motion.h1
                             initial={{ y: 20, opacity: 0 }}
                             animate={{ y: 0, opacity: 1 }}
                             transition={{ delay: 0.2 }}
-                            className="text-4xl sm:text-5xl md:text-6xl lg:text-8xl font-black text-white tracking-tight leading-[1.1] md:leading-[0.9] mb-4 break-words"
+                            className="text-4xl sm:text-5xl md:text-6xl lg:text-8xl font-black text-white tracking-tight leading-[1.1] md:leading-[0.9] mb-4 break-words max-w-3xl text-center lg:text-left"
                             style={{ textShadow: '0 0 20px rgba(0,0,0,0.8), 0 2px 4px rgba(0,0,0,0.9), 0 0 40px rgba(0,0,0,0.6)' }}
                         >
                             {pkg.display_name || fullMeta?.name || pkg.name}
                         </motion.h1>
 
-                        <div className="flex flex-wrap items-center gap-2 md:gap-4 mb-6 text-app-muted/80 font-medium">
+                        <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2 md:gap-4 mb-6 text-app-muted/80 font-medium">
                             <RepoBadge source={selectedSource} />
                             <div className="px-3 py-1 rounded-full bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-sm flex items-center gap-2 text-slate-700 dark:text-white/80">
                                 <Cpu size={14} /> <span>v{variants.find(v => v.source === selectedSource)?.version || pkg.version}</span>
@@ -359,7 +374,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                         </div>
 
                         {/* WARNINGS BLOCK - Compact and properly aligned */}
-                        <div className="space-y-2 mb-6 max-w-2xl">
+                        <div className="space-y-2 mb-6 max-w-2xl mx-auto lg:mx-0">
 
                             {(typeof selectedSource === 'string' ? selectedSource === 'aur' : selectedSource.source_type === 'aur') && (
                                 <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 backdrop-blur-sm">
@@ -413,9 +428,9 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                             initial={{ y: 20, opacity: 0 }}
                             animate={{ y: 0, opacity: 1 }}
                             transition={{ delay: 0.3 }}
-                            className="flex flex-col gap-4"
+                            className="flex flex-col gap-4 w-full"
                         >
-                            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-4 w-full">
                                 {/* Repo Selector - Full Width on Mobile */}
                                 {variants.length >= 1 && (
                                     <div className="relative z-50 w-full sm:w-auto sm:min-w-[300px]">
@@ -428,7 +443,7 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                 )}
 
                                 {/* ACTION BUTTONS GROUP - Always together */}
-                                <div className="flex flex-1 items-center gap-3">
+                                <div className="flex flex-1 items-center justify-center sm:justify-start gap-3 flex-wrap">
                                     {(() => {
                                         // 1. Determine Identity
                                         const activeSource = selectedSource;
@@ -643,11 +658,11 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                 </div>
                             </div>
                             {/* SCREENSHOTS GALLERY */}
-                            {screenshots.length > 0 && (
-                                <section>
-                                    <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
-                                        <Globe size={24} className="text-blue-500" /> Preview
-                                    </h3>
+                            <section>
+                                <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                                    <Globe size={24} className="text-blue-500" /> Preview
+                                </h3>
+                                {screenshots.length > 0 ? (
                                     <div className="flex gap-4 overflow-x-auto pb-6 snap-x scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
                                         {screenshots.map((url, i) => (
                                             <motion.div
@@ -666,13 +681,26 @@ export default function PackageDetails({ pkg, onBack, preferredSource, installIn
                                             </motion.div>
                                         ))}
                                     </div>
-                                </section>
-                            )}
+                                ) : (
+                                    <div
+                                        className="flex items-center justify-center w-full aspect-video max-h-[320px] rounded-2xl bg-gradient-to-br from-slate-800/50 to-slate-900/30 border border-slate-700/50 dark:border-white/10"
+                                        style={{
+                                            backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(100,116,139,0.15) 0%, transparent 70%), linear-gradient(135deg, rgba(30,41,59,0.5) 0%, rgba(15,23,42,0.5) 100%)',
+                                        }}
+                                    >
+                                        <div className="flex flex-col items-center gap-3 text-app-muted">
+                                            <Globe size={48} className="opacity-40" />
+                                            <span className="text-sm font-medium">No screenshots available</span>
+                                            <span className="text-xs opacity-70">Preview images may be added in a future update</span>
+                                        </div>
+                                    </div>
+                                )}
+                            </section>
 
                             {/* DESCRIPTION */}
                             <section>
                                 <h3 className="text-xl font-bold text-white mb-6">About this App</h3>
-                                <div className="bg-app-card/30 rounded-3xl p-8 border border-white/5 leading-loose">
+                                <div className="bg-app-card/30 rounded-3xl p-8 border border-white/5 leading-loose max-w-3xl mx-auto lg:mx-0">
                                     {/* VECTOR 1: HTML INJECTION DEFENSE */}
                                     <div
                                         className="prose prose-sm md:prose-base dark:prose-invert max-w-none text-slate-600 dark:text-white/70"

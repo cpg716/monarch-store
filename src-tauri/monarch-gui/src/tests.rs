@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    use crate::commands::search::merge_search_results;
+    use crate::flathub_api::SearchResult;
     use crate::models::{Package, PackageSource};
     use crate::utils;
 
@@ -89,6 +91,62 @@ mod tests {
         let result = utils::merge_and_deduplicate(official, repo);
 
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_search_aggregation_firefox_triple_source() {
+        // Firefox exists in System Repo, AUR, and Flatpak; merge must yield 1 entry with all 3 sources
+        let official = vec![make_pkg(
+            "firefox",
+            PackageSource::official(),
+            Some("org.mozilla.firefox"),
+        )];
+        let aur = vec![make_pkg("firefox", PackageSource::aur(), None)];
+
+        let flatpak = vec![SearchResult {
+            app_id: "org.mozilla.firefox".to_string(),
+            name: "Firefox".to_string(),
+            summary: Some("Web browser".to_string()),
+            icon: None,
+        }];
+
+        let result = merge_search_results(official, aur, flatpak);
+
+        assert_eq!(result.len(), 1, "firefox from repo+AUR+Flatpak must merge to 1 entry");
+        let sources = result[0]
+            .available_sources
+            .as_ref()
+            .expect("available_sources must be set");
+        assert_eq!(sources.len(), 3, "must have repo, aur, flatpak in available_sources");
+
+        let has_repo = sources.iter().any(|s| s.source_type == "repo");
+        let has_aur = sources.iter().any(|s| s.source_type == "aur");
+        let has_flatpak = sources.iter().any(|s| s.source_type == "flatpak");
+        assert!(has_repo, "must include repo source");
+        assert!(has_aur, "must include aur source");
+        assert!(has_flatpak, "must include flatpak source");
+    }
+
+    #[test]
+    fn test_search_aggregation_firefox_variant_merge() {
+        // firefox and firefox-developer-edition are variants; must merge to 1 entry
+        let official = vec![make_pkg(
+            "firefox",
+            PackageSource::official(),
+            None,
+        )];
+        let aur = vec![
+            make_pkg("firefox-developer-edition", PackageSource::aur(), None),
+        ];
+        let flatpak: Vec<SearchResult> = vec![];
+
+        let result = merge_search_results(official, aur, flatpak);
+
+        assert_eq!(result.len(), 1, "firefox + firefox-developer-edition must merge to 1 entry");
+        let sources = result[0].available_sources.as_ref().expect("available_sources");
+        assert_eq!(sources.len(), 2, "must have repo + aur in available_sources");
+        assert!(sources.iter().any(|s| s.source_type == "repo"));
+        assert!(sources.iter().any(|s| s.source_type == "aur"));
     }
 
     #[test]

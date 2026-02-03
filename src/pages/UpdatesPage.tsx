@@ -64,7 +64,6 @@ export default function UpdatesPage() {
     const [isChecking, setIsChecking] = useState(true);
     const [updateResult, setUpdateResult] = useState<string | null>(null);
     const [showConsole, setShowConsole] = useState(false);
-    const [password, setPassword] = useState('');
     const [currentStep, setCurrentStep] = useState(0);
     const [fixingLock, setFixingLock] = useState(false);
     const [showAuthHint, setShowAuthHint] = useState(false);
@@ -271,7 +270,7 @@ export default function UpdatesPage() {
                             </div>
                             {showAuthHint && (
                                 <p className="text-amber-600 dark:text-amber-400 text-xs font-medium mt-2 mb-1">
-                                    If a password dialog appeared behind other windows, bring it to the front and enter your password to continue.
+                                    If the system authentication dialog appeared behind other windows, bring it to the front to continue.
                                 </p>
                             )}
                             <div className="h-2 bg-black/10 dark:bg-black/40 rounded-full overflow-hidden border border-black/5 dark:border-white/5">
@@ -507,20 +506,17 @@ export default function UpdatesPage() {
             <ConfirmationModal
                 isOpen={showConfirm}
                 onClose={() => {
-                    setShowConfirm(false);
-                    setPassword('');
+        setShowConfirm(false);
                 }}
                 onConfirm={performUpdate}
                 title="Update System"
-                message={updates.some(u => u.source.source_type === 'aur')
-                    ? "This update includes AUR packages which require building from source. Please enter your administrator password to proceed."
-                    : "This will update all system packages. Are you ready to proceed?"
+    message={updates.some(u => u.source.source_type === 'aur')
+        ? "This update includes AUR packages which require building from source. It may take longer to complete."
+        : "This will update all system packages. Are you ready to proceed?"
                 }
                 confirmLabel="Start Update"
                 variant="info"
-                showPasswordInput={updates.some(u => u.source.source_type === 'aur')}
-                passwordValue={password}
-                onPasswordChange={setPassword}
+    showPasswordInput={false}
             />
         </div>
     );

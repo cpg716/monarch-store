@@ -105,7 +105,7 @@ export default function SearchPage({
                 <div className="flex items-center justify-between">
                     <div>
                         <h2 className="text-2xl font-black text-app-fg flex items-center gap-2">
-                            <Search className="text-blue-500" size={24} />
+                            <Search className="text-accent" size={24} />
                             {query ? `Search Results` : 'Explore'}
                         </h2>
                         <p className="text-app-muted text-sm capitalize">
@@ -201,6 +201,27 @@ export default function SearchPage({
                         })()}
                     </div>
                 )}
+
+                {!query && (
+                    <div className="flex flex-wrap gap-2 pt-2 text-[11px] text-app-muted">
+                        {[
+                            { token: '@official', label: 'Official Repos' },
+                            { token: '@aur', label: 'AUR Source' },
+                            { token: '@chaotic', label: 'Chaotic-AUR' }
+                        ].map((shortcut) => (
+                            <button
+                                key={shortcut.token}
+                                onClick={() => onQueryChange(`${shortcut.token} `)}
+                                className="px-3 py-1.5 rounded-full border border-app-border text-app-fg/80 accent-hover-outline"
+                                type="button"
+                                aria-label={`Filter results by ${shortcut.label}`}
+                            >
+                                <span className="font-mono text-xs">{shortcut.token}</span>
+                                <span className="ml-2 text-[10px] uppercase tracking-wide opacity-70">{shortcut.label}</span>
+                            </button>
+                        ))}
+                    </div>
+                )}
             </div>
 
             <div className="flex-1 overflow-y-auto p-8 pt-0 custom-scrollbar">
@@ -227,10 +248,10 @@ export default function SearchPage({
                                             <div
                                                 key={item}
                                                 onClick={() => onQueryChange(item)}
-                                                className="group flex items-center justify-between p-3 rounded-xl bg-app-card/30 border border-app-border/50 hover:bg-app-card/60 hover:border-blue-500/30 cursor-pointer transition-all"
+                                                className="group flex items-center justify-between p-3 rounded-xl bg-app-card/30 border border-app-border/50 hover:bg-app-card/60 cursor-pointer transition-all accent-hover-outline"
                                             >
                                                 <div className="flex items-center gap-3">
-                                                    <Search size={14} className="text-app-muted group-hover:text-blue-500" />
+                                                    <Search size={14} className="text-app-muted group-hover:text-accent transition-colors" />
                                                     <span className="text-sm text-app-fg">{item}</span>
                                                 </div>
                                                 <button
@@ -254,10 +275,14 @@ export default function SearchPage({
                                     <div className="grid grid-cols-2 gap-3">
                                         <button
                                             onClick={() => onQueryChange("top:trending")}
-                                            className="p-4 rounded-2xl bg-gradient-to-br from-blue-500/10 to-indigo-500/5 border border-blue-500/20 flex flex-col items-center gap-2 hover:scale-[1.02] transition-all group"
+                                            className="p-4 rounded-2xl border flex flex-col items-center gap-2 hover:scale-[1.02] transition-all group accent-hover-outline"
+                                            style={{
+                                                background: 'linear-gradient(135deg, color-mix(in srgb, var(--app-accent) 18%, transparent), transparent 70%)',
+                                                borderColor: 'color-mix(in srgb, var(--app-accent) 30%, transparent)'
+                                            }}
                                         >
-                                            <TrendingUp className="text-blue-500 group-hover:scale-110 transition-transform" />
-                                            <span className="text-xs font-bold text-app-fg">Browser Trending</span>
+                                            <TrendingUp className="text-accent group-hover:scale-110 transition-transform" />
+                                            <span className="text-xs font-bold text-app-fg">Browse Trending</span>
                                         </button>
                                         <button
                                             onClick={() => onQueryChange("top:new")}
@@ -308,7 +333,7 @@ export default function SearchPage({
                                     variant="error"
                                 />
                             ) : loading && packages.length === 0 ? (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 max-w-7xl mx-auto w-full">
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 max-w-7xl mx-auto w-full">
                                     {[...Array(8)].map((_, i) => (
                                         <SkeletonCard key={i} />
                                     ))}
@@ -325,7 +350,7 @@ export default function SearchPage({
                                 />
                             ) : (
                                 <>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 max-w-7xl mx-auto w-full">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 max-w-7xl mx-auto w-full">
                                         {displayed.map((pkg) => (
                                             <PackageCard
                                                 key={`${pkg.name}-${pkg.source}`}

@@ -48,6 +48,7 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
     // Bootstrap State
     const [bootstrapStatus, setBootstrapStatus] = useState<"idle" | "running" | "success" | "error">("idle");
     const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+    const [bootstrapSkipped, setBootstrapSkipped] = useState(false);
 
     // Initial Load
     // Initial Load
@@ -71,6 +72,7 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             }
             setBootstrapStatus("success");
             localStorage.setItem('monarch_infra_v2_2', 'true');
+            setBootstrapSkipped(false);
             return true;
         } catch (e) {
             errorService.reportError(e as Error | string);
@@ -86,6 +88,7 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
             await invoke('set_aur_enabled', { enabled: aurEnabled });
             localStorage.setItem('flatpak-enabled', String(flatpakEnabled));
             localStorage.setItem('monarch_onboarding_v3', 'true');
+            await invoke('set_one_click_enabled', { enabled: oneClickEnabled, password: null }).catch(() => { });
             await setTelemetry(localTelemetry).catch(() => { });
 
             invoke('track_event', {
@@ -111,9 +114,16 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
     ];
 
     const nextStep = () => {
-        if (step === 0 && bootstrapStatus !== 'success') return; // Must complete setup
+        if (step === 0 && !bootstrapSkipped && bootstrapStatus !== 'success') return; // Must complete setup unless skipped
         if (step < steps.length - 1) setStep(step + 1);
         else handleFinish();
+    };
+
+    const handleSkipSetup = () => {
+        setBootstrapSkipped(true);
+        setBootstrapStatus('idle');
+        setBootstrapError(null);
+        setStep((prev) => Math.min(prev + 1, steps.length - 1));
     };
 
     const safeStep = Math.min(step, steps.length - 1);
@@ -164,7 +174,7 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                                         <div className="flex items-center justify-between gap-4">
                                             <div className="space-y-0.5">
                                                 <div className="font-bold text-sm text-app-fg flex items-center gap-2">
-                                                    <Lock size={14} className="text-blue-500" /> One-Click Authentication
+                                                    <Lock size={14} className="text-accent" /> One-Click Authentication
                                                 </div>
                                                 <p className="text-[11px] text-app-muted max-w-[220px]">
                                                     {oneClickEnabled
@@ -178,7 +188,7 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                                                     setOneClickEnabled(!oneClickEnabled);
                                                     setReducePasswordPrompts(!oneClickEnabled);
                                                 }}
-                                                className={clsx("w-11 h-6 rounded-full p-1 transition-colors shrink-0", oneClickEnabled ? "bg-blue-600" : "bg-app-fg/20")}
+                                                className={clsx("w-11 h-6 rounded-full p-1 transition-colors shrink-0", oneClickEnabled ? "bg-accent" : "bg-app-fg/20")}
                                             >
                                                 <div className={clsx("w-4 h-4 bg-white rounded-full transition-transform", oneClickEnabled ? "translate-x-5" : "translate-x-0")} />
                                             </button>
@@ -201,12 +211,24 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                                                 <button
                                                     onClick={enableSystem}
                                                     disabled={bootstrapStatus === 'running'}
-                                                    className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50"
+                                                    className={clsx(
+                                                        "w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50",
+                                                        "btn-accent shadow-lg shadow-[color-mix(in_srgb,_var(--app-accent)_20%,_transparent)]"
+                                                    )}
                                                 >
                                                     {bootstrapStatus === 'running' ? <RefreshCw size={18} className="animate-spin" /> : <ShieldCheck size={18} />}
                                                     {bootstrapStatus === 'running' ? "Configuring..." : "Setup Security & Continue"}
                                                 </button>
-                                                <p className="text-[10px] text-center text-app-muted">This will require your password once.</p>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleSkipSetup}
+                                                    className="w-full py-2.5 px-4 text-xs font-bold text-app-muted hover:text-app-fg transition-colors rounded-xl border border-app-border/60 hover:border-app-border/90"
+                                                >
+                                                    Skip for now (fix later in Settings)
+                                                </button>
+                                                <p className="text-[10px] text-center text-app-muted">
+                                                    We recommend running this once to ensure keyrings and policies are healthy.
+                                                </p>
                                             </>
                                         )}
                                     </div>
@@ -322,7 +344,7 @@ export default function OnboardingModal({ onComplete }: OnboardingModalProps) {
                     {/* Footer */}
                     <div className="p-4 border-t border-app-border bg-app-bg flex justify-between items-center">
                         <button onClick={() => setStep(step - 1)} disabled={step === 0 || isSaving} className={clsx("px-4 py-2 rounded-lg text-xs font-bold transition-all", step === 0 ? "opacity-0 pointer-events-none" : "text-app-muted hover:bg-app-fg/5")}>Back</button>
-                        <button onClick={nextStep} disabled={isSaving || (step === 0 && bootstrapStatus !== 'success')} className={clsx("px-6 py-2 rounded-lg text-xs font-bold text-white shadow-lg transition-all flex items-center gap-2", (isSaving || (step === 0 && bootstrapStatus !== 'success')) ? "opacity-30 cursor-not-allowed grayscale" : "hover:opacity-90 active:scale-95")} style={{ backgroundColor: accentColor }}>
+                        <button onClick={nextStep} disabled={isSaving || (step === 0 && !bootstrapSkipped && bootstrapStatus !== 'success')} className={clsx("px-6 py-2 rounded-lg text-xs font-bold text-white shadow-lg transition-all flex items-center gap-2", (isSaving || (step === 0 && !bootstrapSkipped && bootstrapStatus !== 'success')) ? "opacity-30 cursor-not-allowed grayscale" : "hover:opacity-90 active:scale-95")} style={{ backgroundColor: accentColor }}>
                             {isSaving ? "Finalizing..." : <>{step === steps.length - 1 ? "Start Using MonARCH" : "Next Step"} <ChevronRight size={14} /></>}
                         </button>
                     </div>

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Download, Heart, Zap } from 'lucide-react';
+import { Download, Heart, Zap, Layers } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useFavorites } from '../hooks/useFavorites';
 import { clsx } from 'clsx';
@@ -8,6 +8,7 @@ import { resolveIconUrl } from '../utils/iconHelper';
 import RepoBadge from './RepoBadge';
 
 import { PackageSource } from '../types/alpm';
+import { getBestSource, getAdditionalSourceCount } from '../utils/repoHelper';
 
 export interface Package {
     name: string;
@@ -102,9 +103,14 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
     const variants = [pkg, ...(pkg.alternatives || [])];
     const hasVariants = variants.length > 1;
 
+    // Unified: Best badge + source indicator when multiple sources
+    const bestSource = getBestSource(displayPkg.available_sources);
+    const additionalCount = getAdditionalSourceCount(displayPkg.available_sources);
+    const hasMultipleSources = additionalCount > 0;
+
     return (
         <motion.div
-            onClick={() => onClick(displayPkg)}
+            onClick={() => onClick(pkg)}
             className="group relative bg-app-card dark:bg-black/20 border border-app-border rounded-xl p-6 hover:bg-app-card/80 dark:hover:bg-black/40 transition-all duration-300 hover:border-blue-300/50 dark:hover:border-white/10 hover:-translate-y-1 hover:shadow-xl dark:hover:shadow-2xl shadow-sm dark:shadow-none cursor-pointer overflow-hidden flex flex-col h-full min-w-0 backdrop-blur-md card-gpu"
         >
             <div className="flex justify-between items-start mb-4 gap-4">
@@ -182,19 +188,22 @@ const PackageCardInner: React.FC<PackageCardProps> = ({ pkg, onClick, skipMetada
                 </div>
             </div>
 
-            <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-2 mb-6 h-10 leading-relaxed">
+            <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-2 mb-6 min-h-[2.5rem] leading-relaxed">
                 {displayPkg.description}
             </p>
 
             <div className="flex items-center justify-between mt-auto">
                 <div className="flex flex-col gap-2 items-start">
-                    <div className="flex flex-wrap gap-1">
-                        {displayPkg.available_sources && displayPkg.available_sources.length > 0 ? (
-                            displayPkg.available_sources.map(src => (
-                                <RepoBadge key={typeof src === 'string' ? src : src.id} source={src} />
-                            ))
-                        ) : (
-                            <RepoBadge source={displayPkg.source} />
+                    <div className="flex flex-wrap gap-1 items-center">
+                        <RepoBadge source={bestSource ?? displayPkg.source} />
+                        {hasMultipleSources && (
+                            <span
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold text-app-muted bg-app-fg/5 border border-app-border/50"
+                                title={`Available in ${displayPkg.available_sources!.length} sources`}
+                            >
+                                <Layers size={10} />
+                                +{additionalCount} sources
+                            </span>
                         )}
                     </div>
 

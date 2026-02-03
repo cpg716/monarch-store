@@ -5,6 +5,26 @@ export interface PackageSource {
     label: string;       // "Arch Official", "Chaotic-AUR", etc.
 }
 
+/** Unified view of a package with merged sources (Official + Flatpak + AUR in one object). */
+export interface UnifiedPackageSource {
+    type: 'official' | 'flatpak' | 'aur';
+    label: string;
+    version: string;
+    packageId: string; // Real ID (e.g. org.videolan.VLC or package name)
+}
+
+export interface UnifiedPackage {
+    id: string;
+    name: string;
+    display_name?: string;
+    currentSource: 'official' | 'flatpak' | 'aur';
+    version: string;
+    description: string;
+    screenshots: string[];
+    icon?: string;
+    availableSources: UnifiedPackageSource[];
+}
+
 export interface AlpmProgressEvent {
     event_type: string;
     package?: string;

@@ -48,7 +48,7 @@ export default function ConfirmationModal({
         switch (variant) {
             case 'danger': return "bg-red-500 hover:bg-red-600";
             case 'success': return "bg-green-500 hover:bg-green-600";
-            default: return "bg-blue-600 hover:bg-blue-700";
+            default: return "btn-accent hover:opacity-90";
         }
     };
 

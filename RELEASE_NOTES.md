@@ -7,7 +7,7 @@
 # Monarch Store Release Notes
 
 ## v0.4.0-alpha (Universal MonARCH)
-**"The Host-Adaptive Update"**
+**"The Host-Adaptive Update"** — v0.4.0-alpha: The Universal Update. Removes the need for manual repo configuration; repositories are discovered from your system's `pacman.conf`.
 
 *   **Mission Control (New Settings)**: A tabbed settings overhaul for better management of Sources, AUR Builder, and System Maintenance.
 *   **Unified Update System**: Parallel-checks Repo/AUR/Flatpak. Enforces full system upgrade (`-Syu`) if any official package is updated (Safety Lock). Added "Built from Source" labels for AUR clarity.

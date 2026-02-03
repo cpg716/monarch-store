@@ -77,12 +77,13 @@ function TitleBarButton({
     onClick,
     variant = 'default',
     ...props
-}: React.ComponentProps<'div'> & { variant?: 'default' | 'danger' }) {
+}: React.ComponentProps<'button'> & { variant?: 'default' | 'danger' }) {
     return (
-        <div
+        <button
+            type="button"
             onClick={onClick}
             className={cn(
-                "w-7 h-7 flex items-center justify-center rounded-lg transition-all duration-200 cursor-pointer",
+                "w-7 h-7 flex items-center justify-center rounded-lg transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent",
                 variant === 'default'
                     ? "hover:bg-white/10 active:bg-white/20 text-white/70 hover:text-white"
                     : "hover:bg-red-500 active:bg-red-600 text-white/70 hover:text-white"
@@ -90,6 +91,6 @@ function TitleBarButton({
             {...props}
         >
             {children}
-        </div>
+        </button>
     );
 }

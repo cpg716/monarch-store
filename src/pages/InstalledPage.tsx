@@ -144,7 +144,7 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
                 </div>
 
                 <div className="relative group mt-3">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-app-muted group-focus-within:text-blue-500 transition-colors" size={18} />
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-app-muted group-focus-within:text-accent transition-colors" size={18} />
                     <input
                         type="text"
                         placeholder="Filter installed apps..."
@@ -214,7 +214,7 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
                                     <div className="flex items-center gap-1.5 pl-3 border-l border-black/5 dark:border-white/5 shrink-0">
                                         <button
                                             onClick={(e) => { e.stopPropagation(); handleLaunch(app.name); }}
-                                            className="h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-md active:scale-95 border border-white/10"
+                                            className="h-8 px-3 rounded-lg btn-accent hover:opacity-90 font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-md active:scale-95 border border-white/10"
                                         >
                                             <Play size={14} fill="currentColor" /> Launch
                                         </button>

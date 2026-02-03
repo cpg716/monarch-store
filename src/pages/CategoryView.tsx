@@ -357,7 +357,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
             <div className="flex-1 overflow-y-auto p-8">
                 <div className="max-w-7xl mx-auto w-full">
                     {initialLoad && packages.length === 0 ? (
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                             {[...Array(10)].map((_, i) => (
                                 <PackageCardSkeleton key={i} />
                             ))}
@@ -394,7 +394,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                                                 <h2 className="text-lg font-bold text-app-fg mb-4 flex items-center gap-2">
                                                     <span className="text-yellow-500">★</span> Featured Applications
                                                 </h2>
-                                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                                                     {featured.map((pkg) => (
                                                         <PackageCard
                                                             key={`feat-${pkg.name}`}
@@ -409,7 +409,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                                             </div>
                                         )}
 
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                                             {others.map((pkg, index) => {
                                                 const isLast = index === others.length - 1;
                                                 return (
@@ -429,7 +429,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
 
                             {/* Loading More Indicator */}
                             {loading && !initialLoad && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 mt-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mt-4">
                                     {[...Array(5)].map((_, i) => (
                                         <PackageCardSkeleton key={`more-${i}`} />
                                     ))}

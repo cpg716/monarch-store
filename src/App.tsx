@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Heart, AlertCircle, Database, Loader2 } from 'lucide-react';
+import { ArrowLeft, Heart, AlertCircle, Database, Loader2, LayoutGrid, Download, Settings, RefreshCw, Search } from 'lucide-react';
 import { useFavorites } from './hooks/useFavorites';
 import Sidebar from './components/Sidebar';
 import SearchBar from './components/SearchBar';
@@ -31,6 +31,59 @@ import { useToast } from './context/ToastContext';
 import { useSessionPassword } from './context/useSessionPassword';
 import { useErrorService } from './context/ErrorContext';
 import TitleBar from './components/TitleBar';
+
+const MOBILE_TABS = [
+  { id: 'search', icon: Search, label: 'Search' },
+  { id: 'explore', icon: LayoutGrid, label: 'Explore' },
+  { id: 'installed', icon: Download, label: 'Installed' },
+  { id: 'updates', icon: RefreshCw, label: 'Updates' },
+  { id: 'settings', icon: Settings, label: 'Settings' },
+];
+
+function MobileNav({
+  activeTab,
+  onSelect,
+}: {
+  activeTab: string;
+  onSelect: (tab: string) => void;
+}) {
+  return (
+    <nav className="md:hidden fixed bottom-3 left-0 right-0 z-40 pointer-events-none">
+      <div className="mx-auto max-w-xl px-4 pointer-events-auto">
+        <div className="rounded-3xl bg-app-card/90 border border-app-border backdrop-blur-xl shadow-2xl">
+          <ul className="grid grid-cols-5 divide-x divide-app-border/20 overflow-hidden">
+            {MOBILE_TABS.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <li key={tab.id}>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(tab.id)}
+                    className={`w-full flex flex-col items-center gap-1 py-3 text-[11px] font-semibold transition-all duration-200 ${
+                      isActive
+                        ? 'text-accent'
+                        : 'text-app-muted hover:text-app-fg'
+                    }`}
+                  >
+                    <Icon
+                      size={20}
+                      strokeWidth={isActive ? 2.4 : 2}
+                      className={`transition-transform ${
+                        isActive ? 'scale-110' : 'scale-100'
+                      }`}
+                    />
+                    <span>{tab.label}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </div>
+    </nav>
+  );
+}
 
 function App() {
   const [activeTab, setActiveTab] = useState('explore');
@@ -339,31 +392,40 @@ function App() {
 
   const handleTabChange = (tab: string) => {
     if (tab === 'search') {
-      setSelectedCategory(null);
-      setSelectedPackage(null);
-      setViewAll(null);
-      setActiveTab('explore');
-      setTimeout(() => {
-        const input = document.querySelector('input') as HTMLInputElement;
-        if (input) input.focus();
-      }, 50);
-    } else {
-      if (activeTab === tab) {
+      if (activeTab === 'search') {
         setSelectedPackage(null);
         setSelectedCategory(null);
         setViewAll(null);
         setSearchQuery('');
+      } else {
+        setSelectedCategory(null);
+        setSelectedPackage(null);
+        setViewAll(null);
+        setSearchQuery('');
       }
-      setActiveTab(tab);
-      localStorage.setItem('monarch_active_tab', tab);
-      setSearchQuery('');
+      setActiveTab('search');
+      setTimeout(() => {
+        const input = document.querySelector<HTMLInputElement>('input[data-monarch-search]');
+        if (input) input.focus();
+      }, 50);
+      return;
+    }
 
-      if (tab === 'settings') {
-        setTimeout(() => {
-          const el = document.getElementById('system-health');
-          if (el) el.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
-      }
+    if (activeTab === tab) {
+      setSelectedPackage(null);
+      setSelectedCategory(null);
+      setViewAll(null);
+      setSearchQuery('');
+    }
+    setActiveTab(tab);
+    localStorage.setItem('monarch_active_tab', tab);
+    setSearchQuery('');
+
+    if (tab === 'settings') {
+      setTimeout(() => {
+        const el = document.getElementById('system-health');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
     }
   };
 
@@ -404,10 +466,14 @@ function App() {
   if (isRefreshing) return <LoadingScreen />;
 
   return (
-    <div className="flex h-screen w-screen bg-app-bg text-app-fg overflow-hidden font-sans transition-colors pt-10 border border-white/5 rounded-xl shadow-2xl" style={{ '--tw-selection-bg': `${accentColor}4D` } as any}>
-      <TitleBar />
-      {/* Grandma-proof: one-step DB repair overlay when only issue is corrupt sync DBs */}
-      {pendingDbRepair && (
+    <div
+      className="h-screen w-screen bg-app-bg text-app-fg overflow-hidden font-sans transition-colors"
+      style={{ '--tw-selection-bg': `${accentColor}4D` } as any}
+    >
+      <div className="relative flex flex-col h-full border border-white/5 rounded-xl shadow-2xl overflow-hidden">
+        <TitleBar />
+        {/* Grandma-proof: one-step DB repair overlay when only issue is corrupt sync DBs */}
+        {pendingDbRepair && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6">
           <div className="bg-app-bg border border-app-border rounded-2xl shadow-2xl p-8 max-w-md w-full text-center">
             <div className="w-14 h-14 rounded-full bg-amber-500/20 flex items-center justify-center mx-auto mb-6">
@@ -431,10 +497,15 @@ function App() {
             </button>
           </div>
         </div>
-      )}
-      {!showOnboarding && <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />}
+        )}
+        <div className="flex flex-1 overflow-hidden pt-10">
+          {!showOnboarding && (
+            <div className="hidden md:flex">
+              <Sidebar activeTab={activeTab} setActiveTab={handleTabChange} />
+            </div>
+          )}
 
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative min-w-0">
+          <main className="flex-1 flex flex-col h-full overflow-hidden relative min-w-0 pb-24 md:pb-0">
         {!showOnboarding && systemHealth && !systemHealth.is_healthy && !pendingDbRepair && (
           <div className="bg-red-600 text-white px-6 py-3 flex flex-col md:flex-row items-center justify-between gap-4 text-sm font-bold animate-in slide-in-from-top duration-300 z-30 shrink-0 shadow-lg">
             <div className="flex items-start gap-3">
@@ -548,6 +619,11 @@ function App() {
           </div>
         )}
       </main>
+        </div>
+        {!showOnboarding && (
+          <MobileNav activeTab={activeTab} onSelect={handleTabChange} />
+        )}
+      </div>
       {/* System Fix Popup - Shows BEFORE onboarding when system defects detected */}
       {showSystemFixPopup && onboardingReason && (
         <ConfirmationModal

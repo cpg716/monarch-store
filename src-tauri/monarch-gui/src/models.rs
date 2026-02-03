@@ -33,26 +33,23 @@ impl PackageSource {
         }
     }
 
-    /// Map sync DB / repo name to the correct source. Use this whenever we get a package from a repo
-    /// so CachyOS, Chaotic, Manjaro, etc. are labeled correctly instead of everything as "official".
+    /// Map sync DB / repo name to the correct source. Uses Grand Unification labels
+    /// so CachyOS, Chaotic, Manjaro, SteamOS, etc. are labeled per distro identity.
     pub fn from_repo_name(
         name: &str,
         version: &str,
         distro: &crate::distro_context::DistroContext,
     ) -> Self {
-        let (source_type, id, label) = match name {
-            "chaotic-aur" => ("repo", "chaotic-aur", "Chaotic-AUR (Pre-built)"),
-            n if n.starts_with("cachyos") => ("repo", "cachyos", "CachyOS (Optimized)"),
-            n if n.starts_with("manjaro") => ("repo", "manjaro", "Manjaro Official"),
-            n if n.starts_with("garuda") => ("repo", "garuda", "Garuda (Arch)"),
-            n if n.starts_with("endeavour") => ("repo", "endeavour", "EndeavourOS"),
-            "core" | "extra" | "community" | "multilib" => match distro.id {
-                crate::distro_context::DistroId::Manjaro => ("repo", "core", "Manjaro Official"),
-                crate::distro_context::DistroId::Garuda => ("repo", "core", "Garuda (Arch)"),
-                _ => ("repo", "core", "Arch Official"),
-            },
-            _ => ("repo", "id_unknown", "Official Repository"),
+        let source_type = if name == "aur" { "aur" } else { "repo" };
+        let id = match name {
+            n if n.starts_with("cachyos") => "cachyos",
+            n if n.starts_with("manjaro") => "manjaro",
+            n if n.starts_with("garuda") => "garuda",
+            n if n.starts_with("endeavour") => "endeavour",
+            "core" | "extra" | "community" | "multilib" => name,
+            _ => name,
         };
+        let label = crate::labels::get_friendly_label(name, distro.id_str());
 
         PackageSource::new(source_type, id, version, label)
     }

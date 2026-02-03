@@ -893,7 +893,7 @@ pub async fn check_repo_sync_status(
     Ok(status)
 }
 
-// Apply OS configuration (write repo configs to /etc/pacman.d/monarch/)
+// Trigger DB refresh to reflect system config. No repo injection; we read from ALPM.
 #[tauri::command]
 pub async fn apply_os_config(
     app: tauri::AppHandle,

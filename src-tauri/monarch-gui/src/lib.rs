@@ -1,5 +1,6 @@
 pub(crate) mod alpm_progress;
 pub(crate) mod alpm_read;
+pub(crate) mod labels;
 pub(crate) mod aur_api;
 pub(crate) mod chaotic_api;
 pub(crate) mod commands;

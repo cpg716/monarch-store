@@ -262,10 +262,22 @@ impl AppStreamLoader {
 
     /// Returns a human-readable name for a given package name if available.
     /// e.g. "google-chrome" -> "Google Chrome", "visual-studio-code-bin" -> "VS Code"
+    /// Order: AppStream (Linux standard) first, then static map, then None.
     pub fn get_friendly_name(&self, pkg_name: &str) -> Option<String> {
         let pkg_lower = pkg_name.to_lowercase();
 
-        // 1. Static Map (The "Smart Search" Registry)
+        // 1. AppStream (Linux standard for nice names)
+        if let Some(meta) = self.pkg_index.get(&pkg_lower) {
+            return Some(meta.name.clone());
+        }
+        let base = crate::utils::strip_package_suffix(&pkg_lower);
+        if base != pkg_lower {
+            if let Some(meta) = self.pkg_index.get(base) {
+                return Some(meta.name.clone());
+            }
+        }
+
+        // 2. Static Map (AUR / known mappings fallback)
         match pkg_lower.as_str() {
             "google-chrome" | "google-chrome-stable" => Some("Google Chrome".to_string()),
             "firefox" | "firefox-developer-edition" | "firefox-nightly" => {

@@ -90,7 +90,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                 <div className="flex items-center justify-between mb-6">
                     {title && <div className="h-8 w-48 rounded bg-gray-200 dark:bg-gray-700 animate-pulse" />}
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 max-w-7xl mx-auto w-full">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 max-w-7xl mx-auto w-full">
                     {[...Array(8)].map((_, i) => (
                         <SkeletonCard key={i} />
                     ))}
@@ -112,7 +112,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
             <div className="flex items-center justify-between mb-6">
                 {title && <h2 className="text-2xl font-bold text-app-fg flex items-center gap-2">{title}</h2>}
                 {showSeeAll && !filterIds && (
-                    <button onClick={onSeeAll} className="text-sm font-bold text-blue-500 hover:text-blue-400 transition-colors flex items-center gap-1">
+                    <button onClick={onSeeAll} className="text-sm font-bold text-accent hover:opacity-80 transition-colors flex items-center gap-1">
                         See All <span className="text-xs">→</span>
                     </button>
                 )}
@@ -140,19 +140,19 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                             <div className="snap-start flex-shrink-0 w-[280px] flex">
                                 <button
                                     onClick={onSeeAll}
-                                    className="w-full h-full bg-app-card/30 border-2 border-dashed border-app-border rounded-2xl flex flex-col items-center justify-center gap-4 group hover:border-blue-500/50 hover:bg-blue-500/5 transition-all min-h-[200px]"
+                                    className="w-full h-full bg-app-card/30 border-2 border-dashed border-app-border rounded-2xl flex flex-col items-center justify-center gap-4 group transition-all min-h-[200px] accent-hover-outline"
                                 >
-                                    <div className="w-12 h-12 rounded-full bg-app-subtle flex items-center justify-center group-hover:bg-blue-500/20 text-app-muted group-hover:text-blue-500 transition-colors">
+                                    <div className="w-12 h-12 rounded-full bg-app-subtle flex items-center justify-center transition-opacity group-hover:opacity-90">
                                         <span className="text-2xl">→</span>
                                     </div>
-                                    <span className="font-bold text-app-fg group-hover:text-blue-400">View All</span>
+                                    <span className="font-bold text-app-fg transition-opacity group-hover:opacity-90">View All</span>
                                 </button>
                             </div>
                         )}
                     </div>
                 </div>
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 max-w-7xl mx-auto w-full">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 max-w-7xl mx-auto w-full">
                     {displayedPackages.map((pkg) => (
                         <PackageCard
                             key={`${pkg.name}-${pkg.source}`}
@@ -167,12 +167,12 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                     {showSeeAll && (
                         <button
                             onClick={onSeeAll}
-                            className="bg-app-card/30 border-2 border-dashed border-app-border rounded-2xl flex flex-col items-center justify-center gap-4 group hover:border-blue-500/50 hover:bg-blue-500/5 transition-all p-8 h-full min-h-[220px]"
+                            className="bg-app-card/30 border-2 border-dashed border-app-border rounded-2xl flex flex-col items-center justify-center gap-4 group transition-all p-8 h-full min-h-[220px] accent-hover-outline"
                         >
-                            <div className="w-12 h-12 rounded-full bg-app-fg/5 flex items-center justify-center group-hover:bg-blue-500/20 text-app-muted group-hover:text-blue-500 transition-colors">
+                            <div className="w-12 h-12 rounded-full bg-app-fg/5 flex items-center justify-center transition-opacity group-hover:opacity-90">
                                 <span className="text-2xl">→</span>
                             </div>
-                            <span className="font-bold text-app-fg group-hover:text-blue-400">View All Trending</span>
+                            <span className="font-bold text-app-fg transition-opacity group-hover:opacity-90">View All Trending</span>
                         </button>
                     )}
                 </div>

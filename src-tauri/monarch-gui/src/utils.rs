@@ -309,6 +309,70 @@ pub fn strip_package_suffix(name: &str) -> &str {
     name
 }
 
+/// Variant suffixes for merge deduplication (e.g. firefox + firefox-developer-edition → one entry).
+/// Longer suffixes first so we strip -developer-edition before -edition.
+const VARIANT_SUFFIXES: &[&str] = &[
+    "-developer-edition",
+    "-developer-edition-bin",
+    "-esr",
+    "-esr-bin",
+    "-stable",
+    "-dev",
+    "-bin",
+    "-git",
+    "-nightly",
+    "-beta",
+    "-pure",
+    "-appimage",
+    "-wayland",
+    "-x11",
+    "-hg",
+    "-svn",
+    "-cn",
+    "-fresh",
+    "-still",
+    "-native",
+    "-runtime",
+    "-lts",
+    "-edge",
+];
+
+/// Returns a canonical key for merge deduplication. Variants (firefox, firefox-developer-edition,
+/// firefox-esr) map to the same key so they merge into one entry with multiple sources.
+/// - If app_id is set (reverse-DNS), use its last segment as canonical base.
+/// - Else recursively strip variant suffixes until stable.
+pub fn canonical_merge_key(name: &str, app_id: Option<&str>) -> String {
+    let name_lower = name.trim().to_lowercase();
+
+    // App ID takes precedence (Linux standard identity)
+    if let Some(id) = app_id {
+        if id.contains('.') {
+            let last = id.split('.').last().unwrap_or(id);
+            if !last.is_empty() {
+                return last.to_lowercase();
+            }
+        }
+    }
+
+    // Recursively strip variant suffixes until stable
+    let mut current = name_lower.as_str();
+    loop {
+        let mut changed = false;
+        for suffix in VARIANT_SUFFIXES {
+            if let Some(stripped) = current.strip_suffix(suffix) {
+                current = stripped;
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    current.to_string()
+}
+
 /// Merges official/appstream packages with repository packages, handling deduplication.
 /// This logic was extracted from lib.rs to allow for unit testing.
 #[allow(dead_code)]
@@ -437,6 +501,26 @@ mod tests {
         assert_eq!(pkgs[0].name, "google-chrome"); // Rank 0 (Common)
         assert_eq!(pkgs[1].name, "chrome-gnome-shell"); // Official (Rank 3)
         assert_eq!(pkgs[2].name, "open-chrome"); // Aur (Rank 4)
+    }
+
+    #[test]
+    fn test_canonical_merge_key_variants() {
+        // Variants map to same canonical key for merge deduplication
+        assert_eq!(canonical_merge_key("firefox", None), "firefox");
+        assert_eq!(canonical_merge_key("firefox-developer-edition", None), "firefox");
+        assert_eq!(canonical_merge_key("firefox-esr", None), "firefox");
+        assert_eq!(canonical_merge_key("brave-bin", None), "brave");
+        assert_eq!(canonical_merge_key("visual-studio-code-bin", None), "visual-studio-code");
+
+        // App ID takes precedence (reverse-DNS last segment)
+        assert_eq!(
+            canonical_merge_key("firefox", Some("org.mozilla.firefox")),
+            "firefox"
+        );
+        assert_eq!(
+            canonical_merge_key("Firefox", Some("org.mozilla.firefox")),
+            "firefox"
+        );
     }
 
     #[test]

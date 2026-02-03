@@ -13,7 +13,7 @@ pub struct PaginatedResponse {
     pub has_more: bool,
 }
 
-use crate::flathub_api::FlathubApiClient;
+use crate::flathub_api::{FlathubApiClient, SearchResult};
 use crate::models::{Package, PackageSource};
 
 // Helper to normalize names for merging (e.g. "Firefox" -> "firefox")
@@ -21,59 +21,149 @@ fn normalize_name(s: &str) -> String {
     s.trim().to_lowercase()
 }
 
-// Phase 1: The "Distro Dictionary"
-// Maps specific repository names + distro ID to Friendly Labels
-fn get_friendly_label(db_name: &str, distro_id: &str) -> &'static str {
-    match db_name {
-        // --- The Big Players ---
-        "core" | "extra" | "multilib" => match distro_id {
-            "manjaro" => "Manjaro Official",
-            "endeavouros" => "EndeavourOS (Arch)",
-            "garuda" => "Garuda (Arch)",
-            "cachyos" => "CachyOS (Arch)",
-            "steamos" => "SteamOS (Arch)", // SteamOS often mirrors core/extra
-            "chimeraos" => "ChimeraOS (Arch)",
-            "arcolinux" => "ArcoLinux (Arch)",
-            "rebornos" => "RebornOS (Arch)",
-            "artix" => "Artix Linux",
-            "biglinux" => "BigLinux (Arch)",
-            "mabox" => "Mabox (Manjaro Base)",
-            _ => "Arch Official", // Default fallback
-        },
+/// Merges Official, AUR, and Flatpak search results into a single deduplicated list.
+/// Each output Package has available_sources listing all sources where it was found.
+/// Used by search_packages and unit-tested for aggregation correctness.
+pub fn merge_search_results(
+    official: Vec<Package>,
+    aur: Vec<Package>,
+    flatpak: Vec<SearchResult>,
+) -> Vec<Package> {
+    let mut package_map: HashMap<String, Package> = HashMap::new();
 
-        // --- SteamOS & Gaming ---
-        "jupiter" | "jupiter-rel" | "jupiter-main" => "SteamOS (Jupiter)",
-        "holo" | "holo-rel" | "holo-main" => "SteamOS (Holo)",
-        "chimeraos" | "chimeraos-extra" => "ChimeraOS (Gaming)",
-        "gamer-os" => "GamerOS",
-
-        // --- Performance & Optimization ---
-        "cachyos" | "cachyos-v3" | "cachyos-v4" => "CachyOS (Optimized)",
-        "chaotic-aur" => "Chaotic-AUR (Pre-built)",
-
-        // --- Specialized Distros ---
-        "endeavouros" => "EndeavourOS Tools",
-        "garuda" => "Garuda Tools",
-        "arcolinux_repo" | "arcolinux_repo_3party" => "ArcoLinux Repo",
-        "rebornos" => "RebornOS Repo",
-        "blackarch" => "BlackArch (Security)",
-        "xerolinux_repo" => "XeroLinux Repo",
-        "mabox" => "Mabox Tools",
-        "alg-repo" => "ArchLabs",
-        "athena" => "Athena OS",
-        "biglinux-stable" | "biglinux-testing" => "BigLinux Repo",
-        "bluestar" => "Bluestar Linux",
-        "obarun" => "Obarun",
-        "parabola" => "Parabola (Libre)",
-        "hyperbola" => "Hyperbola",
-        "ctlos" => "CtlOS",
-        "alci-repo" => "ALCI",
-
-        // --- Universal ---
-        "aur" => "AUR (Community)",
-        "flatpak" => "Flatpak (Sandboxed)",
-        _ => "Custom Repository", // Catch-all for obscure distros
+    // A. Process Official (Highest Priority Base)
+    for mut p in official {
+        p.available_sources = Some(vec![p.source.clone()]);
+        let key = utils::canonical_merge_key(&p.name, p.app_id.as_deref());
+        package_map.insert(key, p);
     }
+
+    // B. Process Flatpak
+    for hit in flatpak {
+        let direct_key = normalize_name(&hit.name);
+        let canonical_key = utils::canonical_merge_key(&hit.name, Some(&hit.app_id));
+        let flatpak_base = utils::strip_package_suffix(&direct_key);
+
+        let mut match_key = None;
+
+        if package_map.contains_key(&direct_key) {
+            match_key = Some(direct_key.clone());
+        } else if package_map.contains_key(&canonical_key) {
+            match_key = Some(canonical_key.clone());
+        } else {
+            for k in package_map.keys() {
+                let repo_base = utils::strip_package_suffix(k);
+                if repo_base == flatpak_base {
+                    match_key = Some(k.clone());
+                    break;
+                }
+                if let Some(mapped) = crate::flathub_api::get_flathub_app_id(repo_base) {
+                    if mapped.eq_ignore_ascii_case(&hit.app_id) {
+                        match_key = Some(k.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
+        if match_key.is_none() {
+            let suffix_part = hit
+                .app_id
+                .split('.')
+                .last()
+                .map(normalize_name)
+                .unwrap_or_default();
+
+            for (k, pkg) in &package_map {
+                if let Some(pkg_id) = &pkg.app_id {
+                    if pkg_id.eq_ignore_ascii_case(&hit.app_id) {
+                        match_key = Some(k.clone());
+                        break;
+                    }
+                }
+                if !suffix_part.is_empty() && k == &suffix_part {
+                    match_key = Some(k.clone());
+                    break;
+                }
+            }
+        }
+
+        if let Some(key) = match_key {
+            if let Some(existing) = package_map.get_mut(&key) {
+                if let Some(sources) = &mut existing.available_sources {
+                    if !sources.iter().any(|s| s.source_type == "flatpak") {
+                        sources.push(PackageSource::new(
+                            "flatpak",
+                            "flathub",
+                            "latest",
+                            "Flatpak (Sandboxed)",
+                        ));
+                    }
+                }
+                if existing.app_id.is_none() {
+                    existing.app_id = Some(hit.app_id);
+                }
+            }
+        } else {
+            let p = Package {
+                name: hit.name.clone(),
+                display_name: Some(hit.name),
+                description: hit.summary.unwrap_or_default(),
+                version: "latest".to_string(),
+                source: PackageSource::new(
+                    "flatpak",
+                    "flathub",
+                    "latest",
+                    "Flatpak (Sandboxed)",
+                ),
+                maintainer: None,
+                license: None,
+                url: None,
+                last_modified: None,
+                first_submitted: None,
+                out_of_date: None,
+                keywords: None,
+                num_votes: None,
+                icon: hit.icon,
+                screenshots: None,
+                provides: None,
+                app_id: Some(hit.app_id),
+                is_optimized: None,
+                depends: None,
+                make_depends: None,
+                is_featured: None,
+                installed: false,
+                download_size: None,
+                installed_size: None,
+                alternatives: None,
+                available_sources: Some(vec![PackageSource::new(
+                    "flatpak",
+                    "flathub",
+                    "latest",
+                    "Flatpak (Sandboxed)",
+                )]),
+            };
+            package_map.insert(direct_key, p);
+        }
+    }
+
+    // C. Process AUR
+    for mut p in aur {
+        let key = utils::canonical_merge_key(&p.name, p.app_id.as_deref());
+
+        if let Some(existing) = package_map.get_mut(&key) {
+            if let Some(sources) = &mut existing.available_sources {
+                if !sources.iter().any(|s| s.source_type == "aur") {
+                    sources.push(p.source.clone());
+                }
+            }
+        } else {
+            p.available_sources = Some(vec![p.source.clone()]);
+            package_map.insert(key, p);
+        }
+    }
+
+    package_map.into_values().collect()
 }
 
 #[tauri::command]
@@ -101,184 +191,30 @@ pub async fn search_packages(
         flathub.search_flathub(&query)
     );
 
-    // 2. Merge Logic
-    // We want a map of unique packages keyed by "normalized name"
-    // Priority: Official > Flatpak > AUR (implicit by order of processing if we overwrite? logic needs care)
-    // We will accumulate available_sources.
+    // 2. Merge Logic (Unified Vision: deduplicate into single entries with available_sources)
+    let distro_id_str = match &state_distro.id {
+        crate::distro_context::DistroId::Manjaro => "manjaro",
+        crate::distro_context::DistroId::Garuda => "garuda",
+        crate::distro_context::DistroId::CachyOS => "cachyos",
+        crate::distro_context::DistroId::EndeavourOS => "endeavouros",
+        crate::distro_context::DistroId::Arch => "arch",
+        crate::distro_context::DistroId::Unknown(s) => s.as_str(),
+    };
 
-    let mut package_map: HashMap<String, Package> = HashMap::new();
+    let official: Vec<Package> = official_res
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut p| {
+            p.source.label = crate::labels::get_friendly_label(&p.source.id, distro_id_str).to_string();
+            p
+        })
+        .collect();
 
-    // A. Process Official (Highest Priority Base)
-    // A. Process Official (Highest Priority Base)
-    if let Ok(pkgs) = official_res {
-        for mut p in pkgs {
-            // "Grand Unification": Apply Distro Identity Logic
-            let distro_id_str = match &state_distro.id {
-                crate::distro_context::DistroId::Manjaro => "manjaro",
-                crate::distro_context::DistroId::Garuda => "garuda",
-                crate::distro_context::DistroId::CachyOS => "cachyos",
-                crate::distro_context::DistroId::EndeavourOS => "endeavouros",
-                crate::distro_context::DistroId::Arch => "arch",
-                crate::distro_context::DistroId::Unknown(s) => s.as_str(),
-            };
+    let aur: Vec<Package> = aur_res.unwrap_or_default();
 
-            p.source.label = get_friendly_label(&p.source.id, distro_id_str).to_string();
+    let flatpak: Vec<SearchResult> = flatpak_res.unwrap_or_default();
 
-            // Initialize available_sources with its own source
-            p.available_sources = Some(vec![p.source.clone()]);
-
-            let key = normalize_name(&p.name);
-            package_map.insert(key, p);
-        }
-    }
-
-    // B. Process Flatpak
-    if let Some(hits) = flatpak_res {
-        for hit in hits {
-            // --- SMART MERGE LOGIC (Global Fix) ---
-            let direct_key = normalize_name(&hit.name);
-            let flatpak_base = crate::utils::strip_package_suffix(&direct_key);
-
-            // 1. Find Match in Map
-            let mut match_key = None;
-
-            // Priority 1: Direct Name Match
-            if package_map.contains_key(&direct_key) {
-                match_key = Some(direct_key.clone());
-            }
-            // Priority 2: Fuzzy Base Name Match (e.g. Brave -> brave == brave-bin -> brave)
-            else {
-                for k in package_map.keys() {
-                    let repo_base = crate::utils::strip_package_suffix(k);
-                    if repo_base == flatpak_base {
-                        match_key = Some(k.clone());
-                        break;
-                    }
-
-                    // Check explicit Mapping (repo_base -> com.brave.Browser)
-                    if let Some(mapped) = crate::flathub_api::get_flathub_app_id(repo_base) {
-                        if mapped.eq_ignore_ascii_case(&hit.app_id) {
-                            match_key = Some(k.clone());
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Priority 3: Scan for matching App ID or Suffix
-            if match_key.is_none() {
-                let suffix_part = hit
-                    .app_id
-                    .split('.')
-                    .last()
-                    .map(normalize_name)
-                    .unwrap_or_default();
-
-                for (k, pkg) in &package_map {
-                    // Check explicit App ID match
-                    if let Some(pkg_id) = &pkg.app_id {
-                        if pkg_id.eq_ignore_ascii_case(&hit.app_id) {
-                            match_key = Some(k.clone());
-                            break;
-                        }
-                    }
-                    // Check if App ID Suffix matches Repo Key (e.g. com.visualstudio.code -> code)
-                    if !suffix_part.is_empty() && k == &suffix_part {
-                        match_key = Some(k.clone());
-                        break;
-                    }
-                }
-            }
-
-            if let Some(key) = match_key {
-                // UPDATE existing
-                if let Some(existing) = package_map.get_mut(&key) {
-                    // Add Flatpak to sources
-                    if let Some(sources) = &mut existing.available_sources {
-                        if !sources.iter().any(|s| s.source_type == "flatpak") {
-                            sources.push(PackageSource::new(
-                                "flatpak",
-                                "flathub",
-                                "latest",
-                                "Flatpak (Sandboxed)",
-                            ));
-                        }
-                    }
-                    // Update App ID if not set
-                    if existing.app_id.is_none() {
-                        existing.app_id = Some(hit.app_id);
-                    }
-                }
-            } else {
-                // NEW Flatpak-only package
-                // Use direct name as key
-                let p = Package {
-                    name: hit.name.clone(),
-                    display_name: Some(hit.name), // Flatpak names are display names
-                    description: hit.summary.unwrap_or_default(),
-                    version: "latest".to_string(), // Metadata fetch needed for real version?
-                    source: PackageSource::new(
-                        "flatpak",
-                        "flathub",
-                        "latest",
-                        "Flatpak (Sandboxed)",
-                    ),
-                    maintainer: None,
-                    license: None,
-                    url: None, // Could link flathub
-                    last_modified: None,
-                    first_submitted: None,
-                    out_of_date: None,
-                    keywords: None,
-                    num_votes: None,
-                    icon: hit.icon,
-                    screenshots: None,
-                    provides: None,
-                    app_id: Some(hit.app_id),
-                    is_optimized: None,
-                    depends: None,
-                    make_depends: None,
-                    is_featured: None,
-                    installed: false, // Check installed?? (TODO: Phase 3 check)
-                    download_size: None,
-                    installed_size: None,
-                    alternatives: None,
-                    available_sources: Some(vec![PackageSource::new(
-                        "flatpak",
-                        "flathub",
-                        "latest",
-                        "Flatpak (Sandboxed)",
-                    )]),
-                };
-                package_map.insert(direct_key, p);
-            }
-        }
-    }
-
-    // C. Process AUR
-    // Only if enabled in settings? (We assume checking inside aur.search_aur or we check here)
-    // For now we assume we always search if the module is active.
-    if let Ok(pkgs) = aur_res {
-        for mut p in pkgs {
-            let key = normalize_name(&p.name);
-
-            if let Some(existing) = package_map.get_mut(&key) {
-                // MERGE AUR info
-                if let Some(sources) = &mut existing.available_sources {
-                    if !sources.iter().any(|s| s.source_type == "aur") {
-                        sources.push(p.source.clone());
-                    }
-                }
-                // If official/flatpak didn't have description, maybe AUR does? (Unlikely to be better than official)
-                // But we CAN populate AUR-specific fields if we want to show them in "Details".
-                // For the list item, the existing (Official/Flatpak) takes precedence.
-            } else {
-                // NEW AUR package
-                p.available_sources = Some(vec![p.source.clone()]);
-                package_map.insert(key, p);
-            }
-        }
-    }
+    let mut results = merge_search_results(official, aur, flatpak);
 
     // 3. Relevance Scoring & Sorting ("Smart Sort")
     let metadata_loader = state_metadata.0.lock().map_err(|e| e.to_string())?;
@@ -313,8 +249,6 @@ pub async fn search_packages(
         "kitty",
         "alacritty",
     ];
-
-    let mut results: Vec<Package> = package_map.into_values().collect();
 
     // 4. Apply Friendly Names (The "Smart Search" Polish)
     // We update the display_name of packages using our registry
@@ -352,53 +286,58 @@ fn calculate_relevance(
         .get_friendly_name(&pkg.name)
         .map(|s| s.to_lowercase());
 
-    // 1. Exact Name Match (Score 100)
-    if pkg_name_lower == query {
-        return 100;
-    }
-
-    // 2. Exact Friendly Name Match
-    if let Some(friendly) = &friendly_name {
-        if friendly == query {
-            return 100;
-        }
-        if friendly.contains(query) && query.len() >= 3 {
-            return 95;
-        }
-    }
-
-    // 3. Exact App ID Match (Score 90)
-    if let Some(app_id) = &pkg.app_id {
-        if app_id.to_lowercase() == query {
-            return 90;
-        }
-    }
-
-    // 4. Popular Flag (Score 80)
-    let is_popular = popular_apps.contains(&pkg_name_lower.as_str());
     let matches_query = pkg_name_lower.contains(query)
         || display_name_lower.as_deref().unwrap_or("").contains(query)
+        || friendly_name.as_deref().unwrap_or("").contains(query)
         || pkg
             .keywords
             .as_ref()
             .map(|k| k.iter().any(|w| w.to_lowercase().contains(query)))
             .unwrap_or(false);
 
-    if is_popular && matches_query {
-        return 80;
+    let is_popular = popular_apps.contains(&pkg_name_lower.as_str());
+
+    let mut score = 0u32;
+
+    // 1. Exact Name Match (Score 100)
+    if pkg_name_lower == query {
+        score = 100;
+    }
+    // 2. Exact Friendly Name Match (Score 100)
+    else if let Some(friendly) = &friendly_name {
+        if friendly == query {
+            score = 100;
+        } else if friendly.contains(query) && query.len() >= 3 {
+            // 3. Partial Friendly Match (Score 80)
+            score = 80;
+        }
+    }
+
+    // 4. Exact App ID Match (Score 90)
+    if score == 0 {
+        if let Some(app_id) = &pkg.app_id {
+            if app_id.to_lowercase() == query {
+                score = 90;
+            }
+        }
     }
 
     // 5. Starts with Query (Score 50)
-    if pkg_name_lower.starts_with(query) {
-        return 50;
+    if score == 0 && pkg_name_lower.starts_with(query) {
+        score = 50;
     }
 
     // 6. Contains Query (Score 20)
-    if matches_query {
-        return 20;
+    if score == 0 && matches_query {
+        score = 20;
     }
 
-    0
+    // 7. Popularity Bonus: +10 when in popular list and matches query
+    if is_popular && matches_query && score > 0 {
+        score = (score + 10).min(100);
+    }
+
+    score
 }
 
 #[tauri::command]

@@ -336,7 +336,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             logger::trace("Auto-resolved replace: chose to replace");
         }
         Question::ImportKey(mut q) => q.set_import(true),
-        Question::InstallIgnorepkg(mut q) => q.set_install(true),
+        Question::InstallIgnorepkg(mut q) => {
+            logger::warn("IgnorePkg respected: skipping requested upgrade for ignored package.");
+            q.set_install(false);
+        }
         Question::RemovePkgs(mut q) => q.set_skip(false),
         Question::Conflict(mut q) => q.set_remove(false),
         Question::Corrupted(mut q) => q.set_remove(true),

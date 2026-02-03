@@ -10,6 +10,7 @@ use tokio::process::Command;
 /// Cache "sync DB healthy" for a short time to avoid "fix your system" every other run (flaky pacman -Si).
 static SYNC_DB_HEALTHY_CACHE: Lazy<Mutex<Option<Instant>>> = Lazy::new(|| Mutex::new(None));
 const SYNC_DB_CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
+const MONARCH_POLKIT_POLICY: &str = include_str!("../com.monarch.store.policy");
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HealthIssue {
@@ -294,7 +295,9 @@ pub async fn fix_keyring_issues(app: AppHandle, password: Option<String>) -> Res
         "🔑 Starting Unified Keyring & Security Repair...",
     );
 
-    let script = r#"
+    let policy_escaped = MONARCH_POLKIT_POLICY.replace('{', "{{").replace('}', "}}");
+    let script = format!(
+        r#"
         echo "--- Resetting GPG Keyring (Deep Clean) ---"
         
         # 1. Kill locking agents
@@ -313,23 +316,7 @@ pub async fn fix_keyring_issues(app: AppHandle, password: Option<String>) -> Res
         # 3. Re-Install Security Policy (Ensures standard access)
         mkdir -p /usr/share/polkit-1/actions
         cat <<'EOF' > /usr/share/polkit-1/actions/com.monarch.store.policy
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
-<policyconfig>
-  <vendor>MonARCH Store</vendor>
-  <action id="com.monarch.store.package-manage">
-    <description>Manage system packages</description>
-    <message>Authentication required</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/monarch-store/monarch-helper</annotate>
-    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
-  </action>
-</policyconfig>
+{}
 EOF
         chmod 644 /usr/share/polkit-1/actions/com.monarch.store.policy
 
@@ -370,12 +357,14 @@ EOF
         pacman-key --lsign-key 349BC7808577C592 || true
 
         echo "✅ Keyring & Policy Reset Complete."
-    "#;
+    "#,
+        policy_escaped
+    );
 
     run_privileged(
         &app,
         "bash",
-        &["-c", script][..],
+        &["-c", &script][..],
         password,
         "repair-log",
         true, // Bypass to overwrite broken policy/helper

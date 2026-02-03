@@ -9,6 +9,7 @@ import { useFocusTrap } from '../hooks/useFocusTrap';
 import { useAppStore } from '../store/internal_store';
 import { useSessionPassword } from '../context/useSessionPassword';
 import { useErrorService } from '../context/ErrorContext';
+import { useToast } from '../context/ToastContext';
 
 import { PackageSource } from '../types/alpm';
 
@@ -33,6 +34,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const { requestSessionPassword } = useSessionPassword();
     const errorService = useErrorService();
     const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
+    const { show: showToast } = useToast();
 
     const [status, setStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
 
@@ -51,7 +53,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     // Throttle log updates to prevent freeze when hundreds of progress events arrive
     const logBufferRef = useRef<string[]>([]);
     const logFlushScheduledRef = useRef(false);
-    const LOG_CAP = 300;
+    const LOG_CAP = 2000;
     const flushLogBufferRef = useRef<() => void>(() => { });
     flushLogBufferRef.current = () => {
         if (logBufferRef.current.length === 0) {
@@ -111,6 +113,24 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     }, [logs, minimized, showLogs]);
 
     const [detailedStatus, setDetailedStatus] = useState<string>('');
+
+    const copyLogsToClipboard = async () => {
+        const content = logsRef.current.join('\n');
+        if (!content.trim()) {
+            showToast('No logs available to copy.', 'info');
+            return;
+        }
+        if (typeof navigator === 'undefined' || !navigator.clipboard) {
+            showToast('Clipboard is unavailable in this environment.', 'error');
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(content);
+            showToast('Install logs copied to clipboard.', 'success');
+        } catch (err) {
+            showToast('Unable to copy logs. Check clipboard permissions.', 'error');
+        }
+    };
 
     // Listeners
     useEffect(() => {
@@ -663,7 +683,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                             )}
                         </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2">
                         <button
                             onClick={() => setShowLogs(!showLogs)}
                             className={clsx(
@@ -674,6 +694,18 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                         >
                             <Terminal size={18} />
                         </button>
+                            <button
+                                onClick={copyLogsToClipboard}
+                                disabled={logs.length === 0}
+                                className={clsx(
+                                    "px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors",
+                                    logs.length === 0
+                                        ? "text-app-muted border-app-border/40 cursor-not-allowed opacity-60"
+                                        : "text-accent border-app-border hover:border-accent hover:opacity-80"
+                                )}
+                            >
+                                Copy Logs
+                            </button>
                         {status === 'running' && (
                             <>
                                 <button

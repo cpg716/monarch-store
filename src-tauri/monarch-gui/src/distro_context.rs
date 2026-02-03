@@ -48,6 +48,18 @@ pub struct DistroContext {
 }
 
 impl DistroContext {
+    /// Returns distro ID as &str for label resolution (Grand Unification).
+    pub fn id_str(&self) -> &str {
+        match &self.id {
+            DistroId::Manjaro => "manjaro",
+            DistroId::Garuda => "garuda",
+            DistroId::CachyOS => "cachyos",
+            DistroId::EndeavourOS => "endeavouros",
+            DistroId::Arch => "arch",
+            DistroId::Unknown(s) => s.as_str(),
+        }
+    }
+
     pub fn new() -> Self {
         let (id, name) = detect_os_release();
         let capabilities = match id {

@@ -234,7 +234,8 @@ pub async fn install_package_core(
             crate::flathub_api::install_flatpak(app.clone(), name.to_string()).await?;
         }
         _ => {
-            // Ensure monarch repo configs (e.g. 50-chaotic-aur.conf) are on disk before the helper runs.
+            // Sync databases so helper sees latest repo state (host-adaptive: repos are
+            // discovered from pacman.conf, not injected).
             let is_monarch_repo = matches!(
                 source.id.as_str(),
                 "chaotic-aur" | "cachyos" | "garuda" | "endeavour" | "manjaro"
@@ -307,32 +308,20 @@ pub async fn install_package_core(
             // ✅ AUTO-RETRY: If download failed, database is likely stale.
             // Retry with sync_first=true. The helper will ENFORCE full system upgrade to be safe on Arch.
             if saw_download_error && !saw_corrupt_db {
-                // corrupt db handled below
                 let _ = app.emit(
                     "install-output",
                     "⚠ Download failed (likely stale database).",
                 );
-                let _ = app.emit("install-output", "Using Smart-Retry: Synchronizing database and performing safe system upgrade...");
-
-                let mut rx_retry = helper_client::invoke_helper(
-                    app,
-                    helper_client::HelperCommand::AlpmInstall {
-                        packages: vec![name.to_string()],
-                        sync_first: true, // This triggers the safety upgrade in transactions.rs
-                        enabled_repos: enabled_repos.clone(),
-                        cpu_optimization: cpu_optimization.clone(),
-                        target_repo: target_repo.clone(),
-                    },
-                    password.clone(),
-                )
-                .await
-                .map_err(|e| format!("Retry failed: {}", e))?;
-
-                while let Some(msg) = rx_retry.recv().await {
-                    let _ = app.emit("install-output", &msg.message);
-                }
-                // We assume retry finished. If it failed again, user sees error in log.
-                // We don't loop infinitely.
+                let _ = app.emit(
+                    "install-output",
+                    "System update required before installation can continue.",
+                );
+                let _ = app.emit(
+                    "install-output",
+                    "Select “Update & Install” to perform a full upgrade (-Syu) and retry safely.",
+                );
+                let _ = app.emit("install-complete", "failed_update_required");
+                return Err("SystemUpdateRequired: Package database is out of date.".to_string());
             }
 
             if saw_unknown_variant {
@@ -777,49 +766,14 @@ async fn build_aur_package_single(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Inject Askpass redirection or fallback to pkexec
+    // Inject Askpass redirection or pkexec for pacman (makepkg installs build deps as root).
+    // We use pkexec pacman directly; monarch-helper does not support RunCommand, and the
+    // wrapper path would fail with "unknown variant". Polkit will prompt once per build.
     if let Some(ref ap) = askpass_path {
         makepkg.env("SUDO_ASKPASS", ap);
         makepkg.env("PACMAN", "sudo -A pacman");
     } else {
-        // Fallback: If no password provided, use helper as Proxy if available.
-        // Wrapper must pass a temp JSON file path to the helper (not inline JSON), so args
-        // from makepkg ($@) are correctly encoded as a JSON array and we avoid "Invalid JSON command".
-        let helper = crate::utils::MONARCH_PK_HELPER;
-        if std::path::Path::new(helper).exists() {
-            let wrapper_path = pkg_dir.join("pacman-helper.sh");
-            let wrapper_content = format!(
-                r#"#!/bin/sh
-helper="{}"
-tmpfile=$(mktemp /var/tmp/monarch-cmd-XXXXXX.json) || exit 1
-first=1
-printf '%s' '{{"command":"RunCommand","payload":{{"binary":"pacman","args":[' >> "$tmpfile"
-for a in "$@"; do
-  [ $first -eq 1 ] && first=0 || printf ',' >> "$tmpfile"
-  escaped=$(printf '%s\n' "$a" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  printf '"%s"' "$escaped" >> "$tmpfile"
-done
-printf ']}}}}\n' >> "$tmpfile"
-/usr/bin/pkexec "$helper" "$tmpfile"
-rm -f "$tmpfile"
-"#,
-                helper
-            );
-            std::fs::write(&wrapper_path, wrapper_content).map_err(|e| e.to_string())?;
-
-            #[cfg(target_os = "linux")]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&wrapper_path)
-                    .map_err(|e| e.to_string())?
-                    .permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&wrapper_path, perms).map_err(|e| e.to_string())?;
-            }
-            makepkg.env("PACMAN", wrapper_path.to_string_lossy().to_string());
-        } else {
-            makepkg.env("PACMAN", "pkexec pacman");
-        }
+        makepkg.env("PACMAN", "pkexec pacman");
     }
 
     let mut child = makepkg.spawn().map_err(|e| e.to_string())?;

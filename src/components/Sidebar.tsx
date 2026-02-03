@@ -72,7 +72,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                         className="flex flex-col"
                     >
                         <span className="text-lg font-black tracking-tighter text-app-fg leading-none">MonARCH</span>
-                        <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest">Universal Arch Linux App Manager</span>
+                        <span className="text-[10px] font-bold text-accent uppercase tracking-widest">Universal Arch Linux App Manager</span>
                     </motion.div>
                 )}
             </div>
@@ -87,14 +87,22 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                                 "w-full flex items-center rounded-2xl transition-all duration-300 relative group/btn",
                                 isExpanded ? "px-4 py-3.5 gap-4" : "p-3.5 justify-center",
                                 activeTab === tab.id
-                                    ? "bg-blue-600/10 text-blue-500 shadow-sm"
+                                    ? "shadow-sm text-accent"
                                     : "text-app-muted hover:text-app-fg hover:bg-app-subtle/50"
                             )}
                             aria-label={tab.label}
+                            style={
+                                activeTab === tab.id
+                                    ? {
+                                        backgroundColor: 'color-mix(in srgb, var(--app-accent) 10%, transparent)',
+                                        boxShadow: '0 10px 30px -18px var(--app-accent)'
+                                    }
+                                    : undefined
+                            }
                         >
                             <tab.icon size={22} strokeWidth={activeTab === tab.id ? 2.5 : 2} className={clsx(
                                 "transition-transform group-hover/btn:scale-110",
-                                activeTab === tab.id && "drop-shadow-[0_0_8px_rgba(59,130,246,0.5)]"
+                                activeTab === tab.id && "text-accent"
                             )} />
 
                             {/* Notification Badge */}
@@ -118,7 +126,8 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                             {activeTab === tab.id && (
                                 <motion.div
                                     layoutId="activeTabGlow"
-                                    className="absolute inset-0 bg-blue-500/5 rounded-2xl blur-lg -z-10"
+                                    className="absolute inset-0 rounded-2xl blur-lg -z-10"
+                                    style={{ backgroundColor: 'color-mix(in srgb, var(--app-accent) 18%, transparent)' }}
                                 />
                             )}
 
@@ -126,7 +135,8 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                             {activeTab === tab.id && (
                                 <motion.div
                                     layoutId="activeTabStrip"
-                                    className="absolute left-0 w-1 h-6 bg-blue-500 rounded-r-full"
+                                    className="absolute left-0 w-1 h-6 rounded-r-full"
+                                    style={{ backgroundColor: 'var(--app-accent)' }}
                                 />
                             )}
                         </button>

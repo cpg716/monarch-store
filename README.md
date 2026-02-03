@@ -21,8 +21,8 @@ A premium, universal software center built with Tauri and React. MonARCH **respe
 
 ## ✨ Key Features (v0.4.0)
 
-### 🦎 Host-Adaptive Architecture
-MonARCH no longer "injects" its own opinions into your system.
+### 🦎 Host-Adaptive Architecture (v0.4.0-alpha: The Universal Update)
+MonARCH no longer "injects" its own opinions into your system. **No manual repo configuration required** — we discover repositories from your system.
 *   **Respects `pacman.conf`**: We typically only show repositories you have explicitly enabled on your host system.
 *   **Manjaro Guard**: Automatically prevents enabling incompatible repositories (like `chaotic-aur`) on Manjaro systems to ensure stability.
 *   **Discovery Mode**: Automatically detects CachyOS, Garuda, or EndeavourOS specific repositories and displays them correctly.

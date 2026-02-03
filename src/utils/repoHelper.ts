@@ -1,12 +1,34 @@
+import type { PackageSource } from '../types/alpm';
+
+/** Priority: Official (repo) > Flatpak > AUR. Used for "Best" badge. */
+export function getBestSource(availableSources?: PackageSource[]): PackageSource | null {
+    if (!availableSources?.length) return null;
+    const repo = availableSources.find(s => s.source_type === 'repo');
+    if (repo) return repo;
+    const flatpak = availableSources.find(s => s.source_type === 'flatpak');
+    if (flatpak) return flatpak;
+    const aur = availableSources.find(s => s.source_type === 'aur');
+    return aur ?? availableSources[0];
+}
+
+/** Number of additional sources beyond the best (for "+N sources" indicator). */
+export function getAdditionalSourceCount(availableSources?: PackageSource[]): number {
+    return Math.max(0, (availableSources?.length ?? 1) - 1);
+}
+
+/**
+ * Grand Unification: Top 25 Arch Distro Badge Colors
+ * Distinct visual identity per distro family.
+ */
 export const getRepoColor = (labelRaw: string): string => {
     const label = labelRaw.toLowerCase();
 
-    // SteamOS / Chimera (Gaming Vibe)
+    // SteamOS / Chimera / GamerOS (Gaming Vibe - Indigo)
     if (label.includes('steamos') || label.includes('chimeraos') || label.includes('gameros') || label.includes('jupiter') || label.includes('holo')) {
         return 'bg-indigo-600 border-indigo-500/50 text-white shadow-indigo-500/20';
     }
 
-    // Chaotic / Garuda (Performance/Gaming)
+    // Chaotic / Garuda (Performance/Gaming - Purple)
     if (label.includes('chaotic') || label.includes('garuda') || label.includes('dragonized')) {
         return 'bg-purple-600 border-purple-500/50 text-white shadow-purple-500/20';
     }
@@ -26,6 +48,11 @@ export const getRepoColor = (labelRaw: string): string => {
         return 'bg-teal-600 border-teal-500/50 text-white shadow-teal-500/20';
     }
 
+    // BlackArch / Parabola / Hyperbola (Black/Gray - Security/Libre)
+    if (label.includes('blackarch') || label.includes('parabola') || label.includes('hyperbola') || label.includes('security')) {
+        return 'bg-gray-800 border-gray-600/50 text-white shadow-black/40';
+    }
+
     // Arch Official (Classic Blue)
     if (label.includes('arch') || label.includes('official') || label === 'core' || label === 'extra' || label === 'multilib') {
         return 'bg-blue-600 border-blue-500/50 text-white shadow-blue-500/20';
@@ -39,11 +66,6 @@ export const getRepoColor = (labelRaw: string): string => {
     // Flatpak (Slate/Sandboxed)
     if (label.includes('flatpak')) {
         return 'bg-slate-500 border-slate-400/50 text-white shadow-slate-500/20';
-    }
-
-    // Specialized / Security (Black/Gray)
-    if (label.includes('blackarch') || label.includes('parabola') || label.includes('hyperbola') || label.includes('security')) {
-        return 'bg-gray-800 border-gray-600/50 text-white shadow-black/40';
     }
 
     // Fallback

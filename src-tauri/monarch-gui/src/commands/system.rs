@@ -4,6 +4,38 @@ use tauri::{AppHandle, Emitter, State};
 
 /// Embedded Polkit rules for passwordless package-manage (wheel → YES) and script (AUTH_ADMIN_KEEP).
 const MONARCH_POLKIT_RULES: &str = include_str!("../../../rules/10-monarch-store.rules");
+const MONARCH_POLKIT_POLICY: &str = include_str!("../../com.monarch.store.policy");
+
+fn set_policy_allow_active(policy: &str, action_id: &str, allow_active: &str) -> String {
+    let action_marker = format!("<action id=\"{}\">", action_id);
+    let Some(action_start) = policy.find(&action_marker) else {
+        return policy.to_string();
+    };
+
+    let rest = &policy[action_start..];
+    let Some(action_end_rel) = rest.find("</action>") else {
+        return policy.to_string();
+    };
+    let action_end = action_start + action_end_rel;
+    let action_block = &policy[action_start..action_end];
+
+    let allow_start_tag = "<allow_active>";
+    let allow_end_tag = "</allow_active>";
+    let Some(allow_start_rel) = action_block.find(allow_start_tag) else {
+        return policy.to_string();
+    };
+    let allow_value_start = action_start + allow_start_rel + allow_start_tag.len();
+    let Some(allow_end_rel) = action_block[allow_start_rel..].find(allow_end_tag) else {
+        return policy.to_string();
+    };
+    let allow_value_end = action_start + allow_start_rel + allow_end_rel;
+
+    let mut updated = String::with_capacity(policy.len() + allow_active.len());
+    updated.push_str(&policy[..allow_value_start]);
+    updated.push_str(allow_active);
+    updated.push_str(&policy[allow_value_end..]);
+    updated
+}
 
 #[derive(Serialize)]
 pub struct SystemInfo {
@@ -215,29 +247,8 @@ pub async fn install_monarch_policy(
 ) -> Result<String, String> {
     let one_click = state.inner().is_one_click_enabled().await;
     let allow_active = if one_click { "yes" } else { "auth_admin_keep" };
-
-    let policy_content = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
-<policyconfig>
-  <vendor>MonARCH Store</vendor>
-  <vendor_url>https://github.com/monarch-store/monarch-store</vendor_url>
-  <action id="com.monarch.store.package-manage">
-    <description>Manage system packages and repositories</description>
-    <message>Authentication is required to install, update, or remove applications.</message>
-    <icon_name>package-x-generic</icon_name>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>{}</allow_active>
-    </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/monarch-store/monarch-helper</annotate>
-    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
-  </action>
-</policyconfig>"#,
-        allow_active
-    );
+    let policy_content =
+        set_policy_allow_active(MONARCH_POLKIT_POLICY, "com.monarch.store.package-manage", allow_active);
 
     let rules_escaped = MONARCH_POLKIT_RULES.replace('{', "{{").replace('}', "}}");
     let script = format!(
@@ -334,8 +345,33 @@ pub async fn update_and_install_package(
         "Synchronizing databases and updating system...",
     );
 
+    // Step 1: Perform full system upgrade (refresh + upgrade) before install.
+    let mut sys_rx = crate::helper_client::invoke_helper(
+        &app,
+        crate::helper_client::HelperCommand::ExecuteBatch {
+            manifest: crate::models::TransactionManifest {
+                update_system: true,
+                refresh_db: true,
+                ..Default::default()
+            },
+        },
+        password.clone(),
+    )
+    .await?;
+
+    while let Some(msg) = sys_rx.recv().await {
+        let _ = app.emit("install-output", &msg.message);
+        if msg.message.starts_with("Error:") {
+            let _ = app.emit("install-complete", "failed");
+            return Err(format!(
+                "System update failed while preparing to install {}: {}",
+                name, msg.message
+            ));
+        }
+    }
+
     // Step 2: Install target package (only if Step 1 succeeded)
-    let enabled_repos: Vec<String> = state_repo
+    let mut enabled_repos: Vec<String> = state_repo
         .inner()
         .get_all_repos()
         .await
@@ -343,6 +379,11 @@ pub async fn update_and_install_package(
         .filter(|r| r.enabled)
         .map(|r| r.name.clone())
         .collect();
+    for sys in ["core", "extra", "community", "multilib"] {
+        if !enabled_repos.contains(&sys.to_string()) {
+            enabled_repos.push(sys.to_string());
+        }
+    }
 
     let _ = app.emit(
         "install-output",
@@ -364,9 +405,33 @@ pub async fn update_and_install_package(
 
     while let Some(msg) = rx2.recv().await {
         let _ = app.emit("install-output", &msg.message);
+        if msg.message.starts_with("Error:") {
+            let _ = app.emit("install-complete", "failed");
+            return Err(format!(
+                "Installation failed after system update: {}",
+                msg.message
+            ));
+        }
     }
 
-    Ok("System updated and package installed successfully.".to_string())
+    // Verification
+    let verification = tokio::task::spawn_blocking({
+        let pkg_name = name.clone();
+        move || crate::alpm_read::is_package_installed(&pkg_name)
+    })
+    .await
+    .map_err(|e| format!("Verification task failed: {}", e))?;
+
+    if verification {
+        let _ = app.emit("install-complete", "success");
+        Ok("System updated and package installed successfully.".to_string())
+    } else {
+        let _ = app.emit("install-complete", "failed");
+        Err(format!(
+            "Installation reported success but {} is still missing after system upgrade.",
+            name
+        ))
+    }
 }
 #[tauri::command]
 pub async fn is_advanced_mode(state: State<'_, repo_manager::RepoManager>) -> Result<bool, String> {

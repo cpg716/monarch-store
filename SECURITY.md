@@ -50,4 +50,16 @@ MonARCH’s “Smart Repair” and bootstrap flows import the following **hardco
 
 Import is performed only after **user-initiated** actions (e.g. “Initialize Keyring”, “Keyring Repair”, “Enable” a repo). No silent background key import occurs. Key IDs are defined in `src-tauri/monarch-gui/src/repair.rs` and `src-tauri/monarch-gui/src/repo_setup.rs`.
 
+### Privileged Settings Actions (System Config Writes)
+
+The following Settings features perform **privileged, user-initiated** writes to system configuration files. They are not silent; the user must explicitly trigger them.
+
+| Action | File(s) Modified | Purpose |
+|--------|------------------|---------|
+| **Set Parallel Downloads** | `/etc/pacman.conf` | Adjust `ParallelDownloads` for faster syncs |
+| **Rank Mirrors** | `/etc/pacman.d/mirrorlist` | Prioritize fastest mirrors via reflector or rate-mirrors |
+| **Optimize System** | `/etc/makepkg.conf` | Enable parallel ZSTD compression and MAKEFLAGS for AUR builds |
+
+These run via Polkit (or sudo when user provides password). No repository injection occurs; we never silently add `[chaotic-aur]` or similar sections to pacman.conf.
+
 Thank you for helping keep the Arch ecosystem safe.
