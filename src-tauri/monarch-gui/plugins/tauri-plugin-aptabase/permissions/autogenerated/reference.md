@@ -32,4 +32,17 @@ Denies the track_event command without any pre-configured scope.
 
 </td>
 </tr>
+
+<tr>
+<td>
+
+`aptabase:default`
+
+</td>
+<td>
+
+Default permissions for the aptabase telemetry plugin
+
+</td>
+</tr>
 </table>

@@ -127,7 +127,7 @@ export default function CategoryGrid({ onSelectCategory, selectedCategoryId }: C
                 variants={container}
                 initial="hidden"
                 animate="show"
-                className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-4"
+                className="grid grid-cols-1 md:grid-cols-2 gap-6"
             >
                 {CATEGORIES.map((cat) => (
                     <motion.div
@@ -154,9 +154,9 @@ export default function CategoryGrid({ onSelectCategory, selectedCategoryId }: C
 
                                 {/* Popular Examples */}
                                 <div className="flex flex-wrap gap-2 mt-auto">
-                                    {cat.popular.map(app => (
+                                    {cat.popular.map((app, i) => (
                                         <span
-                                            key={app}
+                                            key={typeof app === 'string' ? `${app}-${i}` : `popular-${i}`}
                                             onClick={(e) => { e.stopPropagation(); onSelectCategory(cat.id); }}
                                             className="text-[10px] uppercase tracking-wider font-bold px-2.5 py-1 rounded-lg bg-black/5 dark:bg-white/5 text-slate-500 dark:text-white/50 border border-black/5 dark:border-white/5 hover:bg-black/10 dark:hover:bg-white/10 hover:text-slate-700 dark:hover:text-white hover:border-black/10 dark:hover:border-white/20 transition-all cursor-default"
                                         >

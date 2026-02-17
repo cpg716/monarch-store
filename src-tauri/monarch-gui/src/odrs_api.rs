@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::collections::HashMap;
 
 /// JSON does not support NaN/Infinity; ensure f64 is finite before sending to frontend.
@@ -6,13 +7,13 @@ fn sanitize_f64(v: Option<f64>) -> Option<f64> {
     v.filter(|x| x.is_finite())
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Type)]
 pub struct OdrsResponse {
     #[serde(flatten)]
     pub ratings: HashMap<String, OdrsRating>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Type)]
 pub struct OdrsRating {
     pub star1: u32,
     pub star2: u32,
@@ -23,7 +24,7 @@ pub struct OdrsRating {
     pub score: Option<f64>, // ODRS returns 'score' (average) sometimes or we calc it
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Type)]
 pub struct Review {
     pub review_id: Option<u64>,
     pub app_id: String,
@@ -39,6 +40,7 @@ pub struct Review {
 
 // Fetch basic rating summary
 #[tauri::command]
+#[specta::specta]
 pub async fn get_app_rating(app_id: String) -> Result<Option<OdrsRating>, String> {
     let url = format!("https://odrs.gnome.org/1.0/reviews/api/ratings/{}", app_id);
 
@@ -65,6 +67,7 @@ pub async fn get_app_rating(app_id: String) -> Result<Option<OdrsRating>, String
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_app_ratings_batch(
     app_ids: Vec<String>,
 ) -> Result<HashMap<String, OdrsRating>, String> {
@@ -90,6 +93,7 @@ pub async fn get_app_ratings_batch(
 
 // Fetch detailed reviews
 #[tauri::command]
+#[specta::specta]
 pub async fn get_app_reviews(app_id: String) -> Result<Vec<Review>, String> {
     let url = format!("https://odrs.gnome.org/1.0/reviews/api/app/{}", app_id);
 

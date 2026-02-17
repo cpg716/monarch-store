@@ -1,21 +1,26 @@
 pub(crate) mod alpm_progress;
 pub(crate) mod alpm_read;
-pub(crate) mod labels;
 pub(crate) mod aur_api;
 pub(crate) mod chaotic_api;
 pub(crate) mod commands;
+pub(crate) mod constants;
+pub(crate) mod discovery_manager;
 pub(crate) mod distro_context;
 pub(crate) mod error_classifier;
 pub(crate) mod flathub_api;
 pub(crate) mod helper_client;
+pub(crate) mod labels;
 pub(crate) mod metadata;
+pub(crate) mod middleware;
 pub(crate) mod models;
 pub(crate) mod odrs_api;
 pub(crate) mod pkgstats_api;
+pub(crate) mod registry;
 pub(crate) mod repair;
 pub(crate) mod repo_db;
 pub(crate) mod repo_manager;
 pub(crate) mod scm_api;
+pub(crate) mod specta_gen;
 pub(crate) mod utils;
 
 #[cfg(test)]
@@ -29,6 +34,33 @@ pub struct ScmState(pub scm_api::ScmClient);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize logger so RUST_LOG=debug (or monarch_store=debug) shows [CARD/DETAILS] and other log output.
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .try_init();
+
+    // Log panic message and location so terminal shows real cause (Tokio task panics often only show "scheduler line 88" otherwise).
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = {
+            let payload = info.payload();
+            if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                format!("{:?}", payload)
+            }
+        };
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        eprintln!("[monarch-store] PANIC: {} at {}", msg, loc);
+        log::error!("PANIC: {} at {}", msg, loc);
+        if std::env::var("RUST_BACKTRACE").is_ok() {
+            eprintln!("{}", std::backtrace::Backtrace::capture());
+        }
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
@@ -57,13 +89,32 @@ pub fn run() {
         .manage(RepoManager::new())
         .manage(ChaoticApiClient::new())
         .manage(flathub_api::FlathubApiClient::new()) // ENRICHMENT: Metadata Fallback Active
-        .manage(metadata::MetadataState(std::sync::Mutex::new(
-            metadata::AppStreamLoader::new(),
-        )))
+        .manage(discovery_manager::DiscoveryManager::new())
+        .manage(metadata::MetadataState::new())
         .manage(ScmState(scm_api::ScmClient::new()))
         .manage(distro_context::get_distro_context()) // Operation True Identity: Shared Context
+        .manage(registry::RegistryState::new())
         .setup(|app| {
             let handle = app.handle().clone();
+
+            #[cfg(debug_assertions)]
+            {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap() // src-tauri
+                    .parent()
+                    .unwrap() // monarch-store
+                    .join("src/services/bindings.ts");
+
+                match crate::specta_gen::builder().export(
+                    specta_typescript::Typescript::default()
+                        .bigint(specta_typescript::BigIntExportBehavior::String),
+                    path,
+                ) {
+                    Ok(_) => log::info!("Specta bindings exported successfully"),
+                    Err(e) => log::error!("Failed to export specta bindings: {}", e),
+                }
+            }
 
             // v0.2.40: RUNTIME REQUIREMENT CHECK
             // Prevent silent crashes if the PKGBUILD failed us.
@@ -83,14 +134,113 @@ pub fn run() {
 
                 let state_repo = handle.state::<RepoManager>();
                 let _state_chaotic = handle.state::<ChaoticApiClient>();
-
-                // Fast load from disk first (Non-blocking)
-                state_repo.load_initial_cache().await;
-
-                // metadata init is fine as it's separate
+                let state_discovery = handle.state::<discovery_manager::DiscoveryManager>();
                 let state_meta = handle.state::<metadata::MetadataState>();
-                state_meta.init(24).await;
+
+                // Run discovery and metadata in parallel so both are ready sooner for Trending + Categories
+                state_discovery.load_from_disk();
+                state_discovery.refresh_if_stale();
+
+                // 1. Critical Phase: Repo Cache + AppStream Init
+                let ((), ()) = tokio::join!(
+                    async {
+                        state_repo.load_initial_cache().await;
+                    },
+                    async {
+                        state_meta.init(24).await;
+                    }
+                );
+
+                // 2. Background Phase: Registry Actor + Sync (Detached)
+                let state_registry = handle.state::<registry::RegistryState>();
+                state_registry.spawn_actor(handle.clone());
+
+                let handle_clone = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Give the frontend 5 seconds to finish initial Essentials/Trending calls
+                    // This prevents locking the Registry DB during the first frames of the app.
+                    // tokio::time::sleep(std::time::Duration::from_secs(5)).await; // REMOVED: Iron Core Atomic Hydration makes this safe.
+
+                    let state_meta = handle_clone.state::<metadata::MetadataState>();
+                    let entries = {
+                        let loader = match state_meta.loader.lock() {
+                            Ok(l) => l,
+                            Err(_) => return,
+                        };
+                        loader.get_all_entries_with_categories()
+                    };
+
+                    if !entries.is_empty() {
+                        let handle_for_blocking = handle_clone.clone();
+                        // Use spawn_blocking for the heavy SQL work so we don't stall the async executor
+                        let _ = tokio::task::spawn_blocking(move || {
+                            log::info!(
+                                "[REGISTRY] Background AppStream sync starting ({} entries)",
+                                entries.len()
+                            );
+                            let state_registry =
+                                handle_for_blocking.state::<registry::RegistryState>();
+                            if let Err(e) = state_registry.manager.sync_appstream_entries(entries) {
+                                log::error!("[REGISTRY] AppStream sync failed: {}", e);
+                            } else {
+                                log::info!("[REGISTRY] AppStream sync complete.");
+                                state_registry.manager.trigger_bulk_sync();
+                            }
+                        })
+                        .await;
+                    }
+
+                    // v0.2.41: WARMUP OPTIMIZATION
+                    // Fetch Trending + AUR Top and seed the Registry so they are enriched immediately.
+                    let state_discovery =
+                        handle_clone.state::<discovery_manager::DiscoveryManager>();
+                    let discovery_names = state_discovery.inner().get_all_popular_names().await;
+
+                    if !discovery_names.is_empty() {
+                        log::info!(
+                            "[WARMUP] Enriching Registry with {} discovery items...",
+                            discovery_names.len()
+                        );
+                        let items: Vec<(String, Option<String>)> =
+                            discovery_names.into_iter().map(|n| (n, None)).collect();
+
+                        let state_meta = handle_clone.state::<metadata::MetadataState>();
+                        let state_repo = handle_clone.state::<RepoManager>();
+                        let state_chaotic = handle_clone.state::<chaotic_api::ChaoticApiClient>();
+                        let state_flathub = handle_clone.state::<flathub_api::FlathubApiClient>();
+                        let state_registry = handle_clone.state::<registry::RegistryState>();
+
+                        if let Ok(pkgs) =
+                            crate::middleware::aggregation::fetch_and_merge_packages_by_names_impl(
+                                &state_meta,
+                                &state_chaotic,
+                                &state_repo,
+                                &state_flathub,
+                                &state_registry.manager,
+                                items,
+                                true,  // include_flatpak
+                                true,  // include_aur
+                                true,  // include_chaotic
+                                false, // installed_lookup
+                            )
+                            .await
+                        {
+                            log::info!(
+                                "[REGISTRY] Warmup complete, upserting {} packages",
+                                pkgs.len()
+                            );
+                            let _ = state_registry.manager.bulk_upsert_packages(&pkgs);
+                            state_registry.manager.trigger_bulk_sync();
+                        }
+                    }
+                });
             });
+
+            // App Identity (Linux): Taskbar/dock icon handshake.
+            // tauri.conf.json has app.enableGTKAppId: true and identifier: "com.monarch.store".
+            // The Tauri runtime sets the window's GTK application ID to that identifier, so the DE
+            // associates the window with monarch-store.desktop (StartupWMClass=com.monarch.store).
+            // No X11-only hacks; works on Wayland and X11.
 
             // Phase 2: The Chameleon (Cross-DE GUI)
             // 2. Ghost Protocol: Wayland Detection
@@ -158,6 +308,7 @@ pub fn run() {
             commands::package::get_essentials_list,
             commands::package::abort_installation,
             commands::package::check_installed_status,
+            commands::news::fetch_news,
             commands::update::perform_system_update,
             commands::update::get_system_update_command,
             commands::update::check_updates,
@@ -169,6 +320,10 @@ pub fn run() {
             commands::package::get_pacnew_warnings,
             commands::package::get_orphans,
             commands::package::remove_orphans,
+            commands::package::get_cache_stats,
+            commands::package::clean_package_cache,
+            commands::package::check_services_restart,
+            commands::package::restart_service,
             commands::system::get_cache_size,
             commands::system::get_orphans_with_size,
             commands::system::set_parallel_downloads,
@@ -183,6 +338,10 @@ pub fn run() {
             commands::system::get_infra_stats,
             commands::system::get_repo_counts,
             commands::system::get_repo_states,
+            commands::system::check_chaotic_status,
+            commands::system::prepare_chaotic_components,
+            commands::system::prepare_flatpak,
+            commands::system::ensure_flathub_remote,
             commands::system::is_aur_enabled,
             commands::system::toggle_repo,
             commands::system::toggle_repo_family,
@@ -191,6 +350,7 @@ pub fn run() {
             commands::system::set_one_click_enabled,
             commands::system::is_advanced_mode,
             commands::system::set_advanced_mode,
+            commands::system::get_missing_required_bins,
             commands::system::check_security_policy,
             commands::system::install_monarch_policy,
             commands::system::optimize_system,
@@ -205,15 +365,48 @@ pub fn run() {
             commands::system::is_telemetry_enabled,
             commands::system::is_notifications_enabled,
             commands::system::set_notifications_enabled,
+            commands::system::show_desktop_notification,
             commands::system::set_telemetry_enabled,
             commands::system::is_sync_on_startup_enabled,
             commands::system::set_sync_on_startup_enabled,
             commands::system::check_and_clear_refresh_requested,
+            commands::system::is_automatic_housekeeping_enabled,
+            commands::system::set_automatic_housekeeping_enabled,
+            commands::system::perform_housekeeping,
+            commands::system::is_flatpak_enabled,
+            commands::system::set_flatpak_enabled,
+            commands::system::get_sync_interval_hours,
+            commands::system::set_sync_interval_hours,
+            commands::system::get_repo_priority_order,
+            commands::system::set_repo_priority_order,
+            commands::system::is_verbose_logs_enabled,
+            commands::system::set_verbose_logs_enabled,
+            commands::system::is_clean_build_enabled,
+            commands::system::set_clean_build_enabled,
+            commands::system::get_parallel_downloads,
+            commands::system::is_onboarding_completed,
+            commands::system::set_onboarding_completed,
+            commands::system::get_theme_mode,
+            commands::system::set_theme_mode,
+            commands::system::get_accent_color,
+            commands::system::set_accent_color,
+            commands::system::is_declined_system_setup,
+            commands::system::set_declined_system_setup,
+            commands::system::is_sidebar_expanded,
+            commands::system::set_sidebar_expanded,
+            commands::system::is_alpha_notice_dismissed,
+            commands::system::set_alpha_notice_dismissed,
+            commands::system::get_search_history,
+            commands::system::set_search_history,
+            commands::system::get_read_news_ids,
+            commands::system::set_read_news_ids,
+            commands::system::get_active_tab,
+            commands::system::set_active_tab,
             // Utils Commands
-            commands::utils::get_package_icon,
-            commands::utils::clear_cache,
-            commands::utils::launch_app,
-            commands::utils::track_event,
+            commands::cmd_helpers::get_package_icon,
+            commands::cmd_helpers::clear_cache,
+            commands::cmd_helpers::launch_app,
+            commands::cmd_helpers::track_event,
             // External Module Commands (Pre-refactor)
             metadata::get_metadata,
             metadata::get_metadata_batch,
@@ -238,6 +431,7 @@ pub fn run() {
             repair::clear_build_cache,
             repo_manager::apply_os_config,
             commands::system::emit_sync_progress,
+            commands::package::get_flatpak_permissions,
             // Identity Matrix Command
             distro_context::get_distro_context,
         ])

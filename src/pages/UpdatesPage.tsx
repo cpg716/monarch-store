@@ -1,46 +1,30 @@
-import { useState, useEffect } from 'react';
-import { RefreshCw, ArrowRight, CheckCircle2, Download, AlertCircle, Unlock, Loader2, Terminal } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { RefreshCw, ArrowRight, CheckCircle2, Download, AlertCircle, Unlock, Loader2, Terminal, ShieldCheck, RotateCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ConfirmationModal from '../components/ConfirmationModal';
+import CriticalNewsBlockerModal from '../components/CriticalNewsBlockerModal';
+import { getReadNewsIds, markNewsItemsAsRead } from '../components/NewsFeed';
 import { clsx } from 'clsx';
-import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../store/internal_store';
 import { useErrorService } from '../context/ErrorContext';
 import { useToast } from '../context/ToastContext';
 import { useSessionPassword } from '../context/useSessionPassword';
 import { friendlyError } from '../utils/friendlyError';
+import { commands, UpdateItem, NewsItem, AppMetadata } from '../services/bindings';
+import { unwrap } from '../utils/specta';
 
-import { UpdateItem } from '../types/alpm';
 import RepoBadge from '../components/RepoBadge';
 
 
 // Helper component for Icon
 import archLogo from '../assets/arch-logo.png';
+import { resolveIconUrl } from '../utils/iconHelper';
 
-const AppIcon = ({ pkgId }: { pkgId: string }) => {
-    const [icon, setIcon] = useState<string | null>(null);
-
-    useEffect(() => {
-        if (!pkgId) return;
-        invoke<string | null>('get_package_icon', { pkgName: pkgId })
-            .then(localIcon => {
-                if (localIcon) {
-                    setIcon(localIcon);
-                } else {
-                    invoke<any>('get_metadata', { pkgName: pkgId, upstreamUrl: null })
-                        .then(meta => {
-                            if (meta && meta.icon_url) setIcon(meta.icon_url);
-                        })
-                        .catch(() => { });
-                }
-            })
-            .catch(() => { });
-    }, [pkgId]);
-
-    const displayIcon = icon || archLogo;
-
-    return <img src={displayIcon} alt={pkgId} className={clsx("w-full h-full object-contain", !icon && "opacity-50 grayscale")} />;
+// Pure component - receives icon URL from parent (batch loaded)
+const AppIcon = ({ pkgId, iconUrl }: { pkgId: string, iconUrl?: string | null }) => {
+    const displayIcon = resolveIconUrl(iconUrl) || archLogo;
+    return <img src={displayIcon} alt={pkgId} className={clsx("w-full h-full object-contain", !iconUrl && "opacity-50 grayscale")} />;
 };
 
 export default function UpdatesPage() {
@@ -55,20 +39,66 @@ export default function UpdatesPage() {
         updateLogs: logs,
         rebootRequired,
         pacnewWarnings,
+        pendingServiceRestarts,
         setUpdating,
         setPacnewWarnings,
         clearUpdateLogs
     } = useAppStore();
 
     const [updates, setUpdates] = useState<UpdateItem[]>([]);
+    const [metadataCache, setMetadataCache] = useState<Record<string, AppMetadata>>({});
     const [isChecking, setIsChecking] = useState(true);
     const [updateResult, setUpdateResult] = useState<string | null>(null);
     const [showConsole, setShowConsole] = useState(false);
+    const [password, setPassword] = useState('');
     const [currentStep, setCurrentStep] = useState(0);
     const [fixingLock, setFixingLock] = useState(false);
     const [showAuthHint, setShowAuthHint] = useState(false);
     const [orphansAfterUpdate, setOrphansAfterUpdate] = useState<string[]>([]);
     const [removingOrphans, setRemovingOrphans] = useState(false);
+    const [newsItems, setNewsItems] = useState<NewsItem[]>([]);
+    const [showBlockerModal, setShowBlockerModal] = useState(false);
+    const [unreadCriticalItems, setUnreadCriticalItems] = useState<NewsItem[]>([]);
+    const [snapshotStatus, setSnapshotStatus] = useState<{ tool: string, is_configured: boolean, message: string } | null>(null);
+    const [doSnapshot, setDoSnapshot] = useState(true);
+    const [viewingPkgbuild, setViewingPkgbuild] = useState<string | null>(null);
+    const [pkgbuildContent, setPkgbuildContent] = useState<string>('');
+    const [isLoadingPkgbuild, setIsLoadingPkgbuild] = useState(false);
+
+    // Batch fetch metadata for updates
+    useEffect(() => {
+        if (updates.length > 0) {
+            commands.getSnapshotStatus().then(unwrap).then(setSnapshotStatus).catch(() => { });
+        }
+    }, [updates.length]);
+
+    const handleViewPkgbuild = async (name: string) => {
+        setViewingPkgbuild(name);
+        setIsLoadingPkgbuild(true);
+        setPkgbuildContent('');
+        try {
+            const content = unwrap(await commands.fetchPkgbuild(name));
+            setPkgbuildContent(content);
+        } catch (e) {
+            setPkgbuildContent(`Failed to load PKGBUILD: ${e}`);
+        } finally {
+            setIsLoadingPkgbuild(false);
+        }
+    };
+
+    // Batch fetch metadata for updates
+    useEffect(() => {
+        if (updates.length === 0) return;
+
+        // Identify which updates are missing from our cache
+        const missing = updates.filter(u => !metadataCache[u.name]).map(u => u.name);
+
+        if (missing.length > 0) {
+            commands.getMetadataBatch(missing).then(unwrap).then(newMeta => {
+                setMetadataCache(prev => ({ ...prev, ...newMeta }));
+            }).catch(e => console.error("Failed to batch load metadata:", e));
+        }
+    }, [updates]); // Run whenever updates list updates (e.g. initial load or post-update check)
 
     const isLockOrBusyError = updateResult != null && /lock|busy|database.*(locked|busy)/i.test(updateResult);
 
@@ -87,13 +117,22 @@ export default function UpdatesPage() {
     const steps = [
         "Synchronizing Databases",
         "Upgrading System",
-        "Updating Community Apps"
+        "Updating Community Apps",
+        "Updating Flatpaks"
     ];
 
-    // Fetch updates on mount
-    useEffect(() => {
-        checkForUpdates();
+    const fetchNews = useCallback(async () => {
+        try {
+            const list = unwrap(await commands.fetchNews());
+            setNewsItems(list ?? []);
+        } catch {
+            setNewsItems([]);
+        }
     }, []);
+
+    useEffect(() => {
+        fetchNews();
+    }, [fetchNews]);
 
     useEffect(() => {
         if (statusMessage?.toLowerCase().includes("database") || statusMessage?.toLowerCase().includes("sync")) {
@@ -102,6 +141,8 @@ export default function UpdatesPage() {
             setCurrentStep(1);
         } else if (statusMessage?.toLowerCase().includes("aur") || statusMessage?.toLowerCase().includes("community")) {
             setCurrentStep(2);
+        } else if (statusMessage?.toLowerCase().includes("flatpak")) {
+            setCurrentStep(3);
         }
     }, [statusMessage]);
 
@@ -109,8 +150,18 @@ export default function UpdatesPage() {
         setIsChecking(true);
         setUpdateResult(null);
         try {
-            const pendingUpdates = await invoke<UpdateItem[]>('check_updates');
-            setUpdates(pendingUpdates);
+            // For updates, sources are never "off": repo (incl. Chaotic-AUR), AUR, and Flatpak always included.
+            // Discovery toggles (Settings → Sources) only affect search/browse, not the Updates list.
+            const pendingUpdates = unwrap(await commands.checkUpdates(true, true));
+            // Deduplicate by name:source_type:id to prevent React key collisions
+            const seen = new Set<string>();
+            const deduped = pendingUpdates.filter(pkg => {
+                const key = `${pkg.name}:${pkg.source.source_type}:${pkg.source.id}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+            setUpdates(deduped);
         } catch (e) {
             errorService.reportError(e as Error | string);
         } finally {
@@ -120,6 +171,11 @@ export default function UpdatesPage() {
 
     const [showConfirm, setShowConfirm] = useState(false);
 
+    // Fetch updates on mount (list always includes repo + AUR + Flatpak for installed packages)
+    useEffect(() => {
+        checkForUpdates();
+    }, []);
+
     // Listen for update-complete so we don't block the UI waiting for the backend.
     useEffect(() => {
         const unlisten = listen<{ success: boolean; message: string }>('update-complete', async (event) => {
@@ -127,14 +183,14 @@ export default function UpdatesPage() {
             setUpdateResult(event.payload.message);
             checkForUpdates();
             try {
-                const warnings = await invoke<string[]>('get_pacnew_warnings');
+                const warnings = unwrap(await commands.getPacnewWarnings());
                 setPacnewWarnings(warnings);
             } catch {
                 // ignore
             }
             if (event.payload.success) {
                 try {
-                    const orphans = await invoke<string[]>('get_orphans');
+                    const orphans = unwrap(await commands.getOrphans());
                     setOrphansAfterUpdate(orphans || []);
                 } catch {
                     setOrphansAfterUpdate([]);
@@ -149,7 +205,14 @@ export default function UpdatesPage() {
     }, [setUpdating, setPacnewWarnings]);
 
     const handleUpdateAll = () => {
-        setShowConfirm(true);
+        const readIds = getReadNewsIds();
+        const unreadCritical = newsItems.filter((i) => i.is_critical && !readIds.includes(i.id));
+        if (unreadCritical.length > 0) {
+            setUnreadCriticalItems(unreadCritical);
+            setShowBlockerModal(true);
+        } else {
+            setShowConfirm(true);
+        }
     };
 
     const performUpdate = async () => {
@@ -159,9 +222,23 @@ export default function UpdatesPage() {
         clearUpdateLogs();
         setCurrentStep(0);
 
-        // Always use Polkit for privilege (no in-app password). Avoids double prompt (app + system).
-        // Fire-and-forget: never await so the UI never blocks. Backend returns "started" and runs update in background.
-        invoke<string>('perform_system_update', { password: null }).catch((e) => {
+        // For updates, sources are never "off": always run AUR and Flatpak phases for installed packages.
+        // Pass modal password when AUR updates require it (backend uses it for makepkg/sudo).
+        const pwd = password?.trim() || null;
+        setPassword('');
+
+        if (doSnapshot && snapshotStatus?.is_configured) {
+            try {
+                // We don't block the WHOLE update if snapshot fails, but we try.
+                await commands.createSystemSnapshot(snapshotStatus.tool as any, `Monarch Store Update: ${new Date().toISOString()}`).then(unwrap);
+            } catch (e) {
+                console.error("Snapshot failed:", e);
+                // Continue with update anyway, just log it?
+                clearUpdateLogs();
+            }
+        }
+
+        commands.performSystemUpdate(pwd, true, true).catch((e) => {
             errorService.reportError(e as Error | string);
             setUpdateResult(`Update failed: ${e}`);
             setUpdating(false);
@@ -185,7 +262,7 @@ export default function UpdatesPage() {
                         <p className="text-lg text-slate-500 dark:text-app-muted font-medium ml-1">
                             {isChecking ? "Checking for updates..." :
                                 updates.length === 0 ? "Your system is up to date" :
-                                    `${updates.length} updates available (${(updates.length * 1.5).toFixed(1)} MB)`}
+                                    `${updates.length} updates available`}
                         </p>
                     </div>
 
@@ -201,7 +278,7 @@ export default function UpdatesPage() {
                         <button
                             onClick={async () => {
                                 try {
-                                    const { command } = await invoke<{ command: string; description: string }>('get_system_update_command');
+                                    const { command } = await commands.getSystemUpdateCommand();
                                     await navigator.clipboard.writeText(command);
                                     toastSuccess('Command copied. Paste in your terminal to run.');
                                 } catch (e) {
@@ -224,6 +301,129 @@ export default function UpdatesPage() {
                         )}
                     </div>
                 </div>
+
+                {/* System Status Indicators (NEW: Phase 4 & 5) */}
+                {(rebootRequired || pacnewWarnings.length > 0) && (
+                    <div className="mt-6 flex flex-col gap-3">
+                        {rebootRequired && (
+                            <motion.div
+                                initial={{ opacity: 0, y: -10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="bg-orange-500/10 border border-orange-500/20 rounded-2xl p-4 flex items-center justify-between gap-4"
+                            >
+                                <div className="flex items-center gap-4">
+                                    <div className="p-2 bg-orange-500/20 rounded-xl text-orange-500">
+                                        <AlertCircle size={24} />
+                                    </div>
+                                    <div>
+                                        <h3 className="font-bold text-slate-900 dark:text-white">Reboot Required</h3>
+                                        <p className="text-sm text-slate-500 dark:text-white/50">Your system kernel or core drivers have been updated. Please restart to apply changes.</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => commands.launchApp({ pkg_name: 'reboot' }).catch(() => { })}
+                                    className="px-6 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl font-bold text-sm transition-all shadow-lg shadow-orange-900/20 whitespace-nowrap"
+                                >
+                                    Restart Now
+                                </button>
+                            </motion.div>
+                        )}
+
+                        {pacnewWarnings.length > 0 && (
+                            <motion.div
+                                initial={{ opacity: 0, y: -10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-4 flex items-center justify-between gap-4"
+                            >
+                                <div className="flex items-center gap-4">
+                                    <div className="p-2 bg-blue-500/20 rounded-xl text-blue-500">
+                                        <ShieldCheck size={24} />
+                                    </div>
+                                    <div>
+                                        <h3 className="font-bold text-slate-900 dark:text-white">Config Review Needed</h3>
+                                        <p className="text-sm text-slate-500 dark:text-white/50">{pacnewWarnings.length} .pacnew files detected. Review these to ensure system stability.</p>
+                                    </div>
+                                </div>
+                                <div className="flex gap-4 overflow-x-auto custom-scrollbar-hidden py-1">
+                                    {pacnewWarnings.slice(0, 2).map((p, i) => (
+                                        <span key={i} className="text-[10px] font-mono bg-blue-500/10 px-2 py-1 rounded-md text-blue-400 whitespace-nowrap">
+                                            {p.split('/').pop()}
+                                        </span>
+                                    ))}
+                                    {pacnewWarnings.length > 2 && <span className="text-[10px] text-blue-400/50">+{pacnewWarnings.length - 2} more</span>}
+                                </div>
+                            </motion.div>
+                        )}
+
+                        {pendingServiceRestarts.length > 0 && (
+                            <motion.div
+                                initial={{ opacity: 0, y: -10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="bg-purple-500/10 border border-purple-500/20 rounded-2xl p-4 flex items-center justify-between gap-4"
+                            >
+                                <div className="flex items-center gap-4">
+                                    <div className="p-2 bg-purple-500/20 rounded-xl text-purple-500">
+                                        <RotateCw size={24} />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <h3 className="font-bold text-slate-900 dark:text-white">Service Restarts Recommended</h3>
+                                        <div className="flex flex-wrap gap-2 mt-1">
+                                            {pendingServiceRestarts.map((s, i) => (
+                                                <span key={i} className="text-[10px] font-mono bg-purple-500/10 px-2 py-0.5 rounded-md text-purple-400">
+                                                    {s}
+                                                </span >
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={async () => {
+                                        try {
+                                            const pwd = await requestSessionPassword();
+                                            for (const s of pendingServiceRestarts) {
+                                                await commands.restartService(pwd, s).then(unwrap);
+                                            }
+                                            toastSuccess('Services restarted successfully');
+                                            useAppStore.getState().refreshPendingUpdates();
+                                        } catch (e) {
+                                            console.error(e);
+                                        }
+                                    }}
+                                    className="px-6 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold text-sm transition-all shadow-lg shadow-purple-900/20 whitespace-nowrap"
+                                >
+                                    Restart Now
+                                </button>
+                            </motion.div>
+                        )}
+
+                        {snapshotStatus?.is_configured && !isUpdating && updates.length > 0 && (
+                            <motion.div
+                                initial={{ opacity: 0, y: -10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-4 flex items-center justify-between gap-4"
+                            >
+                                <div className="flex items-center gap-4">
+                                    <div className="p-2 bg-emerald-500/20 rounded-xl text-emerald-500">
+                                        < ShieldCheck size={24} />
+                                    </div>
+                                    <div>
+                                        <h3 className="font-bold text-slate-900 dark:text-white">Safety Snapshot Available</h3>
+                                        <p className="text-sm text-slate-500 dark:text-white/50">{snapshotStatus.message}. Create a system restore point before proceeding?</p>
+                                    </div>
+                                </div>
+                                <label className="flex items-center gap-3 cursor-pointer group bg-black/5 dark:bg-white/5 px-4 py-2 rounded-xl border border-black/10 dark:border-white/10 hover:border-emerald-500/50 transition-all">
+                                    <span className="text-sm font-bold text-slate-700 dark:text-emerald-400">Snapshot Enabled</span>
+                                    <input
+                                        type="checkbox"
+                                        checked={doSnapshot}
+                                        onChange={(e) => setDoSnapshot(e.target.checked)}
+                                        className="w-5 h-5 rounded-md border-white/10 bg-black/20 text-emerald-500 focus:ring-emerald-500"
+                                    />
+                                </label>
+                            </motion.div>
+                        )}
+                    </div>
+                )}
 
                 {/* Visual Stepper */}
                 <AnimatePresence>
@@ -270,7 +470,7 @@ export default function UpdatesPage() {
                             </div>
                             {showAuthHint && (
                                 <p className="text-amber-600 dark:text-amber-400 text-xs font-medium mt-2 mb-1">
-                                    If the system authentication dialog appeared behind other windows, bring it to the front to continue.
+                                    If a password dialog appeared behind other windows, bring it to the front and enter your password to continue.
                                 </p>
                             )}
                             <div className="h-2 bg-black/10 dark:bg-black/40 rounded-full overflow-hidden border border-black/5 dark:border-white/5">
@@ -344,7 +544,7 @@ export default function UpdatesPage() {
                                     setFixingLock(true);
                                     try {
                                         const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-                                        await invoke('repair_unlock_pacman', { password: pwd });
+                                        await commands.repairUnlockPacman(pwd).then(unwrap);
                                         setUpdateResult(null);
                                         await checkForUpdates();
                                     } catch (e) {
@@ -386,7 +586,7 @@ export default function UpdatesPage() {
                                 onClick={async () => {
                                     setRemovingOrphans(true);
                                     try {
-                                        await invoke('remove_orphans', { orphans: orphansAfterUpdate });
+                                        await commands.removeOrphans(orphansAfterUpdate).then(unwrap);
                                         setOrphansAfterUpdate([]);
                                         await checkForUpdates();
                                     } catch (e) {
@@ -419,7 +619,7 @@ export default function UpdatesPage() {
                                     <span>{rebootRequired ? "System Reboot is required to apply kernel/driver updates." : "Safety Banner: This update includes kernel or driver changes. A reboot is highly recommended after completion."}</span>
                                     {rebootRequired && (
                                         <button
-                                            onClick={() => invoke('launch_app', { pkgName: 'reboot' })}
+                                            onClick={() => commands.launchApp({ pkg_name: 'reboot' }).catch(() => { })}
                                             className="ml-auto px-4 py-1.5 rounded-lg bg-orange-500 text-white hover:bg-orange-600 transition-colors"
                                         >
                                             Reboot Now
@@ -466,58 +666,152 @@ export default function UpdatesPage() {
                         </div>
                     </div>
                 ) : (
-                    <div className="space-y-3 max-w-5xl mx-auto">
-                        {updates.map((pkg) => (
-                            <div
-                                key={pkg.name}
-                                className="bg-white dark:bg-app-card border border-black/5 dark:border-white/5 rounded-2xl p-5 flex items-center justify-between hover:bg-white/80 dark:hover:bg-white/5 transition-all group hover:scale-[1.01] hover:shadow-xl hover:border-black/10 dark:hover:border-white/10"
-                            >
-                                <div className="flex items-center gap-6">
-                                    <div className="w-14 h-14 rounded-xl bg-slate-50 dark:bg-black/20 flex items-center justify-center shrink-0 overflow-hidden relative p-2 border border-black/5 dark:border-white/5 shadow-inner">
-                                        <AppIcon pkgId={pkg.name} />
-                                    </div>
-                                    <div>
-                                        <h3 className="font-bold flex items-center gap-3 text-xl text-slate-900 dark:text-white mb-1">
-                                            {pkg.name}
-                                            <RepoBadge source={pkg.source} />
-                                        </h3>
-                                        <div className="flex items-center gap-3 text-sm font-medium">
-                                            <span className="text-slate-400 dark:text-app-muted line-through opacity-50">{pkg.current_version}</span>
-                                            <ArrowRight size={14} className="text-slate-300 dark:text-white/20" />
-                                            <span className="text-emerald-600 dark:text-emerald-400">{pkg.new_version}</span>
-                                        </div>
-                                    </div>
-                                </div>
+                    <div className="space-y-6 max-w-5xl mx-auto">
+                        {(['repo', 'aur', 'flatpak'] as const).map((sourceType) => {
+                            const sectionUpdates = updates.filter((u) => (u.source?.source_type ?? 'repo') === sourceType);
+                            if (sectionUpdates.length === 0) return null;
+                            const sectionLabel = sourceType === 'repo' ? 'System (repos)' : sourceType === 'aur' ? 'AUR (community)' : 'Flatpak';
+                            return (
+                                <div key={sourceType} className="space-y-3">
+                                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-app-muted px-1">
+                                        {sectionLabel} — {sectionUpdates.length} update{sectionUpdates.length !== 1 ? 's' : ''}
+                                    </h3>
+                                    {sectionUpdates.map((pkg, idx) => (
+                                        <div
+                                            key={`${pkg.name}:${String(pkg.source?.source_type ?? 'repo')}:${String(pkg.source?.id ?? pkg.name)}:${idx}`}
+                                            className="bg-white dark:bg-app-card border border-black/5 dark:border-white/5 rounded-2xl p-5 flex items-center justify-between hover:bg-white/80 dark:hover:bg-white/5 transition-all group hover:scale-[1.01] hover:shadow-xl hover:border-black/10 dark:hover:border-white/10"
+                                        >
+                                            <div className="flex items-center gap-6">
+                                                <div className="w-14 h-14 rounded-xl bg-slate-50 dark:bg-black/20 flex items-center justify-center shrink-0 overflow-hidden relative p-2 border border-black/5 dark:border-white/5 shadow-inner">
+                                                    <AppIcon pkgId={pkg.name} iconUrl={metadataCache[pkg.name]?.icon_url} />
+                                                </div>
+                                                <div>
+                                                    <h3 className="font-bold flex items-center gap-3 text-xl text-slate-900 dark:text-white mb-1">
+                                                        {pkg.name}
+                                                        <RepoBadge source={pkg.source} />
+                                                    </h3>
+                                                    <div className="flex items-center gap-3 text-sm font-medium">
+                                                        <span className="text-slate-400 dark:text-app-muted line-through opacity-50">{pkg.current_version}</span>
+                                                        <ArrowRight size={14} className="text-slate-300 dark:text-white/20" />
+                                                        <span className="text-emerald-600 dark:text-emerald-400">{pkg.new_version}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
 
-                                <div className="flex items-center gap-6">
-                                    {pkg.source.source_type === 'aur' && (
-                                        <div title="AUR Package: May take longer to build" className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-100 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-500 text-xs font-bold">
-                                            <AlertCircle size={14} />
-                                            <span>Built from Source</span>
+                                            <div className="flex items-center gap-6">
+                                                {pkg.source.source_type === 'aur' && (
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            onClick={() => handleViewPkgbuild(pkg.name)}
+                                                            className="px-3 py-1.5 rounded-lg bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-xs font-bold text-app-muted border border-black/10 dark:border-white/10 transition-all"
+                                                        >
+                                                            View PKGBUILD
+                                                        </button>
+                                                        <div title="AUR Package: May take longer to build" className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-100 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-500 text-xs font-bold">
+                                                            <AlertCircle size={14} />
+                                                            <span>Built from Source</span>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
-                                    )}
+                                    ))}
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </div>
 
+            <CriticalNewsBlockerModal
+                isOpen={showBlockerModal}
+                onClose={() => setShowBlockerModal(false)}
+                onProceed={() => {
+                    markNewsItemsAsRead(unreadCriticalItems.map((i) => i.id));
+                    performUpdate();
+                }}
+                criticalItems={unreadCriticalItems}
+            />
+
             <ConfirmationModal
                 isOpen={showConfirm}
                 onClose={() => {
-        setShowConfirm(false);
+                    setShowConfirm(false);
+                    setPassword('');
                 }}
                 onConfirm={performUpdate}
                 title="Update System"
-    message={updates.some(u => u.source.source_type === 'aur')
-        ? "This update includes AUR packages which require building from source. It may take longer to complete."
-        : "This will update all system packages. Are you ready to proceed?"
+                message={
+                    <div className="space-y-4">
+                        <p>
+                            {updates.some(u => u.source.source_type === 'aur')
+                                ? "This update includes AUR packages which require building from source. Please enter your administrator password to proceed."
+                                : "This will update all system packages. Are you ready to proceed?"
+                            }
+                        </p>
+                        {doSnapshot && snapshotStatus?.is_configured && (
+                            <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-3">
+                                <ShieldCheck size={18} className="text-emerald-500" />
+                                <span className="text-xs font-medium text-emerald-700 dark:text-emerald-300">A system snapshot will be created automatically before the update begins.</span>
+                            </div>
+                        )}
+                    </div>
                 }
                 confirmLabel="Start Update"
                 variant="info"
-    showPasswordInput={false}
+                showPasswordInput={updates.some(u => u.source.source_type === 'aur')}
+                passwordValue={password}
+                onPasswordChange={setPassword}
             />
+
+            <AnimatePresence>
+                {viewingPkgbuild && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.95 }}
+                            className="bg-app-card border border-app-border rounded-3xl w-full max-w-4xl h-[80vh] flex flex-col shadow-2xl overflow-hidden"
+                        >
+                            <div className="p-6 border-b border-app-border flex items-center justify-between">
+                                <div>
+                                    <h3 className="text-xl font-bold flex items-center gap-3">
+                                        <Terminal size={20} className="text-blue-500" />
+                                        Reviewing PKGBUILD: <span className="text-blue-500">{viewingPkgbuild}</span>
+                                    </h3>
+                                    <p className="text-xs text-app-muted mt-1 underline decoration-dotted">Always inspect scripts from the AUR for safety.</p>
+                                </div>
+                                <button
+                                    onClick={() => setViewingPkgbuild(null)}
+                                    className="p-2 hover:bg-white/10 rounded-xl transition-all"
+                                >
+                                    <RefreshCw size={20} className="rotate-45" />
+                                </button>
+                            </div>
+                            <div className="flex-1 p-6 overflow-y-auto custom-scrollbar bg-black/20">
+                                {isLoadingPkgbuild ? (
+                                    <div className="h-full flex flex-col items-center justify-center gap-4 text-app-muted">
+                                        <RefreshCw size={32} className="animate-spin" />
+                                        <p className="font-medium">Fetching from AUR...</p>
+                                    </div>
+                                ) : (
+                                    <pre className="text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed">
+                                        {pkgbuildContent}
+                                    </pre>
+                                )}
+                            </div>
+                            <div className="p-4 border-t border-app-border bg-app-card flex justify-end">
+                                <button
+                                    onClick={() => setViewingPkgbuild(null)}
+                                    className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-sm transition-all"
+                                >
+                                    Close Review
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
         </div>
     );
 }

@@ -1,9 +1,9 @@
 use crate::{aur_api, helper_client, models, repo_manager::RepoManager};
 use serde::Serialize;
+use specta::Type;
 use std::path::Path;
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter, State};
-use tauri_plugin_notification::NotificationExt;
 use tempfile;
 use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
 use tokio::sync::Mutex;
@@ -35,7 +35,7 @@ lazy_static::lazy_static! {
     static ref ACTIVE_INSTALL_PROCESS: Mutex<Option<tokio::process::Child>> = Mutex::new(None);
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Type)]
 pub struct InstalledPackage {
     pub name: String,
     pub version: String,
@@ -49,7 +49,7 @@ pub struct InstalledPackage {
     pub icon: Option<String>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Type)]
 pub struct PackageInstallStatus {
     pub installed: bool,
     pub version: Option<String>,
@@ -58,7 +58,7 @@ pub struct PackageInstallStatus {
     pub actual_package_name: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Type)]
 pub struct PendingUpdate {
     pub name: String,
     pub old_version: String,
@@ -67,6 +67,7 @@ pub struct PendingUpdate {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn abort_installation(app: AppHandle) -> Result<(), String> {
     let mut active = ACTIVE_INSTALL_PROCESS.lock().await;
     if let Some(mut child) = active.take() {
@@ -90,6 +91,7 @@ pub async fn abort_installation(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn install_package(
     _app: AppHandle,
     _state_repo: State<'_, RepoManager>,
@@ -101,7 +103,7 @@ pub async fn install_package(
 ) -> Result<(), String> {
     install_package_core(
         &app_handle,
-        &*_state_repo,
+        &_state_repo,
         &name,
         source,
         &password,
@@ -129,13 +131,13 @@ pub async fn install_package_core(
     // ✅ DISTRO-AWARE: Manjaro Stability Guard (Refined)
     // Block Pre-built binaries from Arch-based repos (Chaotic/CachyOS) on Manjaro due to glibc/python mismatches.
     let distro = crate::distro_context::DistroContext::new();
-    if distro.id == crate::distro_context::DistroId::Manjaro {
-        if source.id == "chaotic-aur" || source.id == "cachyos" {
-            let msg = "Manjaro Stability Guard: Installing pre-built binaries (Chaotic/CachyOS) is blocked on Manjaro to prevent system breakage. Please use the AUR (Native Build) version instead.".to_string();
-            let _ = app.emit("install-output", &msg);
-            let _ = app.emit("install-complete", "failed");
-            return Err(msg);
-        }
+    if distro.id == crate::distro_context::DistroId::Manjaro
+        && (source.id == "chaotic-aur" || source.id == "cachyos")
+    {
+        let msg = "Manjaro Stability Guard: Installing pre-built binaries (Chaotic/CachyOS) is blocked on Manjaro to prevent system breakage. Please use the AUR (Native Build) version instead.".to_string();
+        let _ = app.emit("install-output", &msg);
+        let _ = app.emit("install-complete", "failed");
+        return Err(msg);
     }
 
     // Pre-flight check: Database Lock - try to unlock if stale
@@ -146,7 +148,8 @@ pub async fn install_package_core(
         );
         // Always use helper (Polkit) for unlock so we don't run sudo with a password that may be
         // empty or wrong; the helper RemoveLock does the same safe rm and avoids "sudo: no password was provided".
-        match crate::repair::repair_unlock_pacman(app.clone(), None).await {
+        let one_click = repo_manager.is_one_click_enabled().await;
+        match crate::repair::repair_unlock_pacman_impl(app, None, one_click).await {
             Ok(_) => {
                 let _ = app.emit(
                     "install-output",
@@ -174,6 +177,8 @@ pub async fn install_package_core(
     } else {
         None
     };
+
+    let one_click = repo_manager.is_one_click_enabled().await;
 
     // Use ALL enabled repos for the transaction so dependencies can be resolved (e.g. vlc-git from chaotic needs deps from core/extra/community).
     // Always include system repos (core, extra, community, multilib) so ALPM can resolve dependencies even if UI state is stale.
@@ -217,6 +222,7 @@ pub async fn install_package_core(
                     paths: install_paths,
                 },
                 password.clone(),
+                one_click,
             )
             .await
             .map_err(|e| format!("Failed to invoke helper: {}", e))?;
@@ -227,11 +233,42 @@ pub async fn install_package_core(
             }
         }
         "flatpak" => {
+            let is_beta = source.id == "flathub-beta";
             let _ = app.emit(
                 "install-output",
-                format!("Installing {} from Flathub...", name),
+                format!(
+                    "Installing {} from Flathub{}...",
+                    name,
+                    if is_beta { " Beta" } else { "" }
+                ),
             );
-            crate::flathub_api::install_flatpak(app.clone(), name.to_string()).await?;
+            crate::flathub_api::install_flatpak(
+                app.clone(),
+                name.to_string(),
+                Some(source.id.as_str()),
+            )
+            .await?;
+            // Flatpak success: skip ALPM verification (package is not in pacman DB). Emit success and return.
+            let _ = app.emit("install-complete", "success");
+            if repo_manager.is_notifications_enabled().await {
+                crate::commands::system::show_desktop_notification_safe(
+                    &app,
+                    "✨ MonARCH: Installation Complete".to_string(),
+                    format!("Successfully installed '{}'", name),
+                )
+                .await;
+            }
+            crate::utils::track_event_safe(
+                app,
+                "install_package",
+                Some(serde_json::json!({
+                    "pkg": name,
+                    "source": if is_beta { "flatpak_beta" } else { "flatpak" },
+                    "success": true,
+                })),
+            )
+            .await;
+            return Ok(());
         }
         _ => {
             // Sync databases so helper sees latest repo state (host-adaptive: repos are
@@ -272,6 +309,7 @@ pub async fn install_package_core(
                     target_repo: target_repo.clone(),
                 },
                 password.clone(),
+                one_click,
             )
             .await
             .map_err(|e| format!("Failed to invoke helper: {}", e))?;
@@ -342,6 +380,7 @@ pub async fn install_package_core(
                         },
                     },
                     password.clone(),
+                    one_click,
                 )
                 .await
                 .map_err(|e| format!("Failed to invoke helper (refresh): {}", e))?;
@@ -358,6 +397,7 @@ pub async fn install_package_core(
                         },
                     },
                     password.clone(),
+                    one_click,
                 )
                 .await
                 .map_err(|e| format!("Failed to invoke helper (install): {}", e))?;
@@ -437,6 +477,7 @@ pub async fn install_package_core(
                 target_repo: target_repo_retry,
             },
             password.clone(),
+            one_click,
         )
         .await
         .map_err(|e| format!("Failed to invoke helper (install): {}", e))?;
@@ -463,9 +504,7 @@ pub async fn install_package_core(
     if !verification {
         let _ = app.emit("install-complete", "failed");
         if saw_corrupt_db {
-            return Err(format!(
-                "Sync databases are corrupt (Unrecognized archive format). Use Settings → System Management → Refresh Databases, then retry. If it still fails, run 'sudo pacman -Syy' once."
-            ));
+            return Err("Sync databases are corrupt (Unrecognized archive format). Use Settings → System Management → Refresh Databases, then retry. If it still fails, run 'sudo pacman -Syy' once.".to_string());
         }
         // Surface the real ALPM error when package is not in any enabled repo
         let not_in_repo = install_log
@@ -511,12 +550,12 @@ pub async fn install_package_core(
     // Process notification & telemetry
     // Only send system notification if enabled
     if repo_manager.is_notifications_enabled().await {
-        let _ = app
-            .notification()
-            .builder()
-            .title("✨ MonArch: Installation Complete")
-            .body(format!("Successfully installed '{}'", name))
-            .show();
+        crate::commands::system::show_desktop_notification_safe(
+            &app,
+            "✨ MonArch: Installation Complete".to_string(),
+            format!("Successfully installed '{}'", name),
+        )
+        .await;
     }
 
     crate::utils::track_event_safe(
@@ -534,8 +573,10 @@ pub async fn install_package_core(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn uninstall_package(
     app: AppHandle,
+    state_repo: State<'_, RepoManager>,
     name: String,
     source: Option<models::PackageSource>,
     password: Option<String>,
@@ -570,13 +611,33 @@ pub async fn uninstall_package(
         format!("Preparing to uninstall '{}'...", name),
     );
 
-    // ✅ Flatpak Support
+    // ✅ Flatpak Support: emit install-complete so UI leaves "running" state
     if let Some(src) = &source {
         if src.source_type == "flatpak" {
-            return crate::flathub_api::remove_flatpak(app.clone(), name).await;
+            match crate::flathub_api::remove_flatpak(app.clone(), name.clone()).await {
+                Ok(()) => {
+                    let _ = app.emit("install-complete", "success");
+                    crate::utils::track_event_safe(
+                        &app,
+                        "uninstall_package",
+                        Some(serde_json::json!({
+                            "pkg": name,
+                            "success": true,
+                        })),
+                    )
+                    .await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    let _ = app.emit("install-output", format!("Flatpak uninstall failed: {}", e));
+                    let _ = app.emit("install-complete", "failed");
+                    return Err(e);
+                }
+            }
         }
     }
 
+    let one_click = state_repo.inner().is_one_click_enabled().await;
     // ✅ Native ALPM Support
     let mut rx = helper_client::invoke_helper(
         &app,
@@ -585,6 +646,7 @@ pub async fn uninstall_package(
             remove_deps: true, // -Rns behavior
         },
         password.clone(),
+        one_click,
     )
     .await
     .map_err(|e| format!("Failed to invoke helper: {}", e))?;
@@ -636,8 +698,9 @@ pub async fn build_aur_package(
 
     let mut resolved = Vec::new();
     let mut visited = std::collections::HashSet::new();
+    let mut stack = std::collections::HashSet::new();
 
-    resolve_aur_dependencies(app, name, &mut resolved, &mut visited).await?;
+    resolve_aur_dependencies(app, name, &mut resolved, &mut visited, &mut stack, 0).await?;
 
     if resolved.len() > 1 {
         let _ = app.emit(
@@ -648,8 +711,8 @@ pub async fn build_aur_package(
 
     let mut built_paths = Vec::new();
     for pkg_name in resolved {
-        let path = build_aur_package_single(app, &pkg_name, password).await?;
-        built_paths.push(path);
+        let paths = build_aur_package_single(app, &pkg_name, password).await?;
+        built_paths.extend(paths);
     }
 
     Ok(built_paths)
@@ -659,7 +722,7 @@ async fn build_aur_package_single(
     app: &AppHandle,
     name: &str,
     password: &Option<String>,
-) -> Result<String, String> {
+) -> Result<Vec<String>, String> {
     let temp_dir = tempfile::tempdir().map_err(|e: std::io::Error| e.to_string())?;
     let pkg_path = temp_dir.path();
 
@@ -701,7 +764,8 @@ async fn build_aur_package_single(
         }
     }
 
-    // 3. Create transient Sudo Askpass script if password is provided
+    // 3. Create transient Sudo Askpass script if password is provided.
+    // Password lives only in this temp dir and is removed when the function returns (temp dir dropped).
     let mut askpass_path = None;
     if let Some(pwd) = password {
         let script_path = pkg_path.join("askpass.sh");
@@ -789,7 +853,14 @@ async fn build_aur_package_single(
     let missing_keys = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
     let build_errors = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
 
-    if let Some(out) = child.stdout.take() {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    {
+        let mut active = ACTIVE_INSTALL_PROCESS.lock().await;
+        *active = Some(child);
+    }
+
+    if let Some(out) = stdout {
         let a = app.clone();
         tokio::spawn(async move {
             let reader = TokioBufReader::new(out);
@@ -802,83 +873,89 @@ async fn build_aur_package_single(
 
     let missing_keys_clone = missing_keys.clone();
     let build_errors_clone = build_errors.clone();
-    if let Some(err) = child.stderr.take() {
+    let stderr_handle = if let Some(err) = stderr {
         let a = app.clone();
-        let mut reader = TokioBufReader::new(err).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            let _ = a.emit("install-output", format!("MAKEPKG: {}", line));
+        Some(tokio::spawn(async move {
+            let mut reader = TokioBufReader::new(err).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                let _ = a.emit("install-output", format!("MAKEPKG: {}", line));
 
-            // ✅ AUR Progress Parsing
-            // makepkg (via curl) often outputs lines like:
-            // "15 168.1M  15 26.24M   0      0 25.27M      0   00:06   00:01   00:05 25.28M"
-            // or just "100 169.8k ..."
-            // We look for a pattern like " \d+ " at the start or after whitespace, which signifies percentage.
-            if line.contains("%")
-                || (line.len() > 10
-                    && line
-                        .chars()
-                        .next()
-                        .map_or(false, |c| c.is_digit(10) || c.is_whitespace()))
-            {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if let Some(first) = parts.first() {
-                    if let Ok(pct) = first.parse::<u8>() {
-                        if pct <= 100 {
-                            let _ = a.emit(
-                                "update-progress",
-                                serde_json::json!({
-                                    "phase": "download",
-                                    "progress": pct,
-                                    "message": format!("Downloading AUR sources... {}%", pct)
-                                }),
-                            );
+                if line.contains('%')
+                    || (line.len() > 10
+                        && line
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_digit() || c.is_whitespace()))
+                {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if let Some(first) = parts.first() {
+                        if let Ok(pct) = first.parse::<u8>() {
+                            if pct <= 100 {
+                                let _ = a.emit(
+                                    "update-progress",
+                                    serde_json::json!({
+                                        "phase": "download",
+                                        "progress": pct,
+                                        "message": format!("Downloading AUR sources... {}%", pct)
+                                    }),
+                                );
+                            }
                         }
                     }
                 }
-            }
 
-            // Detect GPG key errors and extract key IDs
-            if line.contains("unknown public key")
-                || line.contains("not found in keychain")
-                || line.contains("FAILED (unknown public key")
-                || line.contains("could not be verified")
-            {
-                // Extract key ID using regex-like pattern matching
-                // Common formats: "key ABCD1234", "FAILED (unknown public key ABCD1234)"
-                let words: Vec<&str> = line.split_whitespace().collect();
-                for (i, word) in words.iter().enumerate() {
-                    // Look for hex-like key IDs (8+ alphanumeric characters)
-                    let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
-                    if clean.len() >= 8 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
-                        let mut keys = missing_keys_clone.lock().await;
-                        if !keys.contains(&clean.to_string()) {
-                            keys.push(clean.to_string());
+                if line.contains("unknown public key")
+                    || line.contains("not found in keychain")
+                    || line.contains("FAILED (unknown public key")
+                    || line.contains("could not be verified")
+                {
+                    let words: Vec<&str> = line.split_whitespace().collect();
+                    for (i, word) in words.iter().enumerate() {
+                        let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
+                        if clean.len() >= 8 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
+                            let mut keys = missing_keys_clone.lock().await;
+                            if !keys.contains(&clean.to_string()) {
+                                keys.push(clean.to_string());
+                            }
                         }
-                    }
-                    // Also check if previous word was "key"
-                    if *word == "key" || word.ends_with("key") {
-                        if let Some(next) = words.get(i + 1) {
-                            let clean = next.trim_matches(|c: char| !c.is_alphanumeric());
-                            if clean.len() >= 8 {
-                                let mut keys = missing_keys_clone.lock().await;
-                                if !keys.contains(&clean.to_string()) {
-                                    keys.push(clean.to_string());
+                        if *word == "key" || word.ends_with("key") {
+                            if let Some(next) = words.get(i + 1) {
+                                let clean = next.trim_matches(|c: char| !c.is_alphanumeric());
+                                if clean.len() >= 8 {
+                                    let mut keys = missing_keys_clone.lock().await;
+                                    if !keys.contains(&clean.to_string()) {
+                                        keys.push(clean.to_string());
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Collect actual errors
-            if line.contains("ERROR:") {
-                let mut errs = build_errors_clone.lock().await;
-                errs.push(line.clone());
+                if line.contains("ERROR:") {
+                    let mut errs = build_errors_clone.lock().await;
+                    errs.push(line.clone());
+                }
             }
+        }))
+    } else {
+        None
+    };
+
+    let exit_status = {
+        let mut active = ACTIVE_INSTALL_PROCESS.lock().await;
+        if let Some(mut c) = active.take() {
+            drop(active);
+            c.wait().await.map_err(|e| e.to_string())?
+        } else {
+            let _ = app.emit("install-output", "--- Build aborted by user ---");
+            return Err("Build aborted by user.".to_string());
         }
-    }
+    };
 
-    let exit_status = child.wait().await.map_err(|e| e.to_string())?;
+    if let Some(h) = stderr_handle {
+        let _ = h.await;
+    }
 
     // Check if build failed due to PGP keys
     if !exit_status.success() {
@@ -965,9 +1042,13 @@ async fn build_aur_package_single(
                 }
 
                 let mut retry_child = retry_makepkg.spawn().map_err(|e| e.to_string())?;
-
-                // Stream retry output
-                if let Some(out) = retry_child.stdout.take() {
+                let retry_stdout = retry_child.stdout.take();
+                let retry_stderr = retry_child.stderr.take();
+                {
+                    let mut active = ACTIVE_INSTALL_PROCESS.lock().await;
+                    *active = Some(retry_child);
+                }
+                if let Some(out) = retry_stdout {
                     let a = app.clone();
                     tokio::spawn(async move {
                         let reader = TokioBufReader::new(out);
@@ -977,19 +1058,26 @@ async fn build_aur_package_single(
                         }
                     });
                 }
-
-                if let Some(err) = retry_child.stderr.take() {
+                if let Some(err) = retry_stderr {
                     let a = app.clone();
                     tokio::spawn(async move {
-                        let reader = TokioBufReader::new(err);
-                        let mut lines = reader.lines();
+                        let reader = TokioBufReader::new(err).lines();
+                        let mut lines = reader;
                         while let Ok(Some(line)) = lines.next_line().await {
                             let _ = a.emit("install-output", format!("MAKEPKG: {}", line));
                         }
                     });
                 }
-
-                let retry_status = retry_child.wait().await.map_err(|e| e.to_string())?;
+                let retry_status = {
+                    let mut active = ACTIVE_INSTALL_PROCESS.lock().await;
+                    if let Some(mut c) = active.take() {
+                        drop(active);
+                        c.wait().await.map_err(|e| e.to_string())?
+                    } else {
+                        let _ = app.emit("install-output", "--- Build aborted by user ---");
+                        return Err("Build aborted by user.".to_string());
+                    }
+                };
 
                 if !retry_status.success() {
                     let errs = build_errors.lock().await;
@@ -1030,7 +1118,8 @@ async fn build_aur_package_single(
         }
     }
 
-    // Find the resulting package file
+    // Collect all built packages (supports split packages: multiple .pkg.tar.zst per PKGBUILD)
+    let mut artifacts = Vec::new();
     let mut dir = tokio::fs::read_dir(&pkg_dir)
         .await
         .map_err(|e| e.to_string())?;
@@ -1038,39 +1127,60 @@ async fn build_aur_package_single(
         let path = entry.path();
         if let Some(ext) = path.extension() {
             if ext == "zst" && path.to_string_lossy().contains(".pkg.tar.") {
-                return Ok(path.to_string_lossy().to_string());
+                artifacts.push(path.to_string_lossy().to_string());
             }
         }
     }
-
-    Err(format!("Could not find built package in {:?}", pkg_dir))
+    if artifacts.is_empty() {
+        return Err(format!("Could not find built package in {:?}", pkg_dir));
+    }
+    Ok(artifacts)
 }
 
 use futures::future::{BoxFuture, FutureExt};
+
+const AUR_DEPENDENCY_MAX_DEPTH: u32 = 64;
 
 pub fn resolve_aur_dependencies<'a>(
     app: &'a AppHandle,
     name: &'a str,
     resolved: &'a mut Vec<String>,
     visited: &'a mut std::collections::HashSet<String>,
+    stack: &'a mut std::collections::HashSet<String>,
+    depth: u32,
 ) -> BoxFuture<'a, Result<(), String>> {
     async move {
+        if depth > AUR_DEPENDENCY_MAX_DEPTH {
+            return Err(
+                "AUR dependency depth exceeded (max 64). Possible cycle or very deep tree."
+                    .to_string(),
+            );
+        }
+        if stack.contains(name) {
+            return Err(format!(
+                "Cycle detected in AUR dependencies involving '{}'.",
+                name
+            ));
+        }
         if visited.contains(name) {
             return Ok(());
         }
         visited.insert(name.to_string());
+        stack.insert(name.to_string());
 
         let _ = app.emit(
             "install-output",
             format!("Checking dependencies for {}...", name),
         );
 
-        // Fetch AUR info
         let names = [name];
         let info = aur_api::get_multi_info(&names[..]).await?;
         let pkg = match info.first() {
             Some(p) => p,
-            _ => return Err(format!("Package {} not found in AUR", name)),
+            _ => {
+                stack.remove(name);
+                return Err(format!("Package {} not found in AUR", name));
+            }
         };
 
         let mut all_deps: Vec<String> = Vec::new();
@@ -1082,7 +1192,6 @@ pub fn resolve_aur_dependencies<'a>(
         }
 
         for dep_entry in all_deps {
-            // Strip version constraints: "libfoo>=1.0" -> "libfoo"
             let dep_name = dep_entry
                 .split(['=', '>', '<'])
                 .next()
@@ -1092,16 +1201,19 @@ pub fn resolve_aur_dependencies<'a>(
             if is_package_satisfied(dep_name).await {
                 continue;
             }
-
-            // Check if it's in official repos (we skip this if pacman can find it)
             if is_in_official_repos(dep_name).await {
                 continue;
             }
 
-            // If not official and not satisfied, assume it's AUR
-            resolve_aur_dependencies(app, dep_name, resolved, visited).await?;
+            if let Err(e) =
+                resolve_aur_dependencies(app, dep_name, resolved, visited, stack, depth + 1).await
+            {
+                stack.remove(name);
+                return Err(e);
+            }
         }
 
+        stack.remove(name);
         if !resolved.contains(&name.to_string()) {
             resolved.push(name.to_string());
         }
@@ -1115,7 +1227,6 @@ async fn is_package_satisfied(name: &str) -> bool {
     let name = name.to_string();
     tokio::task::spawn_blocking(move || crate::alpm_read::is_dep_satisfied(&name))
         .await
-        .map(|b| b)
         .unwrap_or(false)
 }
 
@@ -1125,7 +1236,6 @@ pub(crate) async fn is_in_sync_repos(name: &str) -> bool {
     let name = name.to_string();
     tokio::task::spawn_blocking(move || crate::alpm_read::is_package_in_syncdb(&name))
         .await
-        .map(|b| b)
         .unwrap_or(false)
 }
 
@@ -1152,6 +1262,7 @@ pub fn audit_aur_builder_deps(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn fetch_pkgbuild(pkg_name: String) -> Result<String, String> {
     let url = format!(
         "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={}",
@@ -1166,13 +1277,17 @@ pub async fn fetch_pkgbuild(pkg_name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_installed_packages(
     state: tauri::State<'_, crate::metadata::MetadataState>,
+    _state_flathub: tauri::State<'_, crate::flathub_api::FlathubApiClient>,
+    state_registry: tauri::State<'_, crate::registry::RegistryState>,
 ) -> Result<Vec<InstalledPackage>, String> {
     let native_pkgs = crate::alpm_read::get_installed_packages_native();
     let mut apps = Vec::new();
 
-    if let Ok(loader) = state.inner().0.lock() {
+    // 1. Process ALPM packages (Repo/AUR/Chaotic)
+    if let Ok(loader) = state.loader.lock() {
         for pkg in native_pkgs {
             // Check if it's an app
             let icon = loader.find_icon_heuristic(&pkg.name);
@@ -1196,13 +1311,52 @@ pub async fn get_installed_packages(
         }
     }
 
+    // 2. Process Flatpaks
+    if let Ok(flatpaks) = crate::flathub_api::get_installed_flatpaks_detailed().await {
+        for fp in flatpaks {
+            let mut icon = None;
+            let mut description = fp.summary.clone();
+
+            // Try to enrich from Registry first (best quality icons)
+            if let Ok(Some(cached)) = state_registry
+                .manager
+                .get_package(&fp.app_id.to_lowercase())
+            {
+                icon = cached.icon;
+                if !cached.description.is_empty() {
+                    description = cached.description;
+                }
+            }
+
+            // Fallback to local AppStream loader
+            if icon.is_none() {
+                if let Ok(loader) = state.loader.lock() {
+                    icon = loader.find_icon_heuristic(&fp.app_id);
+                }
+            }
+
+            apps.push(InstalledPackage {
+                name: fp.app_id.clone(),
+                version: fp.version,
+                description,
+                install_date: None,
+                size: None,
+                url: None,
+                repository: Some("flathub".to_string()),
+                icon,
+            });
+        }
+    }
+
     Ok(apps)
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn check_for_updates(
     _app: AppHandle,
     _state: tauri::State<'_, crate::metadata::MetadataState>,
+    state_repo: State<'_, RepoManager>,
 ) -> Result<Vec<PendingUpdate>, String> {
     // 1. Get Official updates via Helper "Safe Check" (avoids DB lock, creates temp env)
     let mut updates = Vec::new();
@@ -1233,6 +1387,7 @@ pub async fn check_for_updates(
         "now-testing".to_string(),
     ];
 
+    let one_click = state_repo.inner().is_one_click_enabled().await;
     // Invoke Helper
     match crate::helper_client::invoke_helper(
         &_app,
@@ -1240,6 +1395,7 @@ pub async fn check_for_updates(
             enabled_repos: standard_repos,
         },
         None,
+        one_click,
     )
     .await
     {
@@ -1325,6 +1481,7 @@ async fn check_aur_updates() -> Result<Vec<PendingUpdate>, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_orphans() -> Result<Vec<String>, String> {
     tokio::task::spawn_blocking(crate::alpm_read::get_orphans_native)
         .await
@@ -1332,6 +1489,7 @@ pub async fn get_orphans() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn remove_orphans(app: AppHandle, orphans: Vec<String>) -> Result<(), String> {
     if orphans.is_empty() {
         return Ok(());
@@ -1347,14 +1505,14 @@ pub async fn remove_orphans(app: AppHandle, orphans: Vec<String>) -> Result<(), 
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn check_installed_status(
     state: State<'_, crate::metadata::MetadataState>,
     name: String,
 ) -> Result<PackageInstallStatus, String> {
-    // 1. Resolve App ID to package name if needed
+    // 1. ALPM (native) check: resolve display name to package name if needed
     let resolved_name = state
-        .inner()
-        .0
+        .loader
         .lock()
         .ok()
         .map(|loader| loader.resolve_package_name(&name))
@@ -1364,10 +1522,49 @@ pub async fn check_installed_status(
         return Ok(PackageInstallStatus {
             installed: pkg.installed,
             version: Some(pkg.version),
-            repo: None, // ALPM doesn't always expose repo name directly in syncdb loops without effort
+            repo: None,
             source: Some(pkg.source),
             actual_package_name: Some(resolved_name),
         });
+    }
+
+    // 2. Flatpak check: so Launch and conflict UI work for Flatpak-installed apps
+    if let Ok(ids) = crate::flathub_api::get_installed_flatpak_app_ids().await {
+        let name_lower = name.to_lowercase();
+        // If name looks like an app ID (contains dot), check exact match (case-insensitive)
+        let installed_id = if name_lower.contains('.') {
+            ids.iter()
+                .find(|id| id.to_lowercase() == name_lower)
+                .cloned()
+        } else {
+            // Robust check:
+            // 1. Try resolving simple name directly
+            // 2. Try resolving canonical name (handles -bin, -git, etc.)
+            let canonical = crate::utils::canonical_merge_key(&name_lower, None);
+
+            crate::flathub_api::get_flathub_app_id(&name_lower)
+                .or_else(|| crate::flathub_api::get_flathub_app_id(&canonical))
+                .and_then(|app_id| {
+                    ids.iter()
+                        .find(|id| id.eq_ignore_ascii_case(&app_id))
+                        .cloned()
+                })
+        };
+        if let Some(app_id) = installed_id {
+            let flatpak_source = models::PackageSource::new(
+                "flatpak",
+                "flathub",
+                "installed",
+                "Flatpak (Sandboxed)",
+            );
+            return Ok(PackageInstallStatus {
+                installed: true,
+                version: None, // Could run flatpak info for version if needed
+                repo: Some("flathub".to_string()),
+                source: Some(flatpak_source),
+                actual_package_name: Some(app_id),
+            });
+        }
     }
 
     Ok(PackageInstallStatus {
@@ -1379,87 +1576,229 @@ pub async fn check_installed_status(
     })
 }
 
+/// Top 32 common apps for Linux/Arch users. Used when remote list is unavailable.
+/// Order: Web Browsers & Communication, Office & Productivity, Graphics & Design, Multimedia & Audio.
+const DEFAULT_ESSENTIALS: &[&str] = &[
+    "firefox",
+    "librewolf-bin",
+    "google-chrome",
+    "thunderbird",
+    "telegram-desktop",
+    "signal-desktop",
+    "discord",
+    "newsflash",
+    "libreoffice-fresh",
+    "obsidian",
+    "calibre",
+    "simplenote-electron-bin",
+    "okular",
+    "foliate",
+    "keepassxc",
+    "gimp",
+    "inkscape",
+    "blender",
+    "flameshot",
+    "krita",
+    "rawtherapee",
+    "vlc",
+    "audacity",
+    "obs-studio",
+    "handbrake",
+    "strawberry",
+    "easyeffects",
+    "ardour",
+    "visual-studio-code-bin",
+    "git",
+    "docker-desktop",
+    "steam",
+    "lutris",
+    "heroic-games-launcher-bin",
+    "timeshift",
+    "bitwarden-bin",
+    "gparted",
+    "kdeconnect",
+    "balena-etcher",
+    "peazip-bin",
+];
+
+// Update max limit to accommodate slightly larger initial list
+const ESSENTIALS_MAX: usize = 40;
+
+/// URL for essentials list (updated over time without app release). Cache TTL 7 days.
+// TODO: Revert to real URL once PR is merged
+const ESSENTIALS_JSON_URL: &str = "http://localhost:9999/force_fallback";
+// "https://raw.githubusercontent.com/cpg716/monarch-store/main/docs/essentials.json";
+const ESSENTIALS_CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+/// Cap for combined essentials ∪ featured list (homepage discovery pool).
+const COMBINED_ESSENTIALS_MAX: usize = 120;
+
+/// Merges resolved essentials with all featured names (per category). Single discovery pool.
+fn merge_essentials_with_featured(mut list: Vec<String>) -> Vec<String> {
+    let mut seen: std::collections::HashSet<String> = list.iter().cloned().collect();
+    for n in crate::discovery_manager::get_all_featured_names() {
+        if seen.insert(n.clone()) {
+            list.push(n);
+        }
+    }
+    list.into_iter().take(COMBINED_ESSENTIALS_MAX).collect()
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EssentialsCache {
+    packages: Vec<String>,
+    fetched_at: u64,
+    /// When set, category view uses these for Featured; otherwise built-in lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    featured_by_category: Option<std::collections::HashMap<String, Vec<String>>>,
+}
+
 #[tauri::command]
+#[specta::specta]
 pub async fn get_essentials_list(
     state_repo: State<'_, RepoManager>,
 ) -> Result<Vec<String>, String> {
-    // PILLAR 7: Essentials Smart Curation
-
-    // 1. CachyOS Spotlight
-    let mut essentials = vec![];
-    if state_repo.inner().is_repo_enabled("cachyos").await {
-        essentials.extend(vec![
-            "cachyos-settings",
-            "linux-cachyos",
-            "cachyos-browser",
-            "cachyos-fish-config",
-            "paru",
-        ]);
-    }
-
-    // 2. The Core Essentials (Official Arch)
-    essentials.extend(vec![
-        "firefox",
-        "vlc",
-        "neofetch",
-        "htop",
-        "gimp",
-        "libreoffice-fresh",
-        "visual-studio-code-bin",
-        "spotify",
-        "discord",
-        "obs-studio",
-        "steam",
-        "qbittorrent",
-        "mpv",
-        "kitty",
-        "fish",
-        "obsidian",
-        "thunderbird",
-        "thunar",
-        "ark",
-        "partitionmanager",
-        "btop",
-        // Add more popular ones
-        "google-chrome",
-        "slack-desktop",
-        "zoom",
-        "telegram-desktop-bin",
-        "brave-bin",
-    ]);
-
-    // 3. Dynamic DB Override (if exists, it PREPENDS or REPLACES? Let's say it supplements)
-    // Actually, strict file logic says "if path exists, return lines".
-    // We should probably keep that behavior for power users who customized valid paths.
-    let path = std::path::Path::new("/var/lib/monarch/dbs/essentials.db");
-    if path.exists() {
-        if let Ok(content) = std::fs::read_to_string(path) {
+    // 1. System override: power users / distro packagers
+    let db_path = std::path::Path::new("/var/lib/monarch/dbs/essentials.db");
+    if db_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(db_path) {
             let custom_lines: Vec<String> = content
                 .lines()
                 .map(|l| l.trim().to_string())
                 .filter(|l| !l.is_empty() && !l.starts_with('#'))
                 .collect();
-
             if !custom_lines.is_empty() {
-                // Return custom listing instead of default
-                return Ok(custom_lines);
+                let list: Vec<String> = custom_lines.into_iter().take(ESSENTIALS_MAX).collect();
+                let raw_list = merge_essentials_with_featured(list);
+                let normalized: Vec<String> = raw_list
+                    .into_iter()
+                    .map(|name| crate::utils::canonical_merge_key(&name, None))
+                    .collect();
+                return Ok(normalized);
             }
         }
     }
 
-    // Deduplicate just in case
-    let mut unique = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for pkg in essentials {
-        if seen.insert(pkg) {
-            unique.push(pkg.to_string());
+    // 2. Remote list with cache (updated over time without app release)
+    if let Some(cache_dir) = dirs::cache_dir() {
+        let cache_path = cache_dir.join("monarch-store").join("essentials_v7.json");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Use cache if fresh
+        if cache_path.exists() {
+            if let Ok(data) = std::fs::read_to_string(&cache_path) {
+                if let Ok(cache) = serde_json::from_str::<EssentialsCache>(&data) {
+                    if now.saturating_sub(cache.fetched_at) < ESSENTIALS_CACHE_TTL_SECS {
+                        let list: Vec<String> =
+                            cache.packages.into_iter().take(ESSENTIALS_MAX).collect();
+                        if !list.is_empty() {
+                            let raw_list = merge_essentials_with_featured(list);
+                            let normalized: Vec<String> = raw_list
+                                .into_iter()
+                                .map(|name| crate::utils::canonical_merge_key(&name, None))
+                                .collect();
+                            return Ok(normalized);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fetch from remote (supports flat array or { packages, featured_by_category? })
+        if let Ok(resp) = reqwest::get(ESSENTIALS_JSON_URL).await {
+            if resp.status().is_success() {
+                if let Ok(bytes) = resp.bytes().await {
+                    let mut packages: Vec<String> = Vec::new();
+                    let mut featured_by_category: Option<
+                        std::collections::HashMap<String, Vec<String>>,
+                    > = None;
+
+                    if let Ok(arr) = serde_json::from_slice::<Vec<String>>(&bytes) {
+                        packages = arr.into_iter().take(ESSENTIALS_MAX).collect();
+                    } else if let Ok(obj) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        if let Some(arr) = obj.get("packages").and_then(|v| v.as_array()) {
+                            packages = arr
+                                .iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .take(ESSENTIALS_MAX)
+                                .collect();
+                        }
+                        if let Some(map) =
+                            obj.get("featured_by_category").and_then(|v| v.as_object())
+                        {
+                            let mut fbc = std::collections::HashMap::new();
+                            for (k, v) in map {
+                                if let Some(arr) = v.as_array() {
+                                    let list: Vec<String> = arr
+                                        .iter()
+                                        .filter_map(|x| x.as_str().map(String::from))
+                                        .collect();
+                                    if !list.is_empty() {
+                                        fbc.insert(k.to_lowercase(), list);
+                                    }
+                                }
+                            }
+                            if !fbc.is_empty() {
+                                featured_by_category = Some(fbc);
+                            }
+                        }
+                    }
+
+                    if !packages.is_empty() {
+                        let _ = std::fs::create_dir_all(cache_path.parent().unwrap());
+                        let cache = EssentialsCache {
+                            packages: packages.clone(),
+                            fetched_at: now,
+                            featured_by_category: featured_by_category.clone(),
+                        };
+                        if let Ok(json) = serde_json::to_string(&cache) {
+                            let _ = std::fs::write(&cache_path, json);
+                        }
+                        let raw_list = merge_essentials_with_featured(packages);
+                        let normalized: Vec<String> = raw_list
+                            .into_iter()
+                            .map(|name| crate::utils::canonical_merge_key(&name, None))
+                            .collect();
+                        return Ok(normalized);
+                    }
+                }
+            }
         }
     }
 
-    Ok(unique)
+    // 3. Built-in default (top 24)
+    let mut unique = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for pkg in DEFAULT_ESSENTIALS.iter().take(ESSENTIALS_MAX) {
+        if seen.insert(*pkg) {
+            unique.push((*pkg).to_string());
+        }
+    }
+
+    // 4. CachyOS extras when repo enabled (append, still cap at ESSENTIALS_MAX)
+    if state_repo.inner().is_repo_enabled("cachyos").await {
+        for pkg in &["cachyos-settings", "linux-cachyos", "paru"] {
+            if seen.insert(*pkg) && unique.len() < ESSENTIALS_MAX {
+                unique.push((*pkg).to_string());
+            }
+        }
+    }
+
+    // Normalize all names to canonical IDs so they match the Registry keys
+    // (e.g. "telegram-desktop" -> "telegram")
+    let raw_list = merge_essentials_with_featured(unique);
+    let normalized: Vec<String> = raw_list
+        .into_iter()
+        .map(|name| crate::utils::canonical_merge_key(&name, None))
+        .collect();
+
+    Ok(normalized)
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn check_reboot_required() -> Result<bool, String> {
     let running_kernel = std::process::Command::new("uname")
         .arg("-r")
@@ -1481,6 +1820,7 @@ pub async fn check_reboot_required() -> Result<bool, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_pacnew_warnings() -> Result<Vec<String>, String> {
     let output = std::process::Command::new("find")
         .args(["/etc", "-name", "*.pacnew"])
@@ -1489,4 +1829,119 @@ pub async fn get_pacnew_warnings() -> Result<Vec<String>, String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout.lines().map(|s| s.to_string()).collect())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_cache_stats() -> Result<models::CacheStats, String> {
+    log::info!("Calculating package cache stats...");
+    let cache_dir = "/var/cache/pacman/pkg";
+    let mut total_size = 0;
+    let mut pkg_count = 0;
+
+    if let Ok(entries) = std::fs::read_dir(cache_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                    if ext == "zst" || ext == "xz" || ext == "sig" {
+                        total_size += meta.len();
+                        pkg_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(models::CacheStats {
+        total_size_bytes: total_size,
+        package_count: pkg_count,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn clean_package_cache(
+    app: AppHandle,
+    state_repo: State<'_, RepoManager>,
+    password: Option<String>,
+    keep_versions: u32,
+) -> Result<(), String> {
+    log::info!(
+        "Cleaning package cache (keep_versions: {})...",
+        keep_versions
+    );
+    let one_click = state_repo.inner().is_one_click_enabled().await;
+    let mut rx = helper_client::invoke_helper(
+        &app,
+        helper_client::HelperCommand::AlpmCleanCache { keep_versions },
+        password,
+        one_click,
+    )
+    .await?;
+
+    while let Some(msg) = rx.recv().await {
+        app.emit("package-cache-progress", msg.clone())
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn check_services_restart() -> Result<Vec<String>, String> {
+    log::info!("Checking for services that require restart...");
+    // Attempt use needrestart if available
+    let output = std::process::Command::new("needrestart")
+        .arg("-b") // Batch mode
+        .output();
+
+    if let Ok(o) = output {
+        let stdout = String::from_utf8_lossy(&o.stdout);
+        // Parse needrestart output
+        // It usually shows NEEDRESTART-SVC: service_name
+        let mut services = Vec::new();
+        for line in stdout.lines() {
+            if line.starts_with("NEEDRESTART-SVC:") {
+                services.push(line.replace("NEEDRESTART-SVC:", "").trim().to_string());
+            }
+        }
+        return Ok(services);
+    }
+
+    // Fallback or just return empty if not installed
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn restart_service(
+    app: tauri::AppHandle,
+    state_repo: State<'_, RepoManager>,
+    password: Option<String>,
+    unit: String,
+) -> Result<(), String> {
+    log::info!("Restarting service via helper: {}", unit);
+    let one_click = state_repo.inner().is_one_click_enabled().await;
+    let mut rx = helper_client::invoke_helper(
+        &app,
+        helper_client::HelperCommand::SystemctlRestart { unit },
+        password,
+        one_click,
+    )
+    .await?;
+
+    while let Some(msg) = rx.recv().await {
+        app.emit("service-restart-progress", msg.clone())
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_flatpak_permissions(app_id: String) -> Result<Vec<String>, String> {
+    crate::flathub_api::get_flatpak_permissions(&app_id).await
 }

@@ -1,21 +1,5 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-
-export interface DistroCapabilities {
-    repo_management: 'unlocked' | 'locked' | 'managed';
-    chaotic_aur_support: 'allowed' | 'blocked' | 'native';
-    default_search_sort: 'binary_first' | 'source_first';
-    description: string;
-    icon_key: string;
-}
-
-export type DistroId = 'arch' | 'manjaro' | 'endeavouros' | 'garuda' | 'cachyos' | string;
-
-export interface DistroContext {
-    id: DistroId;
-    pretty_name: string;
-    capabilities: DistroCapabilities;
-}
+import { commands, DistroContext } from '../services/bindings';
 
 const DEFAULT_CONTEXT: DistroContext = {
     id: 'arch',
@@ -26,7 +10,9 @@ const DEFAULT_CONTEXT: DistroContext = {
         default_search_sort: 'binary_first',
         description: 'Standard Arch System.',
         icon_key: 'arch'
-    }
+    },
+    cpu_tier: 'v1',
+    active_repos: ['core', 'extra']
 };
 
 export function useDistro() {
@@ -35,7 +21,7 @@ export function useDistro() {
 
     useEffect(() => {
         // In a real app, we might check a cache first
-        invoke<DistroContext>('get_distro_context')
+        commands.getDistroContext()
             .then(ctx => {
                 setDistro(ctx);
                 setLoading(false);

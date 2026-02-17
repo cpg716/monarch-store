@@ -1,24 +1,41 @@
 use appstream::{enums::Icon, Collection, Component};
-
-use lazy_static::lazy_static;
-// use regex::Regex;
-use base64::prelude::*;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::State;
 
-/*
-lazy_static! {
-    static ref RE_URL: Regex = Regex::new(r#"(?s)<url\b([^>]*)>(.*?)</url>"#).expect("valid regex RE_URL");
-    static ref RE_IMG: Regex = Regex::new(r#"(?s)<image\b([^>]*)>(.*?)</image>"#).expect("valid regex RE_IMG");
-    static ref RE_ICON: Regex = Regex::new(r#"(?s)<icon\b([^>]*)>(.*?)</icon>"#).expect("valid regex RE_ICON");
+pub struct MetadataState {
+    pub loader: Mutex<AppStreamLoader>,
+    pub initialized: AtomicBool,
 }
-*/
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+impl MetadataState {
+    pub fn new() -> Self {
+        Self {
+            loader: Mutex::new(AppStreamLoader::new()),
+            initialized: AtomicBool::new(false),
+        }
+    }
+
+    pub async fn init(&self, _interval_hours: u64) {
+        // Initialization logic: the loader already scans on new(),
+        // but we mark as initialized here.
+        self.initialized.store(true, Ordering::SeqCst);
+    }
+
+    pub async fn wait_until_ready(&self) {
+        let mut count = 0;
+        while !self.initialized.load(Ordering::SeqCst) && count < 200 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            count += 1;
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, Default)]
 pub struct AppMetadata {
     pub name: String,
     pub pkg_name: Option<String>,
@@ -31,6 +48,9 @@ pub struct AppMetadata {
     pub license: Option<String>,
     pub last_updated: Option<u64>,
     pub description: Option<String>,
+    pub is_local: bool,
+    pub available_sources: Option<Vec<crate::models::PackageSource>>,
+    pub installed: Option<bool>,
 }
 
 pub struct AppStreamLoader {
@@ -38,9 +58,23 @@ pub struct AppStreamLoader {
     // Indices for O(1) lookup
     category_index: HashMap<String, Vec<AppMetadata>>,
     icon_index: HashMap<String, String>,
-    pkg_index: HashMap<String, AppMetadata>,
+    pub(crate) pkg_index: HashMap<String, AppMetadata>,
     // Optimizing "The Storm": Cache local filesystem icons to avoid 1500+ disk scans
     local_icon_index: HashMap<String, String>,
+}
+
+fn clean_category(cat: &appstream::enums::Category) -> String {
+    let raw = format!("{:?}", cat).to_lowercase();
+    if raw.starts_with("unknown(\"") || raw.starts_with("other(\"") {
+        if let Some(start) = raw.find('"') {
+            if let Some(end) = raw.rfind('"') {
+                if end > start {
+                    return raw[start + 1..end].to_string();
+                }
+            }
+        }
+    }
+    raw
 }
 
 impl Default for AppStreamLoader {
@@ -59,28 +93,105 @@ impl AppStreamLoader {
             local_icon_index: HashMap::new(),
         };
 
-        // Pre-scan local icons (O(N) once, instead of O(N) * Requests)
+        // Pre-scan local icons
         loader.refresh_local_icon_index();
 
-        // Initial load try local (linux)
-        let collection =
-            Collection::from_path(PathBuf::from("/usr/share/app-info/xmls/community.xml.gz"))
-                .or_else(|_| {
-                    Collection::from_path(PathBuf::from("/usr/share/app-info/xmls/extra.xml.gz"))
-                })
-                .or_else(|_| Collection::from_path(PathBuf::from("extra_v5.xml"))) // Cached/Dev
-                .ok();
+        // Initial load: Scan all standard system paths for AppStream XMLs
+        let mut paths = vec![
+            PathBuf::from("/usr/share/app-info/xmls/community.xml.gz"),
+            PathBuf::from("/usr/share/app-info/xmls/extra.xml.gz"),
+        ];
 
-        if let Some(col) = collection {
-            loader.set_collection(col);
+        // Flatpak system-wide and user-specific appstream paths
+        let mut flatpak_bases = vec![PathBuf::from("/var/lib/flatpak/appstream")];
+        if let Some(home) = dirs::home_dir() {
+            flatpak_bases.push(home.join(".local/share/flatpak/appstream"));
+        }
+
+        for base in flatpak_bases {
+            if let Ok(entries) = std::fs::read_dir(&base) {
+                for entry in entries.flatten() {
+                    let remote_dir = entry.path();
+                    // Flatpak stores appstream in: <remote>/<arch>/active/appstream.xml.gz
+                    // We check x86_64 specifically as it's the primary target.
+                    let target = remote_dir.join("x86_64/active/appstream.xml.gz");
+                    if target.exists() {
+                        paths.push(target);
+                    } else {
+                        // More flexible scan: find any appstream.xml.gz in the remote's hierarchy
+                        if let Ok(sub) = std::fs::read_dir(&remote_dir) {
+                            for e in sub.flatten() {
+                                let p = e.path();
+                                if p.is_dir() {
+                                    // Deep check for the .gz
+                                    let deep = p.join("active/appstream.xml.gz");
+                                    if deep.exists() {
+                                        paths.push(deep);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cached/Dev fallback
+        paths.push(PathBuf::from("extra_v5.xml"));
+
+        for path in paths {
+            if path.exists() {
+                if let Ok(col) = Collection::from_path(path.clone()) {
+                    log::info!("Found local AppStream source: {:?}", path);
+                    loader.add_collection(col);
+                }
+            }
         }
 
         loader
     }
 
-    pub fn set_collection(&mut self, col: Collection) {
-        self.collection = Some(col.clone());
-        self.rebuild_indices(&col);
+    pub fn add_collection(&mut self, col: Collection) {
+        self.collection = Some(col.clone()); // We store the latest one as the "primary" if needed
+        self.rebuild_indices_extended(&col);
+    }
+
+    fn rebuild_indices_extended(&mut self, col: &Collection) {
+        for component in col.components.iter() {
+            let meta = self.component_to_metadata(component);
+
+            // 1. Package Index
+            if let Some(pkg_name) = &meta.pkg_name {
+                let pkg_lower = pkg_name.to_lowercase();
+                // If we already have this package from a "better" source (e.g. repo vs flatpak),
+                // we might want to prioritize. For now, repo (first in paths) wins.
+                self.pkg_index
+                    .entry(pkg_lower.clone())
+                    .or_insert_with(|| meta.clone());
+
+                // 2. Icon Index
+                if let Some(icon) = &meta.icon_url {
+                    self.icon_index
+                        .entry(pkg_lower)
+                        .or_insert_with(|| icon.clone());
+                }
+            }
+
+            // 3. App ID Index
+            let app_id_lower = meta.app_id.to_lowercase();
+            self.pkg_index
+                .entry(app_id_lower)
+                .or_insert_with(|| meta.clone());
+
+            // 4. Category Index
+            for category in &component.categories {
+                let cat_key = clean_category(category);
+                self.category_index
+                    .entry(cat_key)
+                    .or_default()
+                    .push(meta.clone());
+            }
+        }
     }
 
     pub fn refresh_local_icon_index(&mut self) {
@@ -112,46 +223,69 @@ impl AppStreamLoader {
         self.local_icon_index = index;
     }
 
-    fn rebuild_indices(&mut self, col: &Collection) {
-        let mut cat_idx = HashMap::new();
-        let mut icon_idx = HashMap::new();
-        let mut pkg_idx = HashMap::new();
+    pub fn find_package(&self, pkg_name: &str) -> Option<AppMetadata> {
+        let pkg_lower = pkg_name.to_lowercase();
+        log::debug!("[METADATA_DEBUG] find_package: {}", pkg_lower);
 
-        for component in col.components.iter() {
-            let meta = self.component_to_metadata(component);
+        // 1. Exact Package Name match
+        if let Some(meta) = self.pkg_index.get(&pkg_lower) {
+            return Some(meta.clone());
+        }
 
-            // 1. Package Index
-            if let Some(pkg_name) = &meta.pkg_name {
-                pkg_idx.insert(pkg_name.to_lowercase(), meta.clone());
-
-                // 2. Icon Index (Exact Match)
-                if let Some(icon) = &meta.icon_url {
-                    icon_idx.insert(pkg_name.to_lowercase(), icon.clone());
-                }
-            }
-            // Also index by ID if different
-            let app_id_lower = meta.app_id.to_lowercase();
-            if !pkg_idx.contains_key(&app_id_lower) {
-                pkg_idx.insert(app_id_lower, meta.clone());
-            }
-
-            // 3. Category Index
-            for category in &component.categories {
-                let cat_key = format!("{:?}", category).to_lowercase();
-                cat_idx
-                    .entry(cat_key)
-                    .or_insert_with(Vec::new)
-                    .push(meta.clone());
+        // 2. Try Suffix Stripping (e.g. brave-bin -> brave)
+        let base_name = crate::utils::strip_package_suffix(&pkg_lower);
+        if base_name != pkg_lower {
+            if let Some(meta) = self.pkg_index.get(base_name) {
+                return Some(meta.clone());
             }
         }
 
-        self.category_index = cat_idx;
-        self.icon_index = icon_idx;
-        self.pkg_index = pkg_idx;
+        // 3. Try App ID Lookup (The Missing Link for Steam/Lutris)
+        // If we know "steam" maps to "com.valvesoftware.Steam", let's check that ID in the index!
+        if let Some(app_id) = self.find_app_id(&pkg_lower) {
+            let app_id_lower = app_id.to_lowercase();
+            if let Some(meta) = self.pkg_index.get(&app_id_lower) {
+                return Some(meta.clone());
+            }
+        }
+
+        None
     }
 
-    pub fn find_package(&self, pkg_name: &str) -> Option<AppMetadata> {
-        self.pkg_index.get(pkg_name).cloned()
+    pub fn get_all_entries_with_categories(&self) -> Vec<(crate::models::Package, Vec<String>)> {
+        let mut entries = Vec::new();
+        if let Some(col) = &self.collection {
+            for component in &col.components {
+                let meta = self.component_to_metadata(component);
+                let pkg = self.app_metadata_to_package(&meta);
+                let categories: Vec<String> = component
+                    .categories
+                    .iter()
+                    .map(|c| clean_category(c))
+                    .collect();
+                entries.push((pkg, categories));
+            }
+        }
+        entries
+    }
+
+    fn app_metadata_to_package(&self, meta: &AppMetadata) -> crate::models::Package {
+        crate::models::Package {
+            name: meta.pkg_name.clone().unwrap_or_else(|| meta.name.clone()),
+            display_name: Some(meta.name.clone()),
+            description: meta.summary.clone().unwrap_or_default(),
+            version: meta.version.clone().unwrap_or_default(),
+            icon: meta.icon_url.clone(),
+            app_id: Some(meta.app_id.clone()),
+            screenshots: Some(meta.screenshots.clone()),
+            maintainer: meta.maintainer.clone(),
+            license: meta
+                .license
+                .as_ref()
+                .map(|l| l.split(',').map(|s| s.trim().to_string()).collect()),
+            long_description: meta.description.clone(),
+            ..Default::default()
+        }
     }
 
     pub fn find_app_id(&self, pkg_name: &str) -> Option<String> {
@@ -170,32 +304,22 @@ impl AppStreamLoader {
             }
         }
 
-        // 3. Manual Overrides (High-profile Bidirectional Mapping)
+        // 3. Flathub mapping (single source of truth for ODRS-compatible app IDs)
+        // Covers 50+ common apps; no per-app manual overrides needed.
+        if let Some(id) = crate::flathub_api::get_flathub_app_id(&pkg_lower) {
+            return Some(id);
+        }
+        if base_name != pkg_lower {
+            if let Some(id) = crate::flathub_api::get_flathub_app_id(base_name) {
+                return Some(id);
+            }
+        }
+
+        // 4. Fallback for known legacy apps if needed
         match pkg_lower.as_str() {
-            "steam" => Some("com.valvesoftware.steam".to_string()),
-            "gimp" | "gimp-git" => Some("org.gimp.gimp".to_string()),
-            "teams-for-linux" => Some("com.github.ismaelmartinez.teams_for_linux".to_string()),
-            "teams" | "teams-insiders" => Some("com.microsoft.teams".to_string()),
-            "spotify" | "spotify-launcher" => Some("com.spotify.client".to_string()),
-            "discord" | "discord-canary" | "discord-ptb" => {
-                Some("com.discordapp.discord".to_string())
-            }
-            "visual-studio-code-bin" | "code" | "vscode" => {
-                Some("com.visualstudio.code".to_string())
-            }
-            "vlc" | "vlc-git" => Some("org.videolan.vlc".to_string()),
-            "google-chrome" => Some("com.google.chrome".to_string()),
-            "firefox" | "firefox-developer-edition" => Some("org.mozilla.firefox".to_string()),
-            "telegram-desktop" | "telegram-desktop-bin" => Some("org.telegram.desktop".to_string()),
-            "obs-studio" | "obs-studio-git" => Some("com.obsproject.studio".to_string()),
-            "inkscape" => Some("org.inkscape.inkscape".to_string()),
-            "blender" => Some("org.blender.blender".to_string()),
-            "kdenlive" => Some("org.kde.kdenlive".to_string()),
-            "element-desktop" => Some("im.riot.riot".to_string()),
             "pamac-manager" | "pamac" => Some("org.manjaro.pamac.manager".to_string()),
             "endeavouros-welcome" => Some("com.endeavouros.welcome".to_string()),
             "garuda-welcome" => Some("org.garudalinux.welcome".to_string()),
-            "brave" | "brave-bin" | "brave-browser" => Some("com.brave.Browser".to_string()),
             _ => None,
         }
     }
@@ -208,28 +332,20 @@ impl AppStreamLoader {
             return input_lower;
         }
 
-        // 2. Manual Inverse Overrides (High-profile mismatches)
+        // 2. Flathub reverse lookup (app_id -> pkg_name)
+        if let Some(pkg) = crate::flathub_api::get_package_name_from_app_id(&input_lower) {
+            return pkg;
+        }
+
+        // 3. AppStream-only packages (not on Flathub)
         match input_lower.as_str() {
-            "com.valvesoftware.steam" | "com.valvesoftware.steam.desktop" | "steam" => {
-                return "steam".to_string()
-            }
             "org.gimp.gimp" | "org.gimp.gimp.desktop" | "gimp" => return "gimp".to_string(),
             "com.github.ismaelmartinez.teams_for_linux" | "teams-for-linux" => {
                 return "teams-for-linux".to_string()
             }
-            "com.microsoft.teams" | "com.microsoft.teams.desktop" => return "teams".to_string(),
-            "com.spotify.client" => return "spotify".to_string(),
-            "com.discordapp.discord" => return "discord".to_string(),
-            "com.visualstudio.code" => return "visual-studio-code-bin".to_string(),
-            "org.videolan.vlc" => return "vlc".to_string(),
-            "com.google.chrome" => return "google-chrome".to_string(),
-            "org.mozilla.firefox" => return "firefox".to_string(),
-            "org.telegram.desktop" => return "telegram-desktop".to_string(),
-            "com.obsproject.studio" => return "obs-studio".to_string(),
-            "org.inkscape.inkscape" => return "inkscape".to_string(),
-            "org.blender.blender" => return "blender".to_string(),
-            "org.kde.kdenlive" => return "kdenlive".to_string(),
-            "im.riot.riot" => return "element-desktop".to_string(),
+            "org.manjaro.pamac.manager" => return "pamac".to_string(),
+            "com.endeavouros.welcome" => return "endeavouros-welcome".to_string(),
+            "org.garudalinux.welcome" => return "garuda-welcome".to_string(),
             _ => {}
         }
 
@@ -252,7 +368,7 @@ impl AppStreamLoader {
         }
 
         // 5. Heuristic: Reverse DNS last part
-        if let Some(last) = input_lower.split('.').last() {
+        if let Some(last) = input_lower.split('.').next_back() {
             let last_lower = last.to_lowercase().replace('_', "-");
             return last_lower;
         }
@@ -420,6 +536,20 @@ impl AppStreamLoader {
         None
     }
 
+    pub fn get_recently_updated_components(&self, limit: usize) -> Vec<AppMetadata> {
+        let mut all_meta: Vec<AppMetadata> = self.pkg_index.values().cloned().collect();
+
+        // Sort by last_updated (descending)
+        all_meta.sort_by(|a, b| {
+            b.last_updated
+                .unwrap_or(0)
+                .cmp(&a.last_updated.unwrap_or(0))
+        });
+
+        // Take top N
+        all_meta.into_iter().take(limit).collect()
+    }
+
     pub fn get_apps_by_category(&self, category: &str) -> Vec<AppMetadata> {
         let cat_lower = category.to_lowercase();
         let query_key = match cat_lower.as_str() {
@@ -549,497 +679,45 @@ impl AppStreamLoader {
             license,
             last_updated,
             description,
+            is_local: true,
+            available_sources: None,
+            installed: None,
         };
-
-        if component
-            .pkgname
-            .clone()
-            .unwrap_or_default()
-            .contains("gimp")
-        {}
 
         meta
     }
 }
 
-lazy_static! {
-    static ref RE_URL: regex::Regex =
-        regex::Regex::new(r#"(?s)<url\b([^>]*)>(.*?)</url>"#).expect("valid regex RE_URL");
-    static ref RE_IMG: regex::Regex =
-        regex::Regex::new(r#"(?s)<image\b([^>]*)>(.*?)</image>"#).expect("valid regex RE_IMG");
-    static ref RE_ICON: regex::Regex =
-        regex::Regex::new(r#"(?s)<icon\b([^>]*)>(.*?)</icon>"#).expect("valid regex RE_ICON");
-}
-
-pub fn sanitize_xml(content: &str) -> String {
-    // Strip null bytes immediately
-    let mut content = content.replace('\0', "");
-
-    content = content
-        .replace("type=\"service\"", "type=\"console-application\"")
-        .replace("type=\"web-application\"", "type=\"console-application\"");
-
-    // Helper closure to sanitize URL content inside tags
-    let sanitize_tag = |caps: &regex::Captures, is_url_tag: bool| -> String {
-        let attrs = &caps[1];
-        let raw_content = &caps[2];
-        let url_content = raw_content.trim();
-
-        if url_content.is_empty() {
-            return String::new();
-        }
-
-        if url_content.contains('<') || url_content.contains('>') {
-            return String::new();
-        }
-
-        if !url_content.contains("://") && !url_content.starts_with("mailto:") {
-            // For <icon> tags, we only check if it is remote type or looks relative
-            if !is_url_tag {
-                if attrs.contains(r#"type="remote""#) || !url_content.contains("://") {
-                    return format!("<icon{}>https://{}</icon>", attrs, url_content);
-                }
-                return caps[0].to_string();
-            }
-
-            // For <url> and <image> tags, always ensure protocol
-            let tag_name = if is_url_tag { "url" } else { "image" };
-            format!(
-                "<{}{}>https://{}</{}>",
-                tag_name, attrs, url_content, tag_name
-            )
-        } else {
-            caps[0].to_string()
-        }
-    };
-
-    content = RE_URL
-        .replace_all(&content, |caps: &regex::Captures| sanitize_tag(caps, true))
-        .to_string();
-    content = RE_IMG
-        .replace_all(&content, |caps: &regex::Captures| sanitize_tag(caps, false))
-        .to_string(); // treat image like url for proto check
-
-    // Icon has special logic in original code, but effectively it was just ensuring https:// for remote/relative icons
-    content = RE_ICON
-        .replace_all(&content, |caps: &regex::Captures| {
-            let attrs = &caps[1];
-            let url_content = &caps[2];
-            let url_trimmed = url_content.trim();
-
-            if attrs.contains(r#"type="remote""#) {
-                if !url_trimmed.contains("://") {
-                    format!("<icon{}>https://{}</icon>", attrs, url_trimmed)
-                } else {
-                    caps[0].to_string()
-                }
-            } else {
-                caps[0].to_string()
-            }
-        })
-        .to_string();
-
-    content
-}
-
-// Download logic
-pub async fn download_and_cache_appstream(
-    interval_hours: u64,
-    base_dir: &PathBuf,
-) -> Result<PathBuf, String> {
-    let target_path = base_dir.join("extra_v5.xml");
-
-    // Check if cache is fresh
-    if target_path.exists() {
-        let is_fresh = if let Ok(metadata) = std::fs::metadata(&target_path) {
-            if let Ok(modified) = metadata.modified() {
-                if let Ok(elapsed) = modified.elapsed() {
-                    let max_age = interval_hours * 3600;
-                    elapsed.as_secs() < max_age
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if is_fresh {
-            let content = std::fs::read_to_string(&target_path).map_err(|e| e.to_string())?;
-
-            // Basic check if already sanitized or needs it
-            if content.contains("type=\"service\"") || content.contains("type=\"web-application\"")
-            {
-                log::info!("Sanitizing existing AppStream XML...");
-                let sanitized = sanitize_xml(&content);
-                std::fs::write(&target_path, sanitized).map_err(|e| e.to_string())?;
-            }
-
-            return Ok(target_path);
-        } else {
-            log::info!(
-                "AppStream cache expired ({}h interval), re-downloading",
-                interval_hours
-            );
-        }
-    }
-
-    log::info!("Downloading Arch AppStream data...");
-    let url = "https://archlinux.org/packages/extra/any/archlinux-appstream-data/download/";
-    let resp = reqwest::get(url).await.map_err(|e| e.to_string())?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Failed to download AppStream: {}", resp.status()));
-    }
-
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-
-    let cursor = Cursor::new(bytes);
-    let decoder = zstd::stream::read::Decoder::new(cursor).map_err(|e| e.to_string())?;
-    let mut archive = tar::Archive::new(decoder);
-    let mut found_xml = false;
-
-    // Create icons directory early
-    let icons_dir = base_dir.join("icons");
-    let _ = std::fs::create_dir_all(&icons_dir);
-
-    let mut extracted_count = 0;
-    for entry in archive.entries().map_err(|e| e.to_string())? {
-        let mut entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path().map_err(|e| e.to_string())?;
-        let path_str = path.to_string_lossy();
-
-        if path_str.ends_with("extra.xml.gz") {
-            // Decompress on the fly
-            let mut out_file = std::fs::File::create(&target_path).map_err(|e| e.to_string())?;
-            let mut gz = flate2::read::GzDecoder::new(entry);
-            std::io::copy(&mut gz, &mut out_file).map_err(|e| e.to_string())?;
-            found_xml = true;
-        } else if path_str.contains("icons/")
-            && (path_str.ends_with(".png") || path_str.ends_with(".svg"))
-        {
-            // Extract icons - match "icons/" anywhere in path
-            if let Some(file_name) = path.file_name() {
-                let icon_target = icons_dir.join(file_name);
-                if let Ok(mut out_file) = std::fs::File::create(&icon_target) {
-                    let _ = std::io::copy(&mut entry, &mut out_file);
-                    extracted_count += 1;
-                }
-            }
-        }
-    }
-    log::info!("Extracted {} icons to {:?}", extracted_count, icons_dir);
-
-    if found_xml {
-        log::info!("Sanitizing AppStream XML (Scorched Earth Mode)...");
-        let content = std::fs::read_to_string(&target_path).map_err(|e| e.to_string())?;
-        let sanitized = sanitize_xml(&content);
-        std::fs::write(&target_path, sanitized).map_err(|e| e.to_string())?;
-
-        log::info!(
-            "Extracted, Decompressed and Sanitized AppStream data to {:?}",
-            target_path
-        );
-        return Ok(target_path);
-    }
-
-    Err("Could not find extra.xml.gz in package".to_string())
-}
-
-pub fn get_cache_dir() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("monarch-store")
-}
-
-pub fn get_icons_dir() -> PathBuf {
-    get_cache_dir().join("icons")
-}
-
-pub struct MetadataState(pub Mutex<AppStreamLoader>);
-
-impl MetadataState {
-    pub async fn init(&self, interval_hours: u64) {
-        // Run on all platforms (Linux/macOS) to ensure consistent cache
-        let cache_dir = get_cache_dir();
-        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-            log::error!("Failed to create cache dir: {}", e);
-            return;
-        }
-
-        match download_and_cache_appstream(interval_hours, &cache_dir).await {
-            Ok(path) => match Collection::from_path(path.clone()) {
-                Ok(col) => {
-                    log::info!("Loaded AppStream data from {:?}", path);
-                    let mut loader = self.0.lock().expect("MetadataState lock poisoned");
-                    loader.set_collection(col);
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed to parse AppStream data: {}. Marking cache as invalid.",
-                        e
-                    );
-
-                    // Instead of deleting and retrying immediately (which causes loops),
-                    // we flag it for next time or just wait.
-                    // If the user manually clears cache, it will retry.
-                    // This prevents the infinite "download-fail-retry" loop.
-                    let _ = std::fs::remove_file(&path);
-                }
-            },
-            Err(e) => {
-                log::error!("Failed to download AppStream: {}", e);
-            }
-        }
-    }
-}
-
-pub fn get_favicon_url(domain_url: &str) -> String {
-    format!(
-        "https://www.google.com/s2/favicons?sz=64&domain_url={}",
-        domain_url
-    )
-}
-
-/// Fetch OpenGraph image from a webpage (async, used as fallback)
-pub async fn fetch_og_image(url: &str) -> Option<String> {
-    // Only try if it looks like a valid URL
-    if !url.starts_with("http") {
-        return None;
-    }
-
-    // Use a short timeout
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .ok()?;
-
-    // Fetch just enough of the page to get meta tags (usually in first 16kb)
-    let resp = client
-        .get(url)
-        .header("User-Agent", "MonARCH-Store/1.0")
-        .header("Range", "bytes=0-16383")
-        .send()
-        .await
-        .ok()?;
-
-    if !resp.status().is_success() && resp.status().as_u16() != 206 {
-        return None;
-    }
-
-    let body = resp.text().await.ok()?;
-
-    // Simple regex for og:image
-    let re =
-        regex::Regex::new(r#"<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']"#)
-            .ok()?;
-
-    if let Some(cap) = re.captures(&body) {
-        if let Some(img) = cap.get(1) {
-            return Some(img.as_str().to_string());
-        }
-    }
-
-    // Try alternate order (content before property)
-    let re2 =
-        regex::Regex::new(r#"<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']"#)
-            .ok()?;
-
-    if let Some(cap) = re2.captures(&body) {
-        if let Some(img) = cap.get(1) {
-            return Some(img.as_str().to_string());
-        }
-    }
-
-    None
+#[tauri::command]
+#[specta::specta]
+pub async fn get_metadata(
+    pkg_name: String,
+    state: tauri::State<'_, MetadataState>,
+) -> Result<Option<AppMetadata>, String> {
+    let loader = state.loader.lock().map_err(|e| e.to_string())?;
+    Ok(loader.find_package(&pkg_name))
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_metadata_batch(
-    state: State<'_, MetadataState>,
-    scm_state: State<'_, crate::ScmState>,
-    chaotic_state: State<'_, crate::chaotic_api::ChaoticApiClient>,
-    flathub_state: State<'_, crate::flathub_api::FlathubApiClient>,
     pkg_names: Vec<String>,
-) -> Result<HashMap<String, AppMetadata>, ()> {
+    state: tauri::State<'_, MetadataState>,
+) -> Result<HashMap<String, AppMetadata>, String> {
+    let loader = state.loader.lock().map_err(|e| e.to_string())?;
     let mut results = HashMap::new();
-
-    // Process in parallel using join_all
-    let futures = pkg_names.into_iter().map(|pkg_name| {
-        let state = state.inner();
-        let scm_state = scm_state.clone();
-        let chaotic_state = chaotic_state.clone();
-        let flathub_state = flathub_state.clone();
-
-        async move {
-            let meta = get_metadata_core(
-                &state,
-                &scm_state,
-                &chaotic_state,
-                &flathub_state,
-                pkg_name.clone(),
-                None,
-            )
-            .await;
-            (pkg_name, meta)
-        }
-    });
-
-    let results_vec = futures::future::join_all(futures).await;
-
-    for (pkg_name, result) in results_vec {
-        if let Ok(meta) = result {
-            results.insert(pkg_name, meta);
+    for name in pkg_names {
+        if let Some(meta) = loader.find_package(&name) {
+            results.insert(name, meta);
         }
     }
-
     Ok(results)
 }
 
-#[tauri::command]
-pub async fn get_metadata(
-    state: State<'_, MetadataState>,
-    scm_state: State<'_, crate::ScmState>,
-    chaotic_state: State<'_, crate::chaotic_api::ChaoticApiClient>,
-    flathub_state: State<'_, crate::flathub_api::FlathubApiClient>,
-    pkg_name: String,
-    upstream_url: Option<String>,
-) -> Result<AppMetadata, ()> {
-    get_metadata_core(
-        state.inner(),
-        scm_state.inner(),
-        chaotic_state.inner(),
-        flathub_state.inner(),
-        pkg_name,
-        upstream_url,
-    )
-    .await
+pub fn get_icons_dir() -> PathBuf {
+    let mut path = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    path.push("monarch-store");
+    path.push("icons");
+    let _ = std::fs::create_dir_all(&path);
+    path
 }
-
-pub async fn get_metadata_core(
-    state: &MetadataState,
-    scm_state: &crate::ScmState,
-    _chaotic_state: &crate::chaotic_api::ChaoticApiClient,
-    flathub_state: &crate::flathub_api::FlathubApiClient,
-    pkg_name: String,
-    upstream_url: Option<String>,
-) -> Result<AppMetadata, ()> {
-    // 1. Try AppStream Match
-    let app_meta = {
-        let loader = state.0.lock().expect("MetadataState lock poisoned");
-        loader.find_package(&pkg_name).or_else(|| {
-            // Heuristic stripper match
-            let base_name = crate::utils::strip_package_suffix(&pkg_name);
-            if base_name != pkg_name {
-                loader.find_package(base_name)
-            } else {
-                None
-            }
-        })
-    };
-
-    // 2. Try Flathub (If AppStream failed OR if AppStream found package but missing critical rich media)
-    let flathub_meta = if app_meta.is_none()
-        || app_meta
-            .as_ref()
-            .map(|m| m.icon_url.is_none() || m.screenshots.is_empty() || m.description.is_none())
-            .unwrap_or(false)
-    {
-        flathub_state.get_metadata_for_package(&pkg_name).await
-    } else {
-        None
-    };
-
-    // Initialize our results with best available "Base" metadata
-    let mut final_meta = if let Some(meta) = app_meta {
-        let mut base = meta;
-        // Merge Flathub enhancements into AppStream base
-        if let Some(f_meta) = flathub_meta {
-            let enriched = crate::flathub_api::flathub_to_app_metadata(&f_meta, &pkg_name);
-
-            // CRITICAL: Upgrade the App ID if Flathub provides a canonical one (e.g. org.foo.Bar)
-            // This ensures ODRS reviews work even if local AppStream only had "foo" as ID.
-            if enriched.app_id.contains('.') && !base.app_id.contains('.') {
-                base.app_id = enriched.app_id.clone();
-            }
-
-            if base.icon_url.is_none() {
-                base.icon_url = enriched.icon_url;
-            }
-            if base.screenshots.is_empty() {
-                base.screenshots = enriched.screenshots;
-            }
-            // Use Flathub description if AppStream is missing or very short (heuristic < 50 chars)
-            if base.description.is_none()
-                || base
-                    .description
-                    .as_ref()
-                    .map(|d| d.len() < 50)
-                    .unwrap_or(false)
-            {
-                if enriched.description.is_some() {
-                    base.description = enriched.description;
-                }
-            }
-        }
-        base
-    } else if let Some(meta) = flathub_meta {
-        crate::flathub_api::flathub_to_app_metadata(&meta, &pkg_name)
-    } else {
-        AppMetadata {
-            name: pkg_name.clone(),
-            pkg_name: Some(pkg_name.clone()),
-            icon_url: None,
-            app_id: pkg_name.clone(),
-            summary: None,
-            screenshots: vec![],
-            version: None,
-            maintainer: None,
-            license: None,
-            last_updated: None,
-            description: None,
-        }
-    };
-
-    // 3. Icon Fallback Chain
-    if final_meta.icon_url.is_none() {
-        // A. Try Local Heuristics (Icons folder)
-        let icon_heuristic = {
-            let loader = state.0.lock().expect("MetadataState lock poisoned");
-            loader.find_icon_heuristic(&pkg_name)
-        };
-
-        if let Some(icon) = icon_heuristic {
-            final_meta.icon_url = Some(icon);
-        } else {
-            // B. Try SCM (GitHub/GitLab)
-            if let Some(url) = &upstream_url {
-                if let Some(scm) = scm_state.0.fetch_metadata(url).await {
-                    if let Some(icon) = scm.icon_url {
-                        final_meta.icon_url = Some(icon);
-                    }
-                    if final_meta.summary.is_none() {
-                        final_meta.summary = scm.description.clone();
-                    }
-                }
-            }
-
-            // C. Try OG image/Favicon
-            if final_meta.icon_url.is_none() {
-                if let Some(url) = &upstream_url {
-                    if let Some(og) = fetch_og_image(url).await {
-                        final_meta.icon_url = Some(og);
-                    } else {
-                        final_meta.icon_url = Some(get_favicon_url(url));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(final_meta)
-}
-
-// Health logic successfully moved to repair.rs

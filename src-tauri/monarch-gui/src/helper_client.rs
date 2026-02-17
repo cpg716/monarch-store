@@ -1,13 +1,11 @@
+use crate::constants;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
-
-/// Minimum interval between helper invocations (debounce) to mitigate DoS from rapid/spam invokes.
-const HELPER_DEBOUNCE: Duration = Duration::from_millis(800);
+use tokio::sync::Mutex;
 
 static LAST_HELPER_INVOKE: Lazy<Mutex<Option<Instant>>> = Lazy::new(|| Mutex::new(None));
 
@@ -109,6 +107,14 @@ pub enum HelperCommand {
     ExecuteBatch {
         manifest: crate::models::TransactionManifest,
     },
+    /// Operation "Chaotic Good": Install Chaotic-AUR keyring and mirrorlist via pacman -U (no pacman.conf edit).
+    PrepareChaoticComponents,
+    AlpmCleanCache {
+        keep_versions: u32,
+    },
+    SystemctlRestart {
+        unit: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -118,25 +124,31 @@ pub struct ProgressMessage {
 }
 
 /// Temp file prefix for helper command (helper deletes after reading).
-const CMD_FILE_PREFIX: &str = "monarch-cmd-";
-/// Use /var/tmp so both the app and root (sudo) see the same path.
-const CMD_FILE_DIR: &str = "/var/tmp";
-
-/// When password is provided: use sudo -S so user entered password once (e.g. onboarding "reduce prompts").
-/// When password is None: use pkexec so Polkit policy applies (one system prompt per call, or none if rules allow).
+/// Auth behavior:
+/// - One-click ON (use_branded_auth): use app's password dialog and sudo -S (single branded prompt).
+/// - One-click OFF: always use pkexec (Polkit) so advanced users get the system auth dialog and full control.
+/// When use_branded_auth is false we ignore `password` and use pkexec regardless.
 pub async fn invoke_helper(
     app: &AppHandle,
     cmd: HelperCommand,
     password: Option<String>,
+    use_branded_auth: bool,
 ) -> Result<tokio::sync::mpsc::Receiver<ProgressMessage>, String> {
+    // When password is provided (e.g. from "Reduce password prompts" dialog), use it so we don't
+    // show a second (Polkit) prompt. When one_click is off and no password, use pkexec.
+    let password = if use_branded_auth || password.is_some() {
+        password
+    } else {
+        None
+    };
     // SECURITY: Debounce to limit rapid helper invocations (mitigates DoS from malformed/spam calls).
     let wait_duration = {
-        let mut guard = LAST_HELPER_INVOKE.lock().map_err(|e| e.to_string())?;
+        let mut guard = LAST_HELPER_INVOKE.lock().await;
         let now = Instant::now();
-        let wait = if let Some(prev) = *guard {
+        if let Some(prev) = *guard {
             let elapsed = prev.elapsed();
-            if elapsed < HELPER_DEBOUNCE {
-                Some(HELPER_DEBOUNCE - elapsed)
+            if elapsed < constants::HELPER_DEBOUNCE {
+                Some(constants::HELPER_DEBOUNCE - elapsed)
             } else {
                 *guard = Some(now);
                 None
@@ -144,32 +156,38 @@ pub async fn invoke_helper(
         } else {
             *guard = Some(now);
             None
-        };
-        wait
+        }
     };
     if let Some(wait) = wait_duration {
         tokio::time::sleep(wait).await;
-        if let Ok(mut g) = LAST_HELPER_INVOKE.lock() {
-            *g = Some(Instant::now());
-        }
+        let mut g = LAST_HELPER_INVOKE.lock().await;
+        *g = Some(Instant::now());
     }
+
+    // Acquire global lock to serialize privileged prompts and avoid "Broken pipe" from concurrent sudo/pkexec
+    let _privileged_guard = crate::utils::PRIVILEGED_LOCK.lock().await;
 
     let json = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
 
     // CRITICAL: Always pass command via temp file + argv[1]. pkexec does NOT reliably forward
     // stdin to the helper (many systems close or redirect it), so stdin-based command delivery
     // caused install/update to fail silently. Same file path is used for pkexec and sudo -S.
-    if let Err(e) = std::fs::create_dir_all(CMD_FILE_DIR) {
+    if let Err(e) = std::fs::create_dir_all(constants::CMD_FILE_DIR) {
         return Err(format!(
             "Failed to create command directory {}: {}",
-            CMD_FILE_DIR, e
+            constants::CMD_FILE_DIR,
+            e
         ));
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path = std::path::Path::new(CMD_FILE_DIR).join(format!("{}{}.json", CMD_FILE_PREFIX, ts));
+    let path = std::path::Path::new(constants::CMD_FILE_DIR).join(format!(
+        "{}{}.json",
+        constants::CMD_FILE_PREFIX,
+        ts
+    ));
     {
         use std::io::Write;
         let mut file = std::fs::File::create(&path)
@@ -244,7 +262,7 @@ pub async fn invoke_helper(
             helper_bin,
             cmd_path.display(),
             if use_password {
-                "sudo (password on stdin)"
+                "sudo (branded prompt)"
             } else {
                 "pkexec (Polkit)"
             }

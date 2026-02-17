@@ -1,0 +1,7 @@
+# Default permissions for the aptabase plugin
+# This allows tracking events for usage analytics
+
+[[permission]]
+identifier = "default"
+description = "Default permissions for the aptabase telemetry plugin"
+permissions = ["allow-track-event"]

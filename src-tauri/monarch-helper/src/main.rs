@@ -5,6 +5,8 @@ mod safe_transaction;
 mod self_healer;
 mod transactions;
 
+use std::sync::atomic::{AtomicPtr, Ordering};
+
 #[cfg(test)]
 mod command_tests {
     use super::HelperCommand;
@@ -133,6 +135,19 @@ use std::io::{self, BufRead};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
+const PROTECTED_PACKAGES: &[&str] = &[
+    "base",
+    "base-devel",
+    "linux",
+    "linux-lts",
+    "linux-zen",
+    "glibc",
+    "systemd",
+    "pacman",
+    "sudo",
+    "monarch-store",
+];
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "command", content = "payload")]
 pub enum HelperCommand {
@@ -164,6 +179,14 @@ pub enum HelperCommand {
     },
     AlpmInstallFiles {
         paths: Vec<String>,
+    },
+    /// Operation "Chaotic Good": Install Chaotic-AUR keyring and mirrorlist via pacman -U (no pacman.conf edit).
+    PrepareChaoticComponents,
+    AlpmCleanCache {
+        keep_versions: u32,
+    },
+    SystemctlRestart {
+        unit: String,
     },
 }
 
@@ -220,6 +243,27 @@ fn calling_uid() -> Option<u32> {
 const HELPER_PID_FILE: &str = "/var/tmp/monarch-helper.pid";
 const CANCEL_FILE: &str = "/var/tmp/monarch-cancel";
 
+/// Current ALPM handle during a transaction so the cancel watcher can call trans_interrupt.
+/// Set at start of execute_command, cleared when it returns. Watcher may call alpm_trans_interrupt(ptr)
+/// from another thread so trans_commit returns and lock is released before we exit.
+static CANCEL_ALPM_HANDLE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+fn set_cancel_handle(handle: *mut alpm_sys::alpm_handle_t) {
+    CANCEL_ALPM_HANDLE.store(handle as *mut std::ffi::c_void, Ordering::Release);
+}
+
+fn clear_cancel_handle() {
+    CANCEL_ALPM_HANDLE.store(std::ptr::null_mut(), Ordering::Release);
+}
+
+/// Guard that clears CANCEL_ALPM_HANDLE on drop so we don't leave a dangling pointer.
+struct CancelHandleGuard;
+impl Drop for CancelHandleGuard {
+    fn drop(&mut self) {
+        clear_cancel_handle();
+    }
+}
+
 /// Remove PID file and cancel file on exit so next run is clean.
 struct PidFileGuard;
 impl Drop for PidFileGuard {
@@ -230,7 +274,8 @@ impl Drop for PidFileGuard {
 }
 
 /// Spawn a thread that watches for CANCEL_FILE. When the GUI creates it (user clicked Cancel),
-/// we remove it and exit so the install stops and the lock is released.
+/// we signal the active libalpm handle to interrupt the transaction, emit "Graceful Shutdown"
+/// to the progress pipe, then exit. The lock is released by trans_interrupt/trans_release or by process exit.
 fn spawn_cancel_watcher() {
     std::thread::spawn(|| {
         let cancel_path = std::path::Path::new(CANCEL_FILE);
@@ -239,7 +284,28 @@ fn spawn_cancel_watcher() {
             if cancel_path.exists() {
                 let _ = std::fs::remove_file(cancel_path);
                 let _ = std::fs::remove_file(HELPER_PID_FILE);
-                logger::info("Cancel requested by user; exiting.");
+                logger::info("Cancel requested by user; graceful shutdown.");
+                // Signal libalpm to interrupt the transaction so lock is released before exit
+                let ptr = CANCEL_ALPM_HANDLE.load(Ordering::Acquire);
+                if !ptr.is_null() {
+                    let handle = ptr as *mut alpm_sys::alpm_handle_t;
+                    let ret = unsafe { alpm_sys::alpm_trans_interrupt(handle) };
+                    if ret == 0 {
+                        logger::info("ALPM transaction interrupted.");
+                    }
+                }
+                // Emit JSON progress event so App.tsx / InstallMonitor listeners see "Graceful Shutdown"
+                let event = serde_json::json!({
+                    "event_type": "progress",
+                    "package": null,
+                    "percent": null,
+                    "downloaded": null,
+                    "total": null,
+                    "message": "Graceful Shutdown"
+                });
+                if let Ok(line) = serde_json::to_string(&event) {
+                    progress::send_progress_line(line);
+                }
                 std::process::exit(0);
             }
         }
@@ -323,7 +389,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut alpm = Alpm::new("/", "/var/lib/pacman")?;
 
     // Phase 4: Performance - Set Parallel Downloads
-    let _ = alpm.set_parallel_downloads(5);
+    alpm.set_parallel_downloads(5);
 
     // App Store grade: auto-answer questions (NOCONFIRM behavior) so GUI never hangs
     alpm.set_question_cb((), |question, _: &mut ()| match question.question() {
@@ -652,51 +718,49 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // No file path set, so we're in pkexec mode: command is on stdin (not password)
         logger::info("Reading command from stdin (pkexec mode, no password)");
         let stdin = io::stdin();
-        for line in stdin.lock().lines() {
-            if let Ok(line) = line {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue; // Skip empty lines
-                }
-                // CRITICAL: Validate that input looks like JSON before attempting to parse
-                // Reject raw strings (e.g., repo names like "cachyos") that aren't JSON
-                if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-                    logger::error(&format!(
-                        "Received non-JSON input on stdin: {:?}",
+        for line in stdin.lock().lines().map_while(Result::ok) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue; // Skip empty lines
+            }
+            // CRITICAL: Validate that input looks like JSON before attempting to parse
+            // Reject raw strings (e.g., repo names like "cachyos") that aren't JSON
+            if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+                logger::error(&format!(
+                    "Received non-JSON input on stdin: {:?}",
+                    trimmed.chars().take(80).collect::<String>()
+                ));
+                emit_progress(
+                    0,
+                    &format!(
+                        "Error: Invalid input on stdin. Expected JSON command, got raw string: {:?}. This may indicate a serialization bug in the GUI.",
                         trimmed.chars().take(80).collect::<String>()
-                    ));
-                    emit_progress(
-                        0,
-                        &format!(
-                            "Error: Invalid input on stdin. Expected JSON command, got raw string: {:?}. This may indicate a serialization bug in the GUI.",
-                            trimmed.chars().take(80).collect::<String>()
-                        ),
-                    );
-                    continue; // Skip this line and try next
-                }
-                match serde_json::from_str::<HelperCommand>(trimmed) {
-                    Ok(cmd) => execute_command(cmd, &mut alpm),
-                    Err(e) => {
-                        let err_str = e.to_string();
-                        let is_outdated_helper = err_str.contains("unknown variant")
-                            && (trimmed.contains("AlpmInstall")
-                                || trimmed.contains("AlpmUpgrade")
-                                || trimmed.contains("AlpmUninstall"));
-                        if is_outdated_helper {
-                            emit_progress(
-                                0,
-                                "Error: The installed monarch-helper is outdated and does not support ALPM install/update. Please update monarch-store: run 'pacman -Syu monarch-store' or reinstall the package so the helper matches this app version.",
-                            );
-                        } else {
-                            let preview: String = trimmed.chars().take(80).collect();
-                            emit_progress(
-                                0,
-                                &format!(
-                                    "Error: Failed to parse command JSON: {}. Payload preview: {:?}",
-                                    err_str, preview
-                                ),
-                            );
-                        }
+                    ),
+                );
+                continue; // Skip this line and try next
+            }
+            match serde_json::from_str::<HelperCommand>(trimmed) {
+                Ok(cmd) => execute_command(cmd, &mut alpm),
+                Err(e) => {
+                    let err_str = e.to_string();
+                    let is_outdated_helper = err_str.contains("unknown variant")
+                        && (trimmed.contains("AlpmInstall")
+                            || trimmed.contains("AlpmUpgrade")
+                            || trimmed.contains("AlpmUninstall"));
+                    if is_outdated_helper {
+                        emit_progress(
+                            0,
+                            "Error: The installed monarch-helper is outdated and does not support ALPM install/update. Please update monarch-store: run 'pacman -Syu monarch-store' or reinstall the package so the helper matches this app version.",
+                        );
+                    } else {
+                        let preview: String = trimmed.chars().take(80).collect();
+                        emit_progress(
+                            0,
+                            &format!(
+                                "Error: Failed to parse command JSON: {}. Payload preview: {:?}",
+                                err_str, preview
+                            ),
+                        );
                     }
                 }
             }
@@ -808,6 +872,8 @@ where
 }
 
 fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
+    set_cancel_handle(alpm.as_alpm_handle_t());
+    let _guard = CancelHandleGuard;
     match cmd {
         // ✅ NEW: Full ALPM Transactions
         HelperCommand::AlpmInstall {
@@ -818,9 +884,7 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             target_repo,
         } => {
             execute_with_healing(|| {
-                if let Err(e) = ensure_db_ready() {
-                    return Err(e);
-                }
+                ensure_db_ready()?;
                 transactions::execute_alpm_install(
                     packages.clone(),
                     sync_first,
@@ -847,6 +911,16 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 emit_progress(0, &e);
                 return;
             }
+
+            // SUICIDE PREVENTION: Check if any targets are protected
+            for pkg in &packages {
+                if PROTECTED_PACKAGES.contains(&pkg.as_str()) {
+                    let msg = format!("CRITICAL ERROR: '{}' is a protected system package. Uninstallation is forbidden.", pkg);
+                    emit_progress(0, &msg);
+                    return;
+                }
+            }
+
             if let Err(e) = transactions::execute_alpm_uninstall(packages, remove_deps, alpm) {
                 emit_classified_error(&e);
                 emit_progress(0, &format!("Error: {}", e));
@@ -857,9 +931,7 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             enabled_repos: _,
         } => {
             execute_with_healing(|| {
-                if let Err(e) = ensure_db_ready() {
-                    return Err(e);
-                }
+                ensure_db_ready()?;
                 let mut trans = safe_transaction::SafeUpdateTransaction::new(alpm);
                 if let Some(targets) = packages.clone() {
                     trans = trans.with_targets(targets);
@@ -871,11 +943,61 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             // Sync verifies DB signatures!
             execute_with_healing(|| transactions::execute_alpm_sync(enabled_repos.clone(), alpm));
         }
+        HelperCommand::PrepareChaoticComponents => {
+            const CHAOTIC_KEY_ID: &str = "3056513887B78AEB";
+            const KEYRING_URL: &str =
+                "https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst";
+            const MIRRORLIST_URL: &str =
+                "https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst";
+            emit_progress(2, "Importing Chaotic-AUR signing key...");
+            let _ = std::process::Command::new("pacman-key")
+                .args(["--recv-key", CHAOTIC_KEY_ID])
+                .output();
+            let _ = std::process::Command::new("pacman-key")
+                .args(["--lsign-key", CHAOTIC_KEY_ID])
+                .output();
+            emit_progress(5, "Installing Chaotic-AUR keyring and mirrorlist...");
+            let out = std::process::Command::new("pacman")
+                .args(["-U", "--noconfirm", KEYRING_URL, MIRRORLIST_URL])
+                .output();
+            match out {
+                Ok(o) if o.status.success() => {
+                    emit_progress(
+                        100,
+                        "Chaotic-AUR keyring and mirrorlist installed. Add the repo to /etc/pacman.conf to finish.",
+                    );
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let detail = if !stderr.is_empty() {
+                        let s: &str = &stderr;
+                        if s.len() > 400 {
+                            format!("{}...", s.get(..400).unwrap_or(s))
+                        } else {
+                            s.to_string()
+                        }
+                    } else if !stdout.is_empty() {
+                        let s: &str = &stdout;
+                        if s.len() > 400 {
+                            format!("{}...", s.get(..400).unwrap_or(s))
+                        } else {
+                            s.to_string()
+                        }
+                    } else {
+                        format!("exit status {}", o.status)
+                    };
+                    let msg = format!("Error: pacman -U failed. {}", detail.trim());
+                    emit_progress(0, &msg);
+                }
+                Err(e) => {
+                    emit_progress(0, &format!("Error: Failed to run pacman: {}", e));
+                }
+            }
+        }
         HelperCommand::AlpmInstallFiles { paths } => {
             execute_with_healing(|| {
-                if let Err(e) = ensure_db_ready() {
-                    return Err(e);
-                }
+                ensure_db_ready()?;
                 // SECURITY: Only allow paths under /tmp/monarch-install/
                 const ALLOWED_INSTALL_PREFIX: &str = "/tmp/monarch-install";
                 let prefix = std::fs::canonicalize(ALLOWED_INSTALL_PREFIX)
@@ -901,12 +1023,37 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 transactions::execute_alpm_install_files(allowed_paths, alpm)
             });
         }
+        HelperCommand::AlpmCleanCache { keep_versions } => {
+            let _ = clear_cache(alpm, keep_versions);
+        }
+        HelperCommand::SystemctlRestart { unit } => {
+            emit_progress(0, &format!("Restarting service: {}...", unit));
+            // Safety check: unit should not contain spaces or shells
+            if unit.contains(' ') || unit.contains(';') || unit.contains('&') || unit.contains('|')
+            {
+                log::error!("Invalid service unit: {}", unit);
+            } else {
+                let _ = std::process::Command::new("systemctl")
+                    .arg("restart")
+                    .arg(unit)
+                    .status();
+            }
+            emit_progress(100, "Service restarted");
+        }
         HelperCommand::ExecuteBatch { manifest } => {
             // Operation "Silent Guard": Execute all steps under ONE lock acquisition
 
             // 0a. Remove Stale Lock (Pre-transaction maintenance)
             if manifest.remove_lock {
                 let _ = remove_lock(); // Special logic in remove_lock handles safety
+            }
+
+            // 0b. Set Performance Options
+            if let Some(count) = manifest.parallel_downloads {
+                if count > 0 {
+                    let _ = alpm.set_parallel_downloads(count);
+                    logger::info(&format!("ParallelDownloads set to {} from manifest", count));
+                }
             }
 
             // 0b. Clear Cache (Maintenance)
@@ -932,6 +1079,16 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
 
             // 3. Remove Targets
             if !manifest.remove_targets.is_empty() {
+                // SUICIDE PREVENTION
+                for pkg in &manifest.remove_targets {
+                    if PROTECTED_PACKAGES.contains(&pkg.as_str()) {
+                        emit_progress(
+                            0,
+                            &format!("Error: '{}' is a protected package. Batch abort.", pkg),
+                        );
+                        return;
+                    }
+                }
                 if let Err(e) = transactions::execute_alpm_uninstall(
                     manifest.remove_targets.clone(),
                     true,
@@ -939,6 +1096,18 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 ) {
                     emit_progress(0, &format!("Error removing packages: {}", e));
                     return;
+                }
+            }
+
+            // 3b. Remove Orphans
+            if manifest.remove_orphans {
+                let orphans = transactions::find_orphans(alpm);
+                if !orphans.is_empty() {
+                    emit_progress(30, &format!("Removing {} orphans...", orphans.len()));
+                    if let Err(e) = transactions::execute_alpm_uninstall(orphans, true, alpm) {
+                        emit_progress(0, &format!("Error removing orphans: {}", e));
+                        return;
+                    }
                 }
             }
 
@@ -958,8 +1127,8 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 if let Err(e) = transactions::execute_alpm_install(
                     manifest.install_targets.clone(),
                     false,
-                    None,
-                    None,
+                    manifest.cpu_optimization.clone(),
+                    manifest.target_repo.clone(),
                     alpm,
                 ) {
                     emit_progress(0, &format!("Error installing repo packages: {}", e));
@@ -1014,7 +1183,7 @@ fn remove_syncdbs_with_no_servers(alpm: &mut Alpm) {
                 "Unregistering repo '{}' because it has no servers.",
                 name
             ));
-            let _ = db.unregister();
+            db.unregister();
         }
     }
 }
@@ -1069,9 +1238,9 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
             let line = line.trim();
             if line.contains("Server = ") || line.contains("Server=") {
                 let val = if line.contains("Server = ") {
-                    line.splitn(2, "Server = ").nth(1).unwrap_or("")
+                    line.split_once("Server = ").map(|x| x.1).unwrap_or("")
                 } else {
-                    line.splitn(2, "Server=").nth(1).unwrap_or("")
+                    line.split_once("Server=").map(|x| x.1).unwrap_or("")
                 }
                 .trim();
 
@@ -1081,9 +1250,9 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
                 }
             } else if line.contains("SigLevel = ") || line.contains("SigLevel=") {
                 let val = if line.contains("SigLevel = ") {
-                    line.splitn(2, "SigLevel = ").nth(1).unwrap_or("")
+                    line.split_once("SigLevel = ").map(|x| x.1).unwrap_or("")
                 } else {
-                    line.splitn(2, "SigLevel=").nth(1).unwrap_or("")
+                    line.split_once("SigLevel=").map(|x| x.1).unwrap_or("")
                 }
                 .trim();
                 let val_lower = val.to_lowercase();
@@ -1097,9 +1266,9 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
                 }
             } else if line.contains("Usage = ") || line.contains("Usage=") {
                 let val = if line.contains("Usage = ") {
-                    line.splitn(2, "Usage = ").nth(1).unwrap_or("")
+                    line.split_once("Usage = ").map(|x| x.1).unwrap_or("")
                 } else {
-                    line.splitn(2, "Usage=").nth(1).unwrap_or("")
+                    line.split_once("Usage=").map(|x| x.1).unwrap_or("")
                 }
                 .trim();
 

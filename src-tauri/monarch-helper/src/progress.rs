@@ -28,7 +28,6 @@ pub fn send_progress_line(line: String) {
         let _ = tx.try_send(line);
     } else {
         // Fallback if not initialized (should not happen in prod, but maybe in tests)
-        // Just print to stderr so it's visible in logs at least
-        eprintln!("[Pre-Init Progress]: {}", line);
+        log::warn!("Pre-Init Progress: {}", line);
     }
 }

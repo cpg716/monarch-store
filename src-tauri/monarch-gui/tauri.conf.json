@@ -1,14 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MonARCH Store",
-  "version": "0.4.0-alpha",
+  "version": "0.4.6-alpha",
   "identifier": "com.monarch.store",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../../dist"
-  },
   "app": {
     "windows": [
       {
@@ -22,12 +16,26 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: https://* data:; connect-src 'self' https://api.archlinux.org https://*.supabase.co https://*.aptabase.com https://cdn-mirror.chaotic.cx https://mirror.cachyos.org https://raw.githubusercontent.com; style-src 'self' 'unsafe-inline'; font-src 'self' asset:;"
-    }
+      "csp": "default-src 'self'; img-src 'self' asset: https://* data:; connect-src 'self' https://api.archlinux.org https://*.supabase.co https://*.aptabase.com https://cdn-mirror.chaotic.cx https://mirror.cachyos.org https://raw.githubusercontent.com; style-src 'self' 'unsafe-inline'; font-src 'self' asset:;",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$CACHE/monarch-store/**",
+          "$CACHE/monarch/**"
+        ]
+      }
+    },
+    "enableGTKAppId": true
+  },
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../../dist"
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "appimage",
     "icon": [
       "icons/icon.png",
       "icons/32x32.png",

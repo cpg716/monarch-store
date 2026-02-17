@@ -53,6 +53,25 @@ jobs:
         run: |
           sed -i 's/npm run build/true/' src-tauri/monarch-gui/tauri.conf.json
 
+      - name: Prepare release body
+        id: release_body
+        run: |
+          TAG="${{ github.ref_name }}"
+          # Extract section for this tag from RELEASE_NOTES.md (from "## TAG" until next "## ")
+          if section=$(awk -v tag="$TAG" '/^## / { if (found) exit; if ($0 ~ tag) found=1 } found { print }' RELEASE_NOTES.md) && [ -n "$section" ]; then
+            body="Release **${TAG}**
+
+          ${section}
+
+          See assets below for installation."
+          else
+            body="Release **${TAG}**. See assets below for installation."
+          fi
+          delimiter="release_body_$(date +%s)"
+          echo "body<<${delimiter}" >> "$GITHUB_OUTPUT"
+          echo "$body" >> "$GITHUB_OUTPUT"
+          echo "${delimiter}" >> "$GITHUB_OUTPUT"
+
       - name: Build and upload
         uses: tauri-apps/tauri-action@v0
         env:
@@ -67,6 +86,6 @@ jobs:
           args: --verbose
           tagName: ${{ github.ref_name }}
           releaseName: 'MonARCH Store ${{ github.ref_name }}'
-          releaseBody: 'Experimental Alpha Release. See assets below for installation. v0.4.0-alpha: The Universal Update — no manual repo configuration required.'
+          releaseBody: ${{ steps.release_body.outputs.body }}
           releaseDraft: true
           prerelease: true

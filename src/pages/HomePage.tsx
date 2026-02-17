@@ -1,35 +1,31 @@
 import { useEffect, useState } from 'react';
-import { Zap, AlertTriangle } from 'lucide-react';
+import { Sparkles, Flame, AlertTriangle } from 'lucide-react';
+import EssentialsSection from '../components/EssentialsSection';
 import TrendingSection from '../components/TrendingSection';
 import CategoryGrid from '../components/CategoryGrid';
-import { useSmartEssentials } from '../hooks/useSmartEssentials';
-import { useOnlineStatus } from '../hooks/useOnlineStatus'; // Vector 4: Offline Resilience
-import { useDistro } from '../hooks/useDistro';
-import { Package } from '../components/PackageCard';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import type { Package } from '../services/bindings';
 import { WifiOff } from 'lucide-react';
+import { useAppStore } from '../store/internal_store';
 
 interface HomePageProps {
     onSelectPackage: (pkg: Package) => void;
     onSeeAll: (view: 'essentials' | 'trending') => void;
     onSelectCategory: (category: string) => void;
+    onOpenSettings?: () => void;
 }
 
-export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }: HomePageProps) {
-    const { distro } = useDistro();
-    const { essentials, loading } = useSmartEssentials();
+export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory, onOpenSettings }: HomePageProps) {
+    const essentialsIds = useAppStore((s) => s.essentialsIds);
+    const trendingIds = useAppStore((s) => s.trendingIds);
+    const metadataInitialized = useAppStore((s) => s.metadataInitialized);
+    const loading = !metadataInitialized;
     const isOnline = useOnlineStatus();
-    const [showAlphaNotice, setShowAlphaNotice] = useState(() => {
-        if (typeof window === 'undefined') return true;
-        return localStorage.getItem('monarch_alpha_notice_dismissed') !== 'true';
-    });
-    const [offlineDismissed, setOfflineDismissed] = useState(false);
 
-    useEffect(() => {
-        if (typeof window === 'undefined') return;
-        if (!showAlphaNotice) {
-            localStorage.setItem('monarch_alpha_notice_dismissed', 'true');
-        }
-    }, [showAlphaNotice]);
+    const alphaNoticeDismissed = useAppStore(s => s.alphaNoticeDismissed);
+    const setAlphaNoticeDismissed = useAppStore(s => s.setAlphaNoticeDismissed);
+
+    const [offlineDismissed, setOfflineDismissed] = useState(false);
 
     useEffect(() => {
         if (isOnline) {
@@ -43,12 +39,12 @@ export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }
                 <div className="flex items-center justify-between mb-4 px-2">
                     <div className="flex items-center gap-3">
                         <div className="p-2 rounded-xl bg-violet-600/10 text-violet-600">
-                            <Zap size={20} />
+                            <Sparkles size={20} />
                         </div>
                         <div>
                             <h2 className="text-xl font-bold text-slate-900 dark:text-white">Recommended Essentials</h2>
                             <p className="text-xs text-slate-500 dark:text-app-muted">
-                                {loading ? "Curating for you..." : `Optimized for your ${distro.pretty_name} system.`}
+                                {loading ? "Curating for you..." : "Curated apps to get started."}
                             </p>
                         </div>
                     </div>
@@ -56,12 +52,12 @@ export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }
                         onClick={() => onSeeAll('essentials')}
                         className="text-sm font-bold text-accent hover:opacity-80 transition-colors"
                     >
-                        See All
+                        See All →
                     </button>
                 </div>
 
                 {/* ALPHA WARNING BANNER */}
-                {showAlphaNotice && (
+                {!alphaNoticeDismissed && (
                     <div className="mx-2 mb-6 p-4 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-start gap-4 animate-in slide-in-from-top-2">
                         <div className="p-2 bg-violet-500/20 rounded-full text-violet-500">
                             <AlertTriangle size={20} />
@@ -74,7 +70,7 @@ export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }
                         </div>
                         <button
                             type="button"
-                            onClick={() => setShowAlphaNotice(false)}
+                            onClick={() => setAlphaNoticeDismissed(true)}
                             className="text-xs font-bold text-violet-500/80 hover:text-violet-500 transition-colors"
                             aria-label="Dismiss alpha warning"
                         >
@@ -104,22 +100,51 @@ export default function HomePage({ onSelectPackage, onSeeAll, onSelectCategory }
                     </div>
                 )}
 
-                <TrendingSection
+                <EssentialsSection
                     title=""
-                    filterIds={essentials}
+                    filterIds={essentialsIds}
+                    limit={7}
                     onSelectPackage={onSelectPackage}
                     onSeeAll={() => onSeeAll('essentials')}
                     variant="scroll"
+                    onOpenSettings={onOpenSettings}
+                    hideHeader
+                    loading={loading && essentialsIds.length === 0}
                 />
             </section>
 
-            <TrendingSection
-                title="Trending Applications"
-                onSelectPackage={onSelectPackage}
-                limit={7}
-                onSeeAll={() => onSeeAll('trending')}
-                variant="scroll"
-            />
+            <section>
+                <div className="flex items-center justify-between mb-4 px-2">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-xl bg-amber-500/10 text-amber-500">
+                            <Flame size={20} />
+                        </div>
+                        <div>
+                            <h2 className="text-xl font-bold text-slate-900 dark:text-white">Trending Applications</h2>
+                            <p className="text-xs text-slate-500 dark:text-app-muted">
+                                Popular apps right now.
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => onSeeAll('trending')}
+                        className="text-sm font-bold text-accent hover:opacity-80 transition-colors"
+                    >
+                        See All →
+                    </button>
+                </div>
+                <TrendingSection
+                    title=""
+                    listKind="trending"
+                    filterIds={trendingIds}
+                    onSelectPackage={onSelectPackage}
+                    limit={7}
+                    onSeeAll={() => onSeeAll('trending')}
+                    variant="scroll"
+                    onOpenSettings={onOpenSettings}
+                    hideHeader
+                />
+            </section>
 
             <CategoryGrid onSelectCategory={onSelectCategory} />
         </div>

@@ -68,8 +68,8 @@ export function SessionPasswordProvider({ children }: { children: ReactNode }) {
                                 <Lock size={24} className="text-amber-500" />
                             </div>
                             <div>
-                                <h3 className="font-bold text-app-fg text-lg">MonARCH One-Click Auth</h3>
-                                <p className="text-xs text-app-muted mt-0.5">Enter your password once to authorize MonARCH for this session. It will be cleared from memory when you close the app.</p>
+                                <h3 className="font-bold text-app-fg text-lg">MonARCH Silent Guard</h3>
+                                <p className="text-xs text-app-muted mt-0.5">Unlock seamless app management. Enter your password once to authorize MonARCH for this entire session (up to 12 hours).</p>
                             </div>
                         </div>
                         <input

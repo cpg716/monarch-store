@@ -1,4 +1,5 @@
-import { ShieldCheck, Rocket, Ship, Gamepad2, Layers } from 'lucide-react';
+import React from 'react';
+import { ShieldCheck, Rocket, Ship, Gamepad2, Layers, Cpu } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useDistro } from '../hooks/useDistro';
 import { clsx } from 'clsx';
@@ -28,6 +29,21 @@ export default function HeroSection() {
 
     const badge = getDistroBadge();
     const BadgeIcon = badge.icon;
+
+    // Map repo ids to colors and display names
+    const getRepoLabel = (repo: string) => {
+        const lower = repo.toLowerCase();
+        if (lower.includes('cachyos')) return { label: 'CachyOS', color: 'text-emerald-400' };
+        if (lower.includes('chaotic')) return { label: 'Chaotic', color: 'text-purple-400' };
+        if (lower.includes('manjaro')) return { label: 'Manjaro', color: 'text-green-400' };
+        if (lower === 'core' || lower === 'extra' || lower === 'community') return { label: 'Official', color: 'text-blue-400' };
+        if (lower === 'aur') return { label: 'AUR', color: 'text-amber-400' };
+        return { label: repo, color: 'text-app-muted' };
+    };
+
+    // Filter and unique repos for display
+    const visibleRepos = Array.from(new Set(distro.active_repos.map(r => getRepoLabel(r).label)));
+    if (!visibleRepos.includes('AUR')) visibleRepos.push('AUR'); // AUR is always available via our client
 
     return (
         <section className="relative px-6 pt-2 pb-4 flex flex-col items-center justify-center text-center z-10">
@@ -73,6 +89,12 @@ export default function HeroSection() {
                     <span className={clsx("text-xs font-bold uppercase tracking-wider", badge.color)}>
                         {badge.label}
                     </span>
+                    {distro.cpu_tier !== 'v1' && (
+                        <div className="flex items-center gap-1 pl-2 border-l border-white/10 ml-1">
+                            <Cpu size={12} className="text-orange-400" />
+                            <span className="text-[10px] text-orange-400 font-mono">{distro.cpu_tier}</span>
+                        </div>
+                    )}
                 </div>
 
                 {/* Separator (Hidden on mobile) */}
@@ -81,14 +103,22 @@ export default function HeroSection() {
                 {/* Repo Access */}
                 <div className="flex items-center gap-4 text-xs font-medium text-app-muted/80 px-4 py-1.5 rounded-full border border-slate-200 dark:border-white/5 bg-white/50 dark:bg-black/20 backdrop-blur-md shadow-sm dark:shadow-none">
                     <span className="flex items-center gap-1.5">
-                        <Layers size={12} className="text-blue-400" /> Access:
+                        <Layers size={12} className="text-blue-400" /> Sources:
                     </span>
                     <span className="flex items-center gap-2">
-                        <span className="text-slate-600 dark:text-white/70">Official</span>
-                        <span className="w-0.5 h-3 bg-slate-300 dark:bg-white/10" />
-                        <span className="text-amber-400/90">AUR</span>
-                        <span className="w-0.5 h-3 bg-white/10" />
-                        <span className="text-purple-400/90">Chaotic</span>
+                        {visibleRepos.map((label, i) => (
+                            <React.Fragment key={label}>
+                                <span className={clsx(
+                                    label === 'AUR' ? 'text-amber-400/90' :
+                                        label === 'Chaotic' ? 'text-purple-400/90' :
+                                            label === 'CachyOS' ? 'text-emerald-400/90' :
+                                                'text-slate-600 dark:text-white/70'
+                                )}>
+                                    {label}
+                                </span>
+                                {i < visibleRepos.length - 1 && <span className="w-0.5 h-3 bg-slate-300 dark:bg-white/10" />}
+                            </React.Fragment>
+                        ))}
                     </span>
                 </div>
             </motion.div>

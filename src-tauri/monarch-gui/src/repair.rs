@@ -1,9 +1,11 @@
+use crate::repo_manager;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -12,7 +14,7 @@ static SYNC_DB_HEALTHY_CACHE: Lazy<Mutex<Option<Instant>>> = Lazy::new(|| Mutex:
 const SYNC_DB_CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
 const MONARCH_POLKIT_POLICY: &str = include_str!("../com.monarch.store.policy");
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct HealthIssue {
     pub category: String,
     pub severity: String,
@@ -21,7 +23,7 @@ pub struct HealthIssue {
     pub action_command: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct InitializationStatus {
     pub needs_policy: bool,
     pub needs_keyring: bool,
@@ -40,13 +42,14 @@ pub struct RepairStep {
     pub logs: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct KeyringStatus {
     pub healthy: bool,
     pub message: String,
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn check_keyring_health() -> Result<KeyringStatus, String> {
     let output = Command::new("pacman-key")
         .arg("--list-keys")
@@ -127,9 +130,17 @@ async fn run_privileged(
 
     if let Some(pwd) = password {
         if let Some(mut stdin) = child.stdin.take() {
-            let _ =
+            if let Err(e) =
                 tokio::io::AsyncWriteExt::write_all(&mut stdin, format!("{}\n", pwd).as_bytes())
-                    .await;
+                    .await
+            {
+                let err_msg = if e.kind() == std::io::ErrorKind::BrokenPipe {
+                    "Authentication failed or cancelled (Broken pipe).".to_string()
+                } else {
+                    format!("Failed to write password to stdin: {}", e)
+                };
+                return Err(err_msg);
+            }
             let _ = tokio::io::AsyncWriteExt::flush(&mut stdin).await;
             let _ = tokio::io::AsyncWriteExt::shutdown(&mut stdin).await;
         }
@@ -215,23 +226,39 @@ async fn run_privileged(
 
 /// App Store–style cancel: create cancel file so the helper exits, wait for it, then clear db lock.
 #[tauri::command]
-pub async fn cancel_install(app: AppHandle) -> Result<(), String> {
+#[specta::specta]
+pub async fn cancel_install(
+    app: AppHandle,
+    state_repo: State<'_, repo_manager::RepoManager>,
+) -> Result<(), String> {
     const CANCEL_FILE: &str = "/var/tmp/monarch-cancel";
     std::fs::write(CANCEL_FILE, "1").map_err(|e| format!("Could not request cancel: {}", e))?;
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-    let _ = repair_unlock_pacman(app, None).await;
+    let one_click = state_repo.inner().is_one_click_enabled().await;
+    let _ = repair_unlock_pacman_impl(&app, None, one_click).await;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn repair_unlock_pacman(app: AppHandle, password: Option<String>) -> Result<(), String> {
-    let _ = app.emit("repair-log", "🔓 Unlocking Pacman DB...");
+#[specta::specta]
+pub async fn repair_unlock_pacman(
+    app: AppHandle,
+    state_repo: State<'_, repo_manager::RepoManager>,
+    password: Option<String>,
+) -> Result<(), String> {
+    let one_click = state_repo.inner().is_one_click_enabled().await;
+    repair_unlock_pacman_impl(&app, password, one_click).await
+}
 
-    // Treat empty password as None so we use helper (Polkit) instead of sudo -S; avoids "sudo: no password was provided".
+/// Internal implementation: uses one_click to decide branded (sudo) vs Polkit (pkexec).
+pub async fn repair_unlock_pacman_impl(
+    app: &AppHandle,
+    password: Option<String>,
+    one_click: bool,
+) -> Result<(), String> {
+    let _ = app.emit("repair-log", "🔓 Unlocking Pacman DB...");
     let password = password.filter(|s| !s.trim().is_empty());
 
-    // SECURITY: Safe Lock Removal — use Helper RemoveLock when one-click (no password)
-    // so Polkit authorizes the helper; RunCommand(rm) is rejected by the helper.
     if password.is_none() {
         let mut rx = crate::helper_client::invoke_helper(
             &app,
@@ -242,6 +269,7 @@ pub async fn repair_unlock_pacman(app: AppHandle, password: Option<String>) -> R
                 },
             },
             None,
+            one_click,
         )
         .await?;
         let mut last = None;
@@ -289,6 +317,7 @@ pub async fn repair_unlock_pacman(app: AppHandle, password: Option<String>) -> R
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn fix_keyring_issues(app: AppHandle, password: Option<String>) -> Result<(), String> {
     let _ = app.emit(
         "repair-log",
@@ -375,6 +404,7 @@ EOF
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn repair_emergency_sync(app: AppHandle, password: Option<String>) -> Result<(), String> {
     let _ = app.emit("repair-log", "🚑 Starting Emergency Sync (pacman -Syu)...");
 
@@ -394,6 +424,7 @@ pub async fn repair_emergency_sync(app: AppHandle, password: Option<String>) -> 
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn check_initialization_status() -> Result<InitializationStatus, String> {
     let mut reasons = Vec::new();
 
@@ -519,6 +550,7 @@ async fn check_sync_db_corrupt() -> bool {
 /// Clears the sync DB health cache (in-memory and persistent file) so the next check re-probes.
 /// Call this after force_refresh_databases so the UI doesn't show a stale "corrupt" banner.
 #[tauri::command]
+#[specta::specta]
 pub fn clear_sync_db_health_cache() {
     if let Ok(mut guard) = SYNC_DB_HEALTHY_CACHE.lock() {
         *guard = None;
@@ -548,6 +580,7 @@ pub fn write_last_sync_timestamp() {
 
 /// Returns seconds since last sync, or None if never synced. Used to skip "sync on startup" when recently synced.
 #[tauri::command]
+#[specta::specta]
 pub fn get_last_sync_age_seconds() -> Option<u64> {
     let p = last_sync_at_path()?;
     let buf = std::fs::read_to_string(&p).ok()?;
@@ -560,6 +593,7 @@ pub fn get_last_sync_age_seconds() -> Option<u64> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn check_system_health() -> Result<Vec<HealthIssue>, String> {
     let mut issues = Vec::new();
 
@@ -627,6 +661,7 @@ pub async fn check_system_health() -> Result<Vec<HealthIssue>, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn fix_keyring_issues_alias(
     app: AppHandle,
     password: Option<String>,
@@ -635,12 +670,14 @@ pub async fn fix_keyring_issues_alias(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn repair_reset_keyring(app: AppHandle, password: Option<String>) -> Result<(), String> {
     // Alias for fix_keyring_issues for compatibility with InstallMonitor
     fix_keyring_issues(app, password).await
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn check_pacman_lock() -> bool {
     std::path::Path::new("/var/lib/pacman/db.lck").exists()
 }
@@ -648,6 +685,7 @@ pub async fn check_pacman_lock() -> bool {
 /// Returns true if a stale lock exists (db.lck present and no pacman process).
 /// Frontend uses this to decide whether to show the app password dialog before unlock.
 #[tauri::command]
+#[specta::specta]
 pub async fn needs_startup_unlock() -> bool {
     if !std::path::Path::new("/var/lib/pacman/db.lck").exists() {
         return false;
@@ -665,8 +703,10 @@ pub async fn needs_startup_unlock() -> bool {
 /// so install/update/sync workflow isn't broken after a previous cancel or crash.
 /// If `password` is Some (and non-empty), uses sudo path (app password box); otherwise Polkit.
 #[tauri::command]
+#[specta::specta]
 pub async fn unlock_pacman_if_stale(
     app: AppHandle,
+    state_repo: State<'_, repo_manager::RepoManager>,
     password: Option<String>,
 ) -> Result<(), String> {
     if !std::path::Path::new("/var/lib/pacman/db.lck").exists() {
@@ -682,6 +722,7 @@ pub async fn unlock_pacman_if_stale(
         return Ok(());
     }
     let password = password.filter(|s| !s.trim().is_empty());
+    let one_click = state_repo.inner().is_one_click_enabled().await;
     let mut rx = crate::helper_client::invoke_helper(
         &app,
         crate::helper_client::HelperCommand::ExecuteBatch {
@@ -691,17 +732,24 @@ pub async fn unlock_pacman_if_stale(
             },
         },
         password,
+        one_click,
     )
     .await?;
-    while let Some(_) = rx.recv().await {}
+    while rx.recv().await.is_some() {}
     Ok(())
 }
 
 /// Clear the pacman package cache on disk (/var/cache/pacman/pkg) via the Helper.
 /// `keep`: number of versions to keep per package (0 = remove all). Helper may not yet honor this.
 #[tauri::command]
-pub async fn clear_pacman_package_cache(app: AppHandle, keep: Option<u32>) -> Result<(), String> {
+#[specta::specta]
+pub async fn clear_pacman_package_cache(
+    app: AppHandle,
+    state_repo: State<'_, repo_manager::RepoManager>,
+    keep: Option<u32>,
+) -> Result<(), String> {
     let _keep = keep.unwrap_or(0);
+    let one_click = state_repo.inner().is_one_click_enabled().await;
     let mut rx = crate::helper_client::invoke_helper(
         &app,
         crate::helper_client::HelperCommand::ExecuteBatch {
@@ -711,6 +759,7 @@ pub async fn clear_pacman_package_cache(app: AppHandle, keep: Option<u32>) -> Re
             },
         },
         None,
+        one_click,
     )
     .await?;
     let mut last = None;
@@ -727,6 +776,7 @@ pub async fn clear_pacman_package_cache(app: AppHandle, keep: Option<u32>) -> Re
 
 /// Clear the native builder cache (~/.cache/monarch/build).
 #[tauri::command]
+#[specta::specta]
 pub async fn clear_build_cache() -> Result<(), String> {
     if let Some(mut cache_dir) = dirs::cache_dir() {
         cache_dir.push("monarch");

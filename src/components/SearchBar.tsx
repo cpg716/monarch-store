@@ -1,12 +1,14 @@
 import React, { useRef } from 'react';
-import { Search, X } from 'lucide-react';
+import { Search, X, ArrowLeft } from 'lucide-react';
 
 interface SearchBarProps {
     value: string;
     onChange: (value: string) => void;
+    /** When set and there is a query, show a back button that calls this (e.g. clear search and return to previous view). */
+    onBack?: () => void;
 }
 
-const SearchBar: React.FC<SearchBarProps> = ({ value, onChange }) => {
+const SearchBar: React.FC<SearchBarProps> = ({ value, onChange, onBack }) => {
     const inputRef = useRef<HTMLInputElement>(null);
 
     const handleClear = () => {
@@ -14,15 +16,25 @@ const SearchBar: React.FC<SearchBarProps> = ({ value, onChange }) => {
         inputRef.current?.focus();
     };
 
-    return (
-        <div className="relative w-full max-w-3xl group transition-all">
-            {/* Gradient border effect on focus */}
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 rounded-[2.5rem] blur opacity-25 group-hover:opacity-50 group-focus-within:opacity-75 transition-opacity duration-500" />
+    const showBack = value.length > 0 && onBack != null;
 
-            <div className="relative">
-                <div className="absolute inset-y-0 left-6 flex items-center pointer-events-none text-app-muted group-focus-within:text-accent transition-colors">
-                    <Search size={24} className="group-focus-within:scale-110 transition-transform" />
-                </div>
+    return (
+        <div className="relative w-full max-w-2xl">
+            <div className="flex items-center gap-2 bg-app-card border border-app-border rounded-xl shadow-sm dark:shadow-none overflow-hidden focus-within:ring-2 focus-within:ring-app-accent/40 focus-within:border-app-accent/50 transition-all">
+                {showBack ? (
+                    <button
+                        type="button"
+                        onClick={onBack}
+                        className="flex-shrink-0 p-2.5 text-app-muted hover:text-app-fg hover:bg-app-fg/5 transition-colors"
+                        aria-label="Back"
+                    >
+                        <ArrowLeft size={20} />
+                    </button>
+                ) : (
+                    <div className="flex-shrink-0 pl-4 pr-1 py-3 text-app-muted pointer-events-none">
+                        <Search size={20} />
+                    </div>
+                )}
                 <input
                     ref={inputRef}
                     type="text"
@@ -34,18 +46,18 @@ const SearchBar: React.FC<SearchBarProps> = ({ value, onChange }) => {
                             (e.target as HTMLInputElement).blur();
                         }
                     }}
-                    placeholder="Search for apps (e.g. firefox, spotify, discord)"
+                    placeholder="Search for apps (e.g. firefox, spotify)"
                     data-monarch-search
-                    className="w-full bg-app-card border-2 border-slate-200/80 dark:border-app-border/50 rounded-[2rem] py-5 pl-16 pr-12 text-xl text-app-fg placeholder-app-muted/60 focus:outline-none focus:bg-app-card transition-all shadow-lg dark:shadow-xl hover:shadow-xl"
+                    className="flex-1 min-w-0 py-3 pr-3 text-base text-app-fg placeholder:text-app-muted/70 bg-transparent border-0 focus:outline-none focus:ring-0"
                 />
                 {value.length > 0 && (
                     <button
                         type="button"
                         onClick={handleClear}
-                        className="absolute inset-y-0 right-4 flex items-center justify-center w-10 h-10 rounded-full text-app-muted hover:text-app-fg hover:bg-app-fg/10 transition-colors"
+                        className="flex-shrink-0 p-2.5 text-app-muted hover:text-app-fg hover:bg-app-fg/5 transition-colors"
                         aria-label="Clear search"
                     >
-                        <X size={20} />
+                        <X size={18} />
                     </button>
                 )}
             </div>

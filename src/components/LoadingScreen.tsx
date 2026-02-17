@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Database, ShieldCheck, Zap } from 'lucide-react';
+import { Database, ShieldCheck, Zap, Cpu } from 'lucide-react';
 import { useDistro } from '../hooks/useDistro';
 import logoIcon from '../assets/logo.png';
 
@@ -45,9 +46,13 @@ export default function LoadingScreen() {
     const [progress, setProgress] = useState(0);
 
     const tips = [
-        ...(DISTRO_TIPS[distro.id] || DISTRO_TIPS['arch'] || []),
+        ...(DISTRO_TIPS[typeof distro.id === 'string' ? distro.id : 'arch'] || DISTRO_TIPS['arch'] || []),
         ...GENERIC_TIPS
     ];
+
+    // Add CPU-aware tips
+    if (distro.cpu_tier === 'v4') tips.unshift("Performance: AVX-512 instructions detected and primed.");
+    if (distro.cpu_tier === 'v3') tips.unshift("Performance: x86-64-v3 (AVX2) optimizations enabled.");
 
     // Rotate tips every 3 seconds for variety
     useEffect(() => {
@@ -57,23 +62,41 @@ export default function LoadingScreen() {
         return () => clearInterval(interval);
     }, [tips.length]);
 
-    // Listen for real-time progress from backend
+    // Listen for real-time progress from backend; map status text to bar so startup always shows movement
     useEffect(() => {
-        let unlisten: any;
-        const setupListener = async () => {
-            const { listen } = await import('@tauri-apps/api/event');
-            unlisten = await listen<string>('sync-progress', (event) => {
-                setStatus(event.payload);
-                // Simple heuristic for progress bar
-                if (event.payload.includes("Syncing")) setProgress(20);
-                if (event.payload.includes("Updating")) setProgress(prev => Math.min(prev + 10, 80));
-                if (event.payload.includes("Chaotic-AUR")) setProgress(90);
-                if (event.payload.includes("complete")) setProgress(100);
-            });
-        };
-        setupListener();
-        return () => { if (unlisten) unlisten(); };
+        let unlisten: (() => void) | undefined;
+        listen<string>('sync-progress', (event) => {
+            const msg = event.payload;
+            setStatus(msg);
+            if (msg.includes("complete") || msg.includes("up to date")) setProgress(95);
+            else if (msg.includes("Chaotic-AUR")) setProgress(90);
+            else if (msg.includes("Updating")) setProgress((p) => Math.min(p + 8, 85));
+            else if (msg.includes("Syncing")) setProgress((p) => Math.max(p, 25));
+            else if (msg.includes("Loading Essentials")) setProgress(55);
+            else if (msg.includes("Analyzing")) setProgress(75);
+            else if (msg.includes("Preparing") || msg.includes("Preparing...")) setProgress(20);
+            else if (msg.includes("Checking health") || msg.includes("Checking system")) setProgress(10);
+            else if (msg.includes("Checking lock") || msg.includes("Unlock")) setProgress(8);
+        }).then((fn) => { unlisten = fn; });
+        return () => { unlisten?.(); };
     }, []);
+
+    // If no backend progress within 2s, nudge bar so user sees activity (avoids "stuck at 0" on slow first steps)
+    useEffect(() => {
+        const t = setTimeout(() => {
+            setProgress((p) => (p < 5 ? 5 : p));
+        }, 2000);
+        return () => clearTimeout(t);
+    }, []);
+
+    // Map repo ids to friendly names
+    const getRepoIcon = (repo: string) => {
+        const lower = repo.toLowerCase();
+        if (lower.includes('chaotic')) return <Zap size={12} className="text-amber-500" />;
+        if (lower.includes('cachyos')) return <Zap size={12} className="text-emerald-500" />;
+        if (lower.includes('manjaro')) return <ShieldCheck size={12} className="text-green-500" />;
+        return <Database size={12} className="text-indigo-500" />;
+    };
 
     return (
         <div className="fixed inset-0 z-50 bg-app-bg flex flex-col items-center justify-center text-app-fg p-8 overflow-hidden">
@@ -130,19 +153,19 @@ export default function LoadingScreen() {
                 </div>
 
                 {/* Progress/Status indicators */}
-                <div className="flex gap-4 text-xs text-app-muted font-mono">
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle border border-app-border/20">
-                        <Zap size={12} className="text-amber-500" />
-                        <span>chaotic-aur</span>
-                    </div>
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle border border-app-border/20">
-                        <ShieldCheck size={12} className="text-blue-500" />
-                        <span>{distro.id === 'arch' ? 'arch' : distro.id}</span>
-                    </div>
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle border border-app-border/20">
-                        <Database size={12} className="text-indigo-500" />
-                        <span>extra</span>
-                    </div>
+                <div className="flex flex-wrap justify-center gap-3 text-xs text-app-muted font-mono">
+                    {distro.active_repos.slice(0, 3).map(repo => (
+                        <div key={repo} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle border border-app-border/20">
+                            {getRepoIcon(repo)}
+                            <span>{repo}</span>
+                        </div>
+                    ))}
+                    {distro.cpu_tier !== 'v1' && (
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-app-subtle border border-app-border/20">
+                            <Cpu size={12} className="text-orange-400" />
+                            <span>{distro.cpu_tier} optimized</span>
+                        </div>
+                    )}
                 </div>
             </div>
 

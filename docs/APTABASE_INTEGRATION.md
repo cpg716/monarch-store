@@ -1,6 +1,6 @@
 # Aptabase Integration — MonARCH Store
 
-**Last updated:** 2025-01-31 (v0.3.5-alpha)
+**Last updated:** 2026-02-03 (v0.4.5-alpha)
 
 This document describes how MonARCH Store integrates with [Aptabase](https://aptabase.com) for privacy-respecting, opt-in analytics.
 
@@ -132,7 +132,7 @@ These are injected in the backend so the dashboard can group events and show eac
 1. **Frontend:** Call `invoke('track_event', { event: 'my_event', payload: { key: value } })`. Use an object for `payload` (or omit for minimal payload).
 2. **Backend (Rust):** Call `crate::utils::track_event_safe(&app, "my_event", Some(serde_json::json!({ ... }))).await`.
 3. **Category/label:** Add a branch in `event_category_and_label()` in `src-tauri/monarch-gui/src/utils.rs` so the new event gets the right `event_category` and `event_label` (otherwise it will be `other` / `other`).
-4. **Permissions:** `track_event` is already allowed in `permissions/app-commands.toml`; no change needed for new event names.
+4. **Permissions:** `track_event` is allowed in `permissions/app-commands-read.toml`; no change needed for new event names.
 
 ---
 

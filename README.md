@@ -3,7 +3,8 @@
 
 **Author:** [cpg716](https://github.com/cpg716) — developer and creator of MonARCH Store, with the help of AI coding tools.
 
-**Current Version:** v0.4.0-alpha
+**Current Version:** v0.4.6-alpha  
+**Last updated:** 2026-02-14
 
 ## ⚠️ Alpha Disclaimer
 
@@ -21,7 +22,7 @@ A premium, universal software center built with Tauri and React. MonARCH **respe
 
 ## ✨ Key Features (v0.4.0)
 
-### 🦎 Host-Adaptive Architecture (v0.4.0-alpha: The Universal Update)
+### 🦎 Host-Adaptive Architecture (v0.4.5-alpha)
 MonARCH no longer "injects" its own opinions into your system. **No manual repo configuration required** — we discover repositories from your system.
 *   **Respects `pacman.conf`**: We typically only show repositories you have explicitly enabled on your host system.
 *   **Manjaro Guard**: Automatically prevents enabling incompatible repositories (like `chaotic-aur`) on Manjaro systems to ensure stability.
@@ -31,7 +32,7 @@ MonARCH no longer "injects" its own opinions into your system. **No manual repo 
 Stop searching three different websites. MonARCH combines them all:
 *   **One Search Bar**: Queries **Official Repos**, **AUR**, and **Flathub** simultaneously.
 *   **Source Priority**: Intelligently ranks results (Official > Flatpak > AUR).
-*   **Smart Merging**: Duplicate apps are merged into a single card with a "Source" selector.
+*   **Smart Merging**: Duplicate apps are merged into a single card with a "Source" selector; variant names (e.g. `-git`, `-bin`) are normalized for consistent grouping.
 
 ### 🛠️ Native AUR Builder
 A robust, safe implementation of the Arch User Repository.
@@ -50,11 +51,17 @@ The ultimate safety net.
 No more individual updates.
 *   **Parallel Aggregation**: Checks for updates from Official Repos, AUR, and Flatpak simultaneously.
 *   **Safety Lock**: If any official package is selected, a full system upgrade (`-Syu`) is enforced to prevent partial upgrades.
+*   **Update-Before-Install**: Installing a repo package runs a full system upgrade first, then installs the target—no partial upgrades.
 *   **Built from Source Indicators**: AUR packages are clearly marked with their build status.
+
+### 🛡️ Safe Guard (Install & Update)
+*   **IgnorePkg Respect**: The helper honors your host `IgnorePkg`/`IgnoreGroup`; it never overrides them.
+*   **No Silent Full Upgrade**: If an install fails due to stale databases, you are prompted to run a system upgrade explicitly—we do not auto-trigger it in the background.
 
 ### 🛸 Mission Control (Settings Redesign)
 A completely overhauled settings experience.
 *   **Tabbed Layout**: Dedicated sections for Sources, Builder, and Maintenance.
+*   **Chaotic-AUR Safe Toggle**: Chaotic-AUR status (Active/Inactive/Blocked); we install keyring and mirrorlist only—you add the repo to pacman.conf manually. Onboarding wizard guides first-time setup (Welcome → Sources → Chaotic-AUR [conditional] → Security & Theme → Confirmation).
 *   **Advanced AUR Controls**: Fine-tune parallel downloads, build directory cleaning, and verbose logging.
 *   **Diagnostics**: Integrated system health checks and repair tools.
 
@@ -63,11 +70,18 @@ A completely overhauled settings experience.
 *   **Atomic Updates**: Repo installs use safe transaction barriers (`pacman -Syu --needed`).
 *   **Lock Guard**: Prevents operations when the Pacman DB is locked.
 
+### 📱 Liquid UI (Responsive)
+*   **Minimum Window Size**: 800×600 to keep layouts readable.
+*   **Responsive Grids**: Browse, Search, and Category views use adaptive columns (1–4) across breakpoints.
+*   **Mobile Navigation**: Bottom nav bar on small screens; sidebar hidden or collapsed on medium.
+*   **Responsive Details**: Package details page stacks header and actions on narrow viewports.
+
 ## 📘 Documentation
 - [**User Guide**](USER_GUIDE.md) - How to use MonARCH and how it works.
 - [**FAQ**](FAQ.md) - Frequently asked questions.
 - [**Roadmap**](ROADMAP.md) - Future plans and upcoming features.
 - [**Architecture & Design**](ARCHITECTURE.md) - Deep dive into the Host-Adaptive model.
+- [**Recent Changes**](docs/RECENT_CHANGES.md) - Summary of unification, Chaotic Good, onboarding, and UI fixes.
 - [**Developer Guide**](docs/DEVELOPER.md) - Setup and contribution guide.
 - [**Security Policy**](SECURITY.md) - Our security commitments.
 

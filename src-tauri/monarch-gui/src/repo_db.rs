@@ -160,9 +160,7 @@ pub async fn fetch_repo_packages<C: RepoClient>(
         let mut accumulated_errors = Vec::new();
         let mut success_data = None;
 
-        for (i, url) in mirrors_to_try.iter().enumerate() {
-            if i > 0 {}
-
+        for url in &mirrors_to_try {
             match client.fetch_bytes(url).await {
                 Ok(data) => {
                     success_data = Some(data);
@@ -388,7 +386,7 @@ mod tests {
             &mock_client,
             url,
             "test_repo",
-            PackageSource::cachyos(),
+            PackageSource::cachyos("test"),
             cache_path,
             true,
             0,
@@ -415,7 +413,7 @@ mod tests {
             &mock_client,
             url,
             "fail_repo",
-            PackageSource::cachyos(),
+            PackageSource::cachyos("test"),
             cache_path,
             true,
             0,

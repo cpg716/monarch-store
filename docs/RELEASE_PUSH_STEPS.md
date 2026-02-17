@@ -1,60 +1,83 @@
-# Release push steps — v0.4.0-alpha
+# Monarch Store - Git Release Process
 
-Follow these steps to push the release to GitHub and finalize the PKGBUILD for the versioned tag.
+This document outlines the authoritative process for releasing a new version of Monarch Store.
 
-**Before pushing:** See [PREPARE_FOR_PUSH.md](PREPARE_FOR_PUSH.md) — run `npm run build` and `cargo check`, ensure `.gitignore` is correct, then stage and commit.
+## 🏗️ Architecture
 
-## 1. Push main and tag (you need GitHub credentials)
+The release process relies on two GitHub Actions workflows:
+1. **Build Builder Image** (`build-builder.yml`): Builds the Docker container (`monarch-store-builder`) containing all system dependencies (`librsvg`, `libadwaita`, `rust`).
+2. **Release** (`release.yml`): Runs *inside* the builder container to compile the app and generate artifacts (`.AppImage`, `.deb`, `.rpm`).
 
-From the repo root:
+---
 
+## 🚀 Release Steps
+
+### 1. Pre-Flight Checks
+Ensure your local `package.json` and `Cargo.toml` versions match the target release.
 ```bash
-# Push the release commit
-git push origin main
-
-# Push the release tag (triggers GitHub Actions: Docker build + Release draft with AppImage/artifacts)
-git push origin v0.4.0-alpha
+# Check version consistency
+grep "version" package.json src-tauri/monarch-gui/Cargo.toml
 ```
 
-If you use SSH for GitHub, ensure `origin` uses `git@github.com:cpg716/monarch-store.git`, or run:
+### 2. Update the Builder Image (If Dependencies Changed)
+**CRITICAL**: If you modified `docker/Dockerfile` (e.g., added a system library like `librsvg`), you **MUST** wait for the builder image to rebuild before releasing.
+
+1. Commit and push changes to `main`.
+2. Go to [GitHub Actions](https://github.com/cpg716/monarch-store/actions).
+3. Wait for **Build Builder Image** to complete successfully.
+
+### 3. Push the Release Tag
+The **Release** workflow is triggered by pushing a tag starting with `v*`.
 
 ```bash
-git remote set-url origin git@github.com/cpg716/monarch-store.git
-git push origin main
-git push origin v0.4.0-alpha
+# Tag the current commit (ensure it's clean and tested)
+git tag v0.4.5-alpha
+
+# Push to GitHub
+git push origin v0.4.5-alpha
 ```
 
-## 2. Finalize PKGBUILD (tarball + checksums)
+### 4. Verify & Publish
+1. Go to the **Actions** tab and watch the **Release** workflow.
+2. Once green, go to the **Releases** tab.
+3. You will see a new **Draft Release**.
+4. Verify the artifacts are attached:
+    - `MonARCH_Store_..._amd64.AppImage` (Universal Linux App)
+    - `monarch-store_..._amd64.deb` (Debian/Ubuntu)
+    - `monarch-store-...-1.x86_64.rpm` (Fedora/OpenSUSE)
+5. The release body is **dynamic**: the workflow extracts the changelog for the pushed tag from `RELEASE_NOTES.md`. If you want to tweak it, click **Edit**, adjust the notes, and click **Publish release**. For a full feature summary (one card per app, Chaotic Good, onboarding), see [RECENT_CHANGES.md](RECENT_CHANGES.md).
 
-After the tag exists on GitHub, run:
+---
 
+## 🆘 Troubleshooting
+
+### "The Release workflow failed!"
+Check the logs.
+- **"Package ... not found"**: You are likely missing a dependency in the Dockerfile. Add it, push to main, wait for the builder to rebuild, then retry.
+- **"Network error"**: Transient failure. Retry via the GitHub UI.
+
+### "How do I retry a release?"
+You have two options:
+
+**Option A: The Clean Reset (Recommended)**
+Delete the tag remote and local, then re-push.
 ```bash
-chmod +x scripts/release-finalize-pkgbuild.sh
-./scripts/release-finalize-pkgbuild.sh
+git push --delete origin v0.4.5-alpha
+git tag -d v0.4.5-alpha
+git tag v0.4.5-alpha
+git push origin v0.4.5-alpha
 ```
 
-This script will:
+**Option B: Manual Trigger**
+We have enabled `workflow_dispatch` on the release workflow.
+1. Go to Actions -> Release.
+2. Click **Run workflow**.
+3. Select `main` branch.
+4. **Note**: This will create artifacts labeled with the *branch name* or *short sha* unless you manually override, so standardizing on Tags (Option A) is preferred for final releases.
 
-- Switch `PKGBUILD` source to the release tarball (`v0.4.0-alpha.tar.gz`)
-- Run `updpkgsums` to fill `sha256sums`
-- Regenerate `.SRCINFO` with `makepkg --printsrcinfo`
-- Commit `PKGBUILD` and `.SRCINFO` and push to `main`
-
-If the script does not push (e.g. credentials), run manually:
-
-```bash
-git push origin main
-```
-
-## 3. GitHub Release (container-built artifacts)
-
-The **Release** workflow (on tag push) builds the app in Docker (`ghcr.io/cpg716/monarch-store-builder`) and uploads the resulting AppImage (and other Tauri bundle artifacts) to a **draft** GitHub Release. After the workflow completes, open the draft release, add notes (e.g. from `RELEASE_NOTES.md`), and publish. For Arch `.pkg.tar.zst`, use the PKGBUILD flow below or attach the built package to the release.
-
-## Summary
-
-| Step | Command / action |
-|------|-------------------|
-| Push main | `git push origin main` |
-| Push tag | `git push origin v0.4.0-alpha` (triggers CI build + draft release) |
-| Finalize PKGBUILD | `./scripts/release-finalize-pkgbuild.sh` (after tag exists) |
-| GitHub Release | Publish the draft created by the workflow, or attach `.pkg.tar.zst` from local build |
+### "My AppImage has no icons!"
+This usually means `librsvg` was missing in the builder.
+1. Check `docker/Dockerfile` for `librsvg2-dev`.
+2. If missing, add it.
+3. Rebuild builder (Step 2).
+4. Retry release (Step 3).

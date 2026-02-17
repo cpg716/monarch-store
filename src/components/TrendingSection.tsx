@@ -1,8 +1,11 @@
-import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import PackageCard, { Package, ChaoticPackage } from './PackageCard';
-import SkeletonCard from './SkeletonCard';
-import { useErrorService } from '../context/ErrorContext';
+
+import { useMemo } from 'react';
+import PackageCard from './PackageCard';
+import type { Package } from '../services/bindings';
+import PackageCardSkeleton from './PackageCardSkeleton';
+import { useChaoticStatus, isOnlyChaoticSource } from '../hooks/useChaoticStatus';
+import { useAppStore } from '../store/internal_store';
+
 
 interface TrendingSectionProps {
     title: string;
@@ -11,112 +14,95 @@ interface TrendingSectionProps {
     limit?: number;
     onSeeAll?: () => void;
     variant?: 'scroll' | 'grid';
+    onOpenSettings?: () => void;
+    /** When true, do not render the section header (title + See All); parent provides it. */
+    hideHeader?: boolean;
+    /** When set, use these packages instead of fetching (instant load for See All / home essentials). */
+    preloadedPackages?: Package[];
+    /** When true (e.g. essentials from App prewarm), do not fetch; show skeletons until preloadedPackages arrive. Avoids duplicate get_packages_by_names. */
+    preloadInProgress?: boolean;
+    /** Which list to update in store: essentials vs trending vs favorites. */
+    listKind?: 'trending' | 'essentials' | 'favorites';
 }
 
-export default function TrendingSection({ title, onSelectPackage, filterIds, limit, onSeeAll, variant = 'grid' }: TrendingSectionProps) {
-    const errorService = useErrorService();
-    const [packages, setPackages] = useState<Package[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [chaoticInfoMap, setChaoticInfoMap] = useState<Map<string, ChaoticPackage>>(new Map());
+export default function TrendingSection({ title, onSelectPackage, filterIds, limit, onSeeAll, variant = 'grid', onOpenSettings, hideHeader = false, preloadInProgress = false }: TrendingSectionProps) {
+    const { enabled: chaoticEnabled } = useChaoticStatus();
+    const packageRegistry = useAppStore((s) => s.packageRegistry);
 
-    useEffect(() => {
-        const loadTrending = async () => {
-            setLoading(true);
-            try {
-                // If we have specific filter IDs, we search for them specifically
-                // Otherwise we get the generic trending list
-                let result: Package[] = [];
+    // Simplification: Rely purely on parent providing filterIds (managed by App.tsx)
+    const safeIds = useMemo(() => filterIds ?? [], [filterIds]);
+    const loading = preloadInProgress;
 
-                if (filterIds && filterIds.length > 0) {
-                    // Fetch specific packages efficiently in one batch
-                    try {
-                        result = await invoke<Package[]>('get_packages_by_names', { names: filterIds });
-                    } catch (e) {
-                        errorService.reportError(e as Error | string);
-                    }
-                } else {
-                    result = await invoke<Package[]>('get_trending');
-                }
+    // Legacy support removal: No internal fetching.
 
-                setPackages(result);
-            } catch (e) {
-                console.error("Failed to load trending", e);
-            } finally {
-                setLoading(false);
-            }
-        };
-        loadTrending();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [JSON.stringify(filterIds)]);
+    const visibleIds = useMemo(() => {
+        const DEFAULT_MAX_ITEMS = 80;
+        const effectiveLimit = limit ?? DEFAULT_MAX_ITEMS;
+        return safeIds.slice(0, effectiveLimit);
+    }, [safeIds, limit]);
 
-    // Batch fetch chaotic info when packages load
-    useEffect(() => {
-        const fetchBatchInfo = async () => {
-            const visiblePackages = limit ? packages.slice(0, limit) : packages;
-            const chaoticNames = visiblePackages
-                .filter(p => p.source === 'chaotic')
-                .map(p => p.name);
-
-            if (chaoticNames.length === 0) return;
-
-            const neededNames = chaoticNames.filter(n => !chaoticInfoMap.has(n));
-            if (neededNames.length === 0) return;
-
-            try {
-                const infoMap = await invoke<Record<string, ChaoticPackage>>('get_chaotic_packages_batch', {
-                    names: neededNames
-                });
-
-                setChaoticInfoMap(prev => {
-                    const next = new Map(prev);
-                    Object.entries(infoMap).forEach(([name, info]) => {
-                        next.set(name, info);
-                    });
-                    return next;
-                });
-            } catch (e) {
-                errorService.reportError(e as Error | string);
-            }
-        };
-
-        if (packages.length > 0) {
-            fetchBatchInfo();
-        }
-    }, [packages, limit]);
+    const showSeeAll = limit != null && onSeeAll != null && safeIds.length > limit;
 
     if (loading) {
+        const isScroll = variant === 'scroll';
+        const skeletonCount = isScroll ? 7 : 8;
         return (
             <section>
-                <div className="flex items-center justify-between mb-6">
-                    {title && <div className="h-8 w-48 rounded bg-gray-200 dark:bg-gray-700 animate-pulse" />}
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 max-w-7xl mx-auto w-full">
-                    {[...Array(8)].map((_, i) => (
-                        <SkeletonCard key={i} />
-                    ))}
-                </div>
+                {!hideHeader && (
+                    <div className="flex items-center justify-between mb-6">
+                        {title && <div className="h-8 w-48 rounded bg-gray-200 dark:bg-gray-700 animate-pulse" />}
+                    </div>
+                )}
+                {isScroll ? (
+                    <div className="relative group/scroll max-w-7xl mx-auto">
+                        <div
+                            className="flex gap-6 overflow-x-auto pb-6 scrollbar-hide snap-x"
+                            style={{
+                                maskImage: 'linear-gradient(to right, black 85%, transparent 100%)',
+                                WebkitMaskImage: 'linear-gradient(to right, black 85%, transparent 100%)'
+                            }}
+                        >
+                            {[...Array(skeletonCount)].map((_, i) => (
+                                <div key={i} className="snap-start flex-shrink-0 w-[280px]">
+                                    <PackageCardSkeleton />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                ) : (
+                    <div className="grid gap-6 max-w-7xl mx-auto w-full grid-cols-[repeat(auto-fill,minmax(260px,1fr))]">
+                        {[...Array(skeletonCount)].map((_, i) => (
+                            <PackageCardSkeleton key={i} />
+                        ))}
+                    </div>
+                )}
             </section>
         );
     }
 
-    if ((packages || []).length === 0) return null;
+    if (visibleIds.length === 0) {
+        return (
+            <section>
+                {!hideHeader && title && <h2 className="text-2xl font-bold text-app-fg mb-6">{title}</h2>}
+                <p className="text-app-muted text-sm py-6">No trending applications to show right now. Try again in a moment.</p>
+            </section>
+        );
+    }
 
-    const displayedPackages = limit ? (packages || []).slice(0, limit) : (packages || []);
-    const showSeeAll = limit && onSeeAll && (packages || []).length > limit;
-
-    // Use the explicit variant, or infer 'scroll' if a limit is set (heuristic for homepage rows)
     const isScroll = variant === 'scroll';
 
     return (
         <section>
-            <div className="flex items-center justify-between mb-6">
-                {title && <h2 className="text-2xl font-bold text-app-fg flex items-center gap-2">{title}</h2>}
-                {showSeeAll && !filterIds && (
-                    <button onClick={onSeeAll} className="text-sm font-bold text-accent hover:opacity-80 transition-colors flex items-center gap-1">
-                        See All <span className="text-xs">→</span>
-                    </button>
-                )}
-            </div>
+            {!hideHeader && (
+                <div className="flex items-center justify-between mb-6">
+                    {title && <h2 className="text-2xl font-bold text-app-fg flex items-center gap-2">{title}</h2>}
+                    {showSeeAll && onSeeAll && (
+                        <button onClick={onSeeAll} className="text-sm font-bold text-accent hover:opacity-80 transition-colors flex items-center gap-1">
+                            See All <span className="text-xs">→</span>
+                        </button>
+                    )}
+                </div>
+            )}
 
             {isScroll ? (
                 <div className="relative group/scroll max-w-7xl mx-auto">
@@ -127,15 +113,21 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                             WebkitMaskImage: 'linear-gradient(to right, black 85%, transparent 100%)'
                         }}
                     >
-                        {displayedPackages.map((pkg) => (
-                            <div key={`${pkg.name}-${pkg.source}`} className="snap-start flex-shrink-0 w-[280px]">
-                                <PackageCard
-                                    pkg={pkg}
-                                    onClick={() => onSelectPackage(pkg)}
-                                    chaoticInfo={chaoticInfoMap.get(pkg.name)}
-                                />
-                            </div>
-                        ))}
+                        {visibleIds.map((id) => {
+                            const pkg = packageRegistry[id];
+                            return (
+                                <div key={id} className="snap-start flex-shrink-0 w-[280px]">
+                                    <PackageCard
+                                        pkgId={id}
+                                        onClick={(p) => onSelectPackage(p)}
+
+                                        setupRequired={pkg ? isOnlyChaoticSource(pkg) && !chaoticEnabled : false}
+                                        onConfigureSource={onOpenSettings}
+                                        skipMetadataFetch={!!pkg?.icon}
+                                    />
+                                </div>
+                            );
+                        })}
                         {showSeeAll && (
                             <div className="snap-start flex-shrink-0 w-[280px] flex">
                                 <button
@@ -152,18 +144,21 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                     </div>
                 </div>
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 max-w-7xl mx-auto w-full">
-                    {displayedPackages.map((pkg) => (
-                        <PackageCard
-                            key={`${pkg.name}-${pkg.source}`}
-                            pkg={pkg}
-                            onClick={() => onSelectPackage(pkg)}
-                            chaoticInfo={chaoticInfoMap.get(pkg.name)}
-                        />
-                    ))}
-                    {/* For Grid, we can add a card if space permits or just rely on the header button. 
-                        Header button is cleaner for grid. But let's add a card if it fits the grid pattern? 
-                        7 items + 1 See All = 8 items (perfect 4x2 grid). */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-7xl mx-auto w-full">
+                    {visibleIds.map((id) => {
+                        const pkg = packageRegistry[id];
+                        return (
+                            <PackageCard
+                                key={id}
+                                pkgId={id}
+                                onClick={(p) => onSelectPackage(p)}
+
+                                setupRequired={pkg ? isOnlyChaoticSource(pkg) && !chaoticEnabled : false}
+                                onConfigureSource={onOpenSettings}
+                                skipMetadataFetch={!!pkg?.icon}
+                            />
+                        );
+                    })}
                     {showSeeAll && (
                         <button
                             onClick={onSeeAll}

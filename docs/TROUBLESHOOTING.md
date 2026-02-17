@@ -1,6 +1,7 @@
 # Troubleshooting Guide 🛟
 
-**Current Version:** v0.4.0-alpha
+**Current Version:** v0.4.6-alpha  
+**Last updated:** 2026-02-14
 
 Common issues users encounter when using MonARCH Store.
 
@@ -8,6 +9,21 @@ Common issues users encounter when using MonARCH Store.
 > **MonARCH Store is in ALPHA.** Installation and update operations are experimental. If you encounter persistent failures, please use the standard terminal tools (`pacman`, `yay`, etc.) and report the issue.
 
 **Install/Update not working or password prompts:** See [Developer Guide](DEVELOPER.md) for architecture details.
+
+## 🦎 Chaotic-AUR not showing / "Configure Source" or "Setup Required"
+
+**Symptom:** Some packages show "Setup Required" or "Configure Source" instead of Install; Chaotic-AUR packages don't appear in search.
+
+**Cause:** Chaotic-AUR is not enabled on your system. MonARCH never edits `/etc/pacman.conf` for you—you must add the repo block yourself after we install the keyring and mirrorlist.
+
+**Fix:**
+1. Go to **Settings → Sources**.
+2. If Chaotic-AUR shows **Inactive**, turn the toggle on and click **Install Keys & Mirrors** (MonARCH installs the keyring and mirrorlist).
+3. In the "Final Step" modal, **copy the repo block** and add it to `/etc/pacman.conf` (e.g. at the end of the file).
+4. Click **Check Again** in the modal; when status is **Active**, close the modal.
+5. If you're on **Manjaro**, Chaotic-AUR is intentionally blocked (glibc mismatch); use official or AUR sources instead.
+
+See [User Guide → Sources](../USER_GUIDE.md) and [FAQ → How do I enable Chaotic-AUR?](../FAQ.md).
 
 ## 📦 Install or Update does nothing / fails silently (v0.3.6 fix)
 
@@ -76,6 +92,19 @@ Common issues users encounter when using MonARCH Store.
     ```bash
     sudo rm /var/lib/pacman/db.lck
     ```
+
+## ⏳ Install or Uninstall seems to freeze (e.g. OBS)
+
+**Symptom:** Clicking Install or Uninstall on a large app (e.g. OBS, Steam, Calibre) shows progress then the window or system appears to freeze for 1–2 minutes.
+
+**Cause:** Pacman runs each package’s install/uninstall scriptlets (e.g. `post_install`, `post_remove`) **synchronously** during the transaction. Apps with many dependencies run many scriptlets in sequence; if a scriptlet is slow or the system is under load, the whole operation blocks until it finishes. The GUI is waiting for the helper to exit, so it looks frozen.
+
+**What we do:** The app shows a message during install and uninstall: *"Large apps may take 1–2 minutes while install/uninstall scripts run. Please wait."* The helper emits progress text so the log shows *"Installing packages and running install scripts (large apps may take 1–2 minutes)…"* or *"Removing packages and running uninstall scripts (large apps like OBS may take 1–2 minutes)…"*.
+
+**What you can do:**
+1. **Wait** — Give it 2–3 minutes. Do not force-quit the app or kill the helper; that can leave the database in a bad state.
+2. **Use the terminal** if you prefer to see script output: `sudo pacman -S obs-studio` (install) or `sudo pacman -Rns obs-studio` (uninstall). You’ll see each step and can confirm it’s working.
+3. If it never completes, check whether another pacman process is running (`ps aux | grep pacman`) or the system is out of disk/memory.
 
 ## ⚠️ "Target not found" (Multi-Repo)
 
@@ -168,6 +197,30 @@ sudo reflector --latest 5 --sort rate --save /etc/pacman.d/mirrorlist
 *(Requires `reflector` package)*
 
 ## 🔨 Build / Development
+
+### Cargo fails: "unknown proxy name: 'Cursor-2.4.28-...'"
+
+**Symptom:** `cargo check` or `npm run tauri dev` fails with:
+```text
+error: unknown proxy name: 'Cursor-2.4.28-x86_64_...'; valid proxy names are 'rustc', 'rustdoc', 'cargo', ...
+```
+
+**Cause:** When you run Cargo from **Cursor IDE** (or a terminal launched by it), Cursor can set the `CARGO` or `RUSTC` environment variable to a Cursor-specific path. Rustup treats the *invoker name* as a "proxy" (e.g. `cargo`, `rustc`). If that name is not in its list, it errors. So Cursor’s value is being passed through and rustup sees it as an invalid proxy name.
+
+**Fix:**
+1. **Unset and run:** In a terminal (inside or outside Cursor), run:
+   ```bash
+   unset CARGO RUSTC
+   npm run tauri dev
+   ```
+   Or for a one-off check: `env -u CARGO -u RUSTC cargo check -p monarch-gui` from `src-tauri/`.
+2. **Use the project script:** `./scripts/cargo-check.sh` unsets `CARGO`/`RUSTC` and puts `~/.cargo/bin` first in PATH so the real `cargo` is used.
+3. **Persist for Cursor:** If you always use Cursor’s integrated terminal, add to your shell profile (e.g. `~/.bashrc` or `~/.zshrc`):
+   ```bash
+   # So Cursor doesn’t break rustup when running cargo
+   unset CARGO RUSTC
+   ```
+   Or ensure Cursor isn’t setting `CARGO`/`RUSTC` for the terminal (check Cursor/IDE settings for env overrides).
 
 ### Build stalls at 711/714 crates (Cargo deadlock)
 

@@ -1,6 +1,8 @@
 # AGENTS.md - MonARCH Store
 
-**Last updated:** 2026-02-01 (v0.3.6-alpha)
+**Last updated:** 2026-02-08 (v0.4.5-alpha)
+
+For architectural invariants (Iron Laws), UI/UX standards (Liquid UI), and forbidden patterns, see **`.cursorrules`**.
 
 ## Build Commands
 
@@ -33,16 +35,21 @@
 ## Architecture
 - **Frontend**: React 19 + TypeScript + Tailwind CSS 4 + Vite 7 + Zustand (state).
 - **Backend (GUI)**: `src-tauri/monarch-gui/`. Runs as **USER**. Read-only ALPM, config, AUR builds, IPC to Helper.
-- **Backend (Helper)**: `src-tauri/monarch-helper/`. Runs as **ROOT** (Polkit/pkexec). v0.3.6 introduces **The Iron Core** (`SafeUpdateTransaction.rs`).
-- **Host-Adaptive (v0.4.0)**: Use ALPM to discover system state instead of managing private repo configs.
+- **Backend (Helper)**: `src-tauri/monarch-helper/`. Runs as **ROOT** (Polkit/pkexec). v0.3.6 introduced **The Iron Core** (`SafeUpdateTransaction.rs`).
+- **Host-Adaptive (v0.4.0)**: Repos are **discovered** from system `/etc/pacman.conf` (we do **not** inject or write to pacman.conf). `repo_manager.rs` calls `alpm_read::register_syncdbs_from_conf` so Manjaro, Garuda, Chaotic-AUR, CachyOS, etc. appear when present in the system config.
+- **Iron Core Purge (v0.4.6)**: Metadata hydration offloaded to backend. Frontend is a **Dumb View** relying on `bindings.ts`.
+- **Distro-aware:** Garuda and CachyOS ship Chaotic-AUR (Native); Manjaro must not enable Chaotic-AUR (glibc mismatch). Detection via `/etc/os-release`; capabilities in `distro_context.rs`. We also treat **`ID=archlinux`** as Arch and parse **`ID_LIKE`**: if it contains `arch` (e.g. ArcoLinux, Archcraft), the distro gets Arch-like capabilities (Unlocked, Chaotic Allowed).
 - **The Chameleon (v0.3.6)**: Native desktop integration via **XDG Portals**.
+- **CI/Release (v0.4.0)**: Release workflow runs in Docker (`ghcr.io/cpg716/monarch-store-builder`). Builder image includes `ca-certificates`, libalpm, Node 20, Rust. Release body is **dynamic**: a "Prepare release body" step extracts the section for the pushed tag from `RELEASE_NOTES.md` and passes it to the Tauri action; if no section matches, a short fallback is used.
 
 ### Settings page
-- **Repositories**: In v0.4.0+, Repositories are discovered from `/etc/pacman.conf`. The UI shows what the system has enabled. Toggling `chaotic-aur` writes a drop-in file to `/etc/pacman.d/monarch/`. Auto-block on Manjaro.
+- **Repositories**: Discovered from system pacman.conf (no injection). The UI shows what the system has enabled. Toggling `chaotic-aur` may use a drop-in under `/etc/pacman.d/monarch/` where supported. Chaotic-AUR is **blocked** on Manjaro; **native** on Garuda/CachyOS.
+- **Chaotic-AUR safe toggle (Operation Chaotic Good):** We do **not** edit `/etc/pacman.conf`. `check_chaotic_status` / `prepare_chaotic_components` (Helper installs keyring + mirrorlist); Settings SourcesTab shows Active/Inactive/Blocked and "Final Step" modal (pacman.conf snippet, Copy, Check Again). Onboarding wizard includes conditional Chaotic-AUR step. Package cards/details: when only source is Chaotic-AUR and not enabled, show "Configure Source" (useChaoticStatus, opens Settings). See `docs/RECENT_CHANGES.md`.
 
 ## Repo behavior (Host-Adaptive)
-- **Onboarding:** We detect enabled repos (CachyOS, Garuda, etc) automatically using ALPM.
-- **Toggling:** We only manage `chaotic-aur` explicitly. Other repos are read-only in the UI (must be changed in `pacman.conf` by user).
+- **Discovery:** `RepoManager::new()` registers syncdbs from `/etc/pacman.conf` (and Includes) via `alpm_read::register_syncdbs_from_conf`, so all system repos (core, extra, manjaro, chaotic-aur, garuda, cachyos, etc.) are in the list.
+- **Search:** When Chaotic-AUR is enabled, search includes Chaotic packages (from Chaotic API) in addition to repo cache, AUR, and Flatpak.
+- **Toggling:** We only manage `chaotic-aur` explicitly in the UI. Other repos are read-only (user edits pacman.conf).
 
 ## Code Style
 - Strict TypeScript (`strict: true`, `noUnusedLocals`, `noUnusedParameters`)
@@ -61,6 +68,10 @@
 ## Critical Package Management Rules
 - **NEVER run `pacman -Sy` separately from `-Syu`** - causes partial upgrades
 - **The Iron Core (v0.3.6)**: All sync-related transactions MUST use `SafeUpdateTransaction`. It enforces `db.lck` checks and manual full upgrade logic to prevent partial upgrades.
+- **Iron Core Purge (v0.4.6)**: The backend is the **single source of truth** for all package ViewModels. Do not implement metadata parsing, icon guessing, or size calculation in the frontend. All components must rely on the hydrated `Package` struct from `bindings.ts`.
+- **IgnorePkg**: In `monarch-helper`, the question callback must set `InstallIgnorepkg` to **skip** (e.g. `q.set_install(false)`) so the host's `IgnorePkg`/`IgnoreGroup` are respected—never override them.
+- **Update-before-install**: When installing a repo package, the GUI runs a full system upgrade (ExecuteBatch with `update_system: true`, `refresh_db: true`) **before** installing the target; do not install then upgrade.
+- **No auto full upgrade on download fail**: If an install fails due to stale DB (e.g. 404), the GUI must **not** silently trigger a full system upgrade. Emit `failed_update_required` and return an error so the user can explicitly confirm a system upgrade.
 - Error classification: **Helper** `alpm_errors.rs` (classify + self-heal), **GUI** `error_classifier.rs`, **Frontend** `src/utils/friendlyError.ts`.
 - **AUR**: Build in GUI (unprivileged `makepkg`). Copy built `.pkg.tar.zst` to `/tmp/monarch-install/`, then Helper `AlpmInstallFiles`. Never run makepkg in Helper. AUR build failures (e.g. "unknown error"): run `scripts/monarch-permission-sanitizer.sh` (see [TROUBLESHOOTING](docs/TROUBLESHOOTING.md)).
 - **Error reporting:** `ErrorContext` / `getErrorService()` used app-wide; no `console.error` in critical paths.
@@ -76,5 +87,8 @@
 - **Rule 1:** `monarch-helper` is the **only** binary allowed to write to `/var/lib/pacman` (and to run ALPM transactions). The GUI never runs pacman/ALPM for install/update/remove/sync; it only invokes the Helper (Polkit/pkexec).
 - **Rule 2:** The GUI handles AUR building in **user space** (unprivileged `makepkg`), then hands off built `.pkg.tar.zst` files to the Helper via `AlpmInstallFiles` (paths under `/tmp/monarch-install/`). Never run makepkg as root.
 - **Rule 3:** No `sudo` in the GUI for package operations. Use **pkexec** (Polkit) via the Helper only. Repair/keyring scripts may use `run_privileged` (pkexec or sudo -S when user provided password) for bootstrap/fix-keys; that is separate from the store’s install/update path.
+
+### Auth: One-Click (branded) vs Polkit
+- **`invoke_helper(app, cmd, password, use_branded_auth)`:** When **Reduce password prompts** is on, the backend passes `use_branded_auth = true` and the app’s session password; the Helper is run with **`sudo -S`** (branded prompt, one prompt per session). When off, `use_branded_auth = false` and `password` is ignored; the Helper is always run with **`pkexec`** (Polkit) so advanced users get the system auth dialog every time. All privileged commands (install, uninstall, sync, repair, chaotic, clear cache, unlock, cancel_install, apply_os_config) get `one_click` from `RepoManager::is_one_click_enabled().await` and pass it as the fourth argument. See `docs/RECENT_CHANGES.md` §8 and `docs/STARTUP_AND_PERMISSIONS_REVIEW.md`.
 
 **GUI ALPM use:** The GUI uses ALPM only for **read-only** queries in `alpm_read.rs` (search, get package, get installed, get_packages_batch). Each call creates a **short-lived** `Alpm` handle (e.g. `Alpm::new("/", "/var/lib/pacman")`), uses it, and drops it before returning—**no** `Arc<Mutex<Alpm>>` or long-lived ALPM in Tauri state. So the GUI never holds an ALPM handle **across** an `invoke_helper` call. **Caveat:** If a search (or other ALPM read) is running in `spawn_blocking` and the user triggers install at the same time, the Helper may block on `db.lck` until the read completes. This is acceptable; no code change required unless lock contention is observed in practice.

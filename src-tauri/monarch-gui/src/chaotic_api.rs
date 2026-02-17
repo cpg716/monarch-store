@@ -1,11 +1,12 @@
 use moka::future::Cache;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::time::Duration;
 
 const BASE_URL: &str = "https://chaotic-backend.garudalinux.org";
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct ChaoticPackage {
     pub id: Option<u64>,
     pub pkgname: String,
@@ -18,7 +19,7 @@ pub struct ChaoticPackage {
     pub provides: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct ChaoticMetadata {
     pub url: Option<String>,
     pub desc: Option<String>,
@@ -28,13 +29,13 @@ pub struct ChaoticMetadata {
     pub build_date: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct TrendingPackage {
     pub pkgbase_pkgname: String,
     pub count: String, // API returns count as string based on observation
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct InfraStats {
     pub builders: u32,
     pub users: u32,
@@ -242,23 +243,6 @@ impl ChaoticApiClient {
         None
     }
 
-    /// Look up multiple packages by name in one go (uses cached full list).
-    pub async fn get_packages_by_names(
-        &self,
-        names: &[String],
-    ) -> Result<std::collections::HashMap<String, ChaoticPackage>, String> {
-        let packages = self.fetch_packages().await?;
-        let name_set: std::collections::HashSet<&str> =
-            names.iter().map(String::as_str).collect();
-        let mut out = std::collections::HashMap::new();
-        for pkg in packages.iter() {
-            if name_set.contains(pkg.pkgname.as_str()) {
-                out.insert(pkg.pkgname.clone(), pkg.clone());
-            }
-        }
-        Ok(out)
-    }
-
     pub async fn fetch_trending(&self) -> Result<Vec<TrendingPackage>, String> {
         // Cache check
         if let Some(cached) = self.trending_cache.get("top_25").await {
@@ -307,23 +291,14 @@ impl ChaoticApiClient {
         let (builders_resp, users_resp) =
             tokio::try_join!(builders_future, users_future).map_err(|e| e.to_string())?;
 
-        let builders: u32 = builders_resp.json().await.map_err(|e| e.to_string())?;
+        // Parse builders - could be a plain number or wrapped in JSON
+        let builders_val: serde_json::Value =
+            builders_resp.json().await.map_err(|e| e.to_string())?;
+        let builders = builders_val.as_u64().unwrap_or(0) as u32;
 
-        // Users endpoint might be a bit more complex, let's assume it returns a simple JSON for now as implied by the logs.
-        // If it's a list, we might need to count it. The log said "Users Metrics (30 Days)", likely a JSON.
-        // Based on the pattern, let's assume it returns a number or a struct we need to parse.
-        // Wait, the previous tool viewed this: "https://chaotic-backend.garudalinux.org/metrics/30d/users"
-        // I don't see the exact snippet for users. I'll assume it returns a number for now, or handle it as serde_json::Value to be safe.
-        // Actually, let's play it safe and use serde_json::Value for users and try to extract a count or similar.
-        // Or better, let's stick to simple u32 and if it fails I'll fix it. The endpoint "amount" suggests a number.
-        // "metrics/30d/users" sounds like it could be a list or a count.
-        // Let's inspect the `viewed_code_item` again... it just says it was identified.
-        // I'll implementation a temporary specialized struct or just `serde_json::Value` for users to inspect.
-        // Correction: I should just use `serde_json::Value` for users to be safe.
-
+        // Parse users - could be a number, object, or array
         let users_val: serde_json::Value = users_resp.json().await.map_err(|e| e.to_string())?;
-        let users = users_val.as_u64().unwrap_or(0) as u32; // Try as number
-                                                            // If it's an object/array, this will be 0, which is fine for V1.
+        let users = users_val.as_u64().unwrap_or(0) as u32;
 
         let stats = InfraStats { builders, users };
         self.infra_cache

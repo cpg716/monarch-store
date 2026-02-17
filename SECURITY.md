@@ -1,6 +1,7 @@
 # Security Policy
 
-**Current Version:** v0.4.0-alpha
+**Current Version:** v0.4.6-alpha  
+**Last updated:** 2026-02-14
 
 ## Supported Versions
 
@@ -33,7 +34,7 @@ Examples of vulnerabilities we are interested in:
 - Repo Database Spoofing
 - Arbitrary Code Execution during installation (privileged operations go through monarch-helper; command is passed via temp file)
 
-**Current architecture:** Privileged operations use **monarch-helper** (invoked via `pkexec`); the GUI writes the JSON command to a temp file and passes only the file path. v0.3.6 introduced **The Iron Core** (`SafeUpdateTransaction`) to guarantee atomic operations even on unstable connections. See [Architecture](ARCHITECTURE.md).
+**Current architecture:** Privileged operations use **monarch-helper** (invoked via `pkexec`); the GUI writes the JSON command to a temp file and passes only the file path. v0.3.6 introduced **The Iron Core** (`SafeUpdateTransaction`) to guarantee atomic operations. The helper **respects host `IgnorePkg`/`IgnoreGroup`** (no override); install flow uses update-before-install and does not silently trigger a full system upgrade on download failure. See [Architecture](ARCHITECTURE.md).
 
 **Full audit:** For the latest security details, see [Architecture](ARCHITECTURE.md).
 
@@ -53,6 +54,8 @@ Import is performed only after **user-initiated** actions (e.g. “Initialize Ke
 ### Privileged Settings Actions (System Config Writes)
 
 The following Settings features perform **privileged, user-initiated** writes to system configuration files. They are not silent; the user must explicitly trigger them.
+
+**Chaotic-AUR safe toggle:** MonARCH does **not** write to `/etc/pacman.conf` for Chaotic-AUR. The "Install Keys & Mirrors" action runs `prepare_chaotic_components` (Helper installs keyring and mirrorlist via `pacman -U --noconfirm` only). The user must add the repo block to pacman.conf manually; we show a "Final Step" modal with the snippet.
 
 | Action | File(s) Modified | Purpose |
 |--------|------------------|---------|

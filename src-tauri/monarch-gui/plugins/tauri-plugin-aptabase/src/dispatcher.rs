@@ -115,7 +115,7 @@ impl EventDispatcher {
                 },
                 Err(err) => {
                     failed_items.extend(events_to_send);
-                    debug!("failed to track_event: {}", err.to_string());
+                    debug!("failed to track_event: {}", err);
                 }
             }
         }

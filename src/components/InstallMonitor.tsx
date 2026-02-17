@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Terminal, CheckCircle2, XCircle, Loader2, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw, ChevronUp, Trash2, Download, Package as PackageIcon, Sparkles, Unlock, Key, HardDrive, Wifi } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { commands } from '../services/bindings';
+import { unwrap } from '../utils/specta';
 import { listen } from '@tauri-apps/api/event';
 import { clsx } from 'clsx';
 import { friendlyError } from '../utils/friendlyError';
@@ -11,13 +12,29 @@ import { useSessionPassword } from '../context/useSessionPassword';
 import { useErrorService } from '../context/ErrorContext';
 import { useToast } from '../context/ToastContext';
 
-import { PackageSource } from '../types/alpm';
+import { PackageSource } from '../services/bindings';
+
+
+interface AlpmProgressEvent {
+    event_type: string;
+    package?: string;
+    percent?: number;
+    message: string;
+}
 
 interface InstallMonitorProps {
-    pkg: { name: string; source: PackageSource; repoName?: string; } | null;
+    pkg: { name: string; source: PackageSource; repoName?: string; displayName?: string; } | null;
     onClose: () => void;
     mode?: 'install' | 'uninstall';
     onSuccess?: () => void;
+}
+
+/** Human-readable app name for header and success (e.g. "obs-studio" → "Obs Studio"). */
+function appDisplayName(pkg: NonNullable<InstallMonitorProps['pkg']>): string {
+    if (pkg.displayName?.trim()) return pkg.displayName.trim();
+    return pkg.name
+        .replace(/[-_]/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // Matches the Rust AlpmClassifiedError (helper) and GUI error_classifier
@@ -30,6 +47,15 @@ interface ClassifiedError {
     raw_message: string;
 }
 
+// §7.3: Store timestamp when line is appended, not at render time
+interface LogEntry {
+    text: string;
+    ts: number;
+}
+function logEntry(text: string): LogEntry {
+    return { text, ts: Date.now() };
+}
+
 export default function InstallMonitor({ pkg, onClose, mode = 'install', onSuccess }: InstallMonitorProps) {
     const { requestSessionPassword } = useSessionPassword();
     const errorService = useErrorService();
@@ -38,7 +64,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     const [status, setStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
 
-    const [logs, setLogs] = useState<string[]>([]);
+    const [logs, setLogs] = useState<LogEntry[]>([]);
     const [visualProgress, setVisualProgress] = useState(0);
     const [targetProgress, setTargetProgress] = useState(0);
     const [minimized, setMinimized] = useState(false);
@@ -47,11 +73,11 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const logsEndRef = useRef<HTMLDivElement>(null);
     const actionStartedForRef = useRef<string | null>(null);
     const silentDbRepairAttemptedRef = useRef(false);
-    const logsRef = useRef<string[]>([]);
+    const logsRef = useRef<LogEntry[]>([]);
     const autoUnlockAttemptedRef = useRef(false);
     const [commandPreview, setCommandPreview] = useState<string>('');
     // Throttle log updates to prevent freeze when hundreds of progress events arrive
-    const logBufferRef = useRef<string[]>([]);
+    const logBufferRef = useRef<LogEntry[]>([]);
     const logFlushScheduledRef = useRef(false);
     const LOG_CAP = 2000;
     const flushLogBufferRef = useRef<() => void>(() => { });
@@ -69,7 +95,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         });
     };
     const appendLogThrottled = (message: string) => {
-        logBufferRef.current.push(message);
+        logBufferRef.current.push(logEntry(message));
         if (!logFlushScheduledRef.current) {
             logFlushScheduledRef.current = true;
             setTimeout(() => flushLogBufferRef.current(), 180);
@@ -104,10 +130,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     // Sync verbose preference to storage (for Settings "Show Detailed Transaction Logs")
     useEffect(() => {
         if (showLogs) {
-            localStorage.setItem('monarch_verbose_logs', 'true');
             useAppStore.getState().verboseLogsEnabled !== true && useAppStore.getState().setVerboseLogsEnabled?.(true);
-        } else {
-            localStorage.removeItem('monarch_verbose_logs');
         }
         logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [logs, minimized, showLogs]);
@@ -115,7 +138,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const [detailedStatus, setDetailedStatus] = useState<string>('');
 
     const copyLogsToClipboard = async () => {
-        const content = logsRef.current.join('\n');
+        const content = logsRef.current.map((e) => `[${new Date(e.ts).toLocaleTimeString()}] ${e.text}`).join('\n');
         if (!content.trim()) {
             showToast('No logs available to copy.', 'info');
             return;
@@ -138,7 +161,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
         // ✅ NEW: Listen for structured ALPM progress events
         const unlistenAlpmProgress = listen('alpm-progress', (event: { payload: any }) => {
-            const evt = event.payload as import('../types/alpm').AlpmProgressEvent;
+            const evt = event.payload as AlpmProgressEvent;
 
             // Don't flood logs with every download_progress tick (status line already shows %); throttle and cap to prevent freeze
             if (evt.event_type !== 'download_progress') {
@@ -223,10 +246,22 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
         const unlistenRepair = listen('repair-log', (event: { payload: unknown }) => {
             if (typeof event.payload !== 'string') return;
-            setLogs((prev: string[]) => [...prev, event.payload as string]);
+            setLogs((prev) => [...prev, logEntry(event.payload as string)]);
         });
 
         const unlistenComplete = listen('install-complete', async (event: { payload: string }) => {
+            // §7.4: Handle failed_update_required in main listener (single place)
+            if (event.payload === 'failed_update_required') {
+                setStatus('error');
+                setUpdateRequired(true);
+                setDetailedStatus('System Update Required');
+                setLogs((prev) => [
+                    ...prev,
+                    logEntry('STOP: Package not found in current database.'),
+                    logEntry('This usually means your system is out of date.'),
+                ]);
+                return;
+            }
             if (event.payload === 'success') {
                 setStatus('success');
                 setTargetProgress(100);
@@ -237,26 +272,26 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             }
             // Failure: try silent self-heal (no error popup)
             const currentLogs = logsRef.current;
-            const hasCorruptDb = currentLogs.some((l: string) =>
-                l.includes('Unrecognized archive format') || l.includes('could not open database') || l.includes('Sync databases are corrupt')
+            const hasCorruptDb = currentLogs.some((l) =>
+                l.text.includes('Unrecognized archive format') || l.text.includes('could not open database') || l.text.includes('Sync databases are corrupt')
             );
-            const hasDbLocked = currentLogs.some((l: string) =>
-                l.includes('db.lck') || l.includes('Database Locked') || l.includes('ALPM_ERR_DB_WRITE') || l.includes('unable to lock database') || l.includes('could not remove') && l.includes('db.lck')
+            const hasDbLocked = currentLogs.some((l) =>
+                l.text.includes('db.lck') || l.text.includes('Database Locked') || l.text.includes('ALPM_ERR_DB_WRITE') || l.text.includes('unable to lock database') || (l.text.includes('could not remove') && l.text.includes('db.lck'))
             );
             if (event.payload !== 'success' && hasDbLocked && !autoUnlockAttemptedRef.current) {
                 autoUnlockAttemptedRef.current = true;
                 setDetailedStatus('Waiting for another update...');
-                setLogs(prev => [...prev, '\n--- Auto-unlocking database ---']);
+                setLogs(prev => [...prev, logEntry('\n--- Auto-unlocking database ---')]);
                 try {
                     const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-                    await invoke('repair_unlock_pacman', { password: pwd });
-                    setLogs(prev => [...prev, '✓ Database unlocked. Retrying...']);
+                    unwrap(await commands.repairUnlockPacman(pwd ?? null));
+                    setLogs(prev => [...prev, logEntry('✓ Database unlocked. Retrying...')]);
                     setTargetProgress(5);
                     setStatus('running');
                     actionStartedForRef.current = null;
                     handleAction();
                 } catch (e) {
-                    setLogs(prev => [...prev, `Unlock failed: ${e}`]);
+                    setLogs(prev => [...prev, logEntry(`Unlock failed: ${e}`)]);
                     setStatus('error');
                 }
                 return;
@@ -264,18 +299,18 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             if (event.payload !== 'success' && hasCorruptDb && !silentDbRepairAttemptedRef.current) {
                 silentDbRepairAttemptedRef.current = true;
                 setDetailedStatus('Repairing databases...');
-                setLogs(prev => [...prev, '\n--- Self-healing: Refreshing package databases ---']);
+                setLogs(prev => [...prev, logEntry('\n--- Self-healing: Refreshing package databases ---')]);
                 try {
                     const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-                    await invoke('force_refresh_databases', { password: pwd });
-                    setLogs(prev => [...prev, '✓ Databases refreshed. Retrying...']);
+                    unwrap(await commands.forceRefreshDatabases(pwd ?? null));
+                    setLogs(prev => [...prev, logEntry('✓ Databases refreshed. Retrying...')]);
                     setTargetProgress(5);
                     setStatus('running');
                     actionStartedForRef.current = null;
                     handleAction();
                 } catch (e) {
                     errorService.reportError(e as Error | string);
-                    setLogs(prev => [...prev, `Repair failed: ${e}`]);
+                    setLogs(prev => [...prev, logEntry(`Repair failed: ${e}`)]);
                     setStatus('error');
                 }
                 return;
@@ -301,42 +336,42 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     // Recovery action handlers
     const handleRecoveryAction = async (action: string) => {
         setIsRecovering(true);
-        setLogs(prev => [...prev, `\n--- RECOVERY: ${action.toUpperCase()} ---`]);
+        setLogs(prev => [...prev, logEntry(`\n--- RECOVERY: ${action.toUpperCase()} ---`)]);
 
         try {
             const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
             switch (action) {
                 case 'UnlockDatabase':
-                    setLogs(prev => [...prev, 'Checking for stale lock file...']);
-                    await invoke('repair_unlock_pacman', { password: pwd });
-                    setLogs(prev => [...prev, '✓ Database unlocked successfully']);
+                    setLogs(prev => [...prev, logEntry('Checking for stale lock file...')]);
+                    unwrap(await commands.repairUnlockPacman(pwd ?? null));
+                    setLogs(prev => [...prev, logEntry('✓ Database unlocked successfully')]);
                     break;
 
                 case 'RepairKeyring':
-                    setLogs(prev => [...prev, 'Resetting security keyring...', 'This may take a moment...']);
-                    await invoke('fix_keyring_issues', { password: pwd });
-                    setLogs(prev => [...prev, '✓ Keyring repaired successfully']);
+                    setLogs(prev => [...prev, logEntry('Resetting security keyring...'), logEntry('This may take a moment...')]);
+                    unwrap(await commands.fixKeyringIssues(pwd ?? null));
+                    setLogs(prev => [...prev, logEntry('✓ Keyring repaired successfully')]);
                     break;
 
                 case 'ForceRefreshDb':
                 case 'RefreshMirrors':
-                    setLogs(prev => [...prev, 'Forcing database refresh...']);
-                    await invoke('trigger_repo_sync', { forceRefresh: true });
-                    setLogs(prev => [...prev, '✓ Databases refreshed']);
+                    setLogs(prev => [...prev, logEntry('Forcing database refresh...')]);
+                    unwrap(await commands.triggerRepoSync(null));
+                    setLogs(prev => [...prev, logEntry('✓ Databases refreshed')]);
                     break;
 
                 case 'CleanCache':
-                    setLogs(prev => [...prev, 'Clearing package cache...']);
-                    await invoke('clear_cache', { keepVersions: 1 });
-                    setLogs(prev => [...prev, '✓ Cache cleared']);
+                    setLogs(prev => [...prev, logEntry('Clearing package cache...')]);
+                    unwrap(await commands.clearCache());
+                    setLogs(prev => [...prev, logEntry('✓ Cache cleared')]);
                     break;
 
                 default:
-                    setLogs(prev => [...prev, 'Preparing to retry...']);
+                    setLogs(prev => [...prev, logEntry('Preparing to retry...')]);
             }
 
             // Reset state and retry the operation
-            setLogs(prev => [...prev, '\n--- RETRYING OPERATION ---']);
+            setLogs(prev => [...prev, logEntry('\n--- RETRYING OPERATION ---')]);
             setClassifiedError(null);
             setStatus('running');
             setTargetProgress(5);
@@ -345,7 +380,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             await handleAction();
 
         } catch (e) {
-            setLogs(prev => [...prev, `Recovery failed: ${e}`]);
+            setLogs(prev => [...prev, logEntry(`Recovery failed: ${e}`)]);
             setStatus('error');
         } finally {
             setIsRecovering(false);
@@ -411,45 +446,38 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const handleAction = async () => {
         if (!pkg) return;
         setStatus('running');
-        setLogs([`Starting ${mode === 'uninstall' ? 'uninstallation' : 'installation'} engine...`, `Target: ${pkg.name} (${pkg.source.label || pkg.source.id})`]);
+        setLogs([logEntry(`Starting ${mode === 'uninstall' ? 'uninstallation' : 'installation'} engine...`), logEntry(`Target: ${pkg.name} (${pkg.source.label || pkg.source.id})`)]);
         setTargetProgress(5);
         setVisualProgress(0);
+
+        // §7.2: Set command preview before invoke so user sees what will run immediately
+        if (mode === 'uninstall') {
+            if (pkg.source.source_type === 'flatpak') {
+                setCommandPreview(`$ flatpak uninstall ${pkg.name} -y`);
+            } else {
+                setCommandPreview(`$ pacman -Rns --noconfirm ${pkg.name}`);
+            }
+        } else {
+            if (pkg.source.source_type === 'aur') {
+                setCommandPreview(`$ git clone https://aur.archlinux.org/${pkg.name}.git && makepkg -si`);
+            } else if (pkg.source.source_type === 'flatpak') {
+                setCommandPreview(`$ flatpak install flathub ${pkg.name} -y`);
+            } else {
+                setCommandPreview(`$ pacman -S --noconfirm ${pkg.name}`);
+            }
+        }
 
         try {
             const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
             if (mode === 'uninstall') {
-                await invoke('uninstall_package', {
-                    name: pkg.name,
-                    source: pkg.source,
-                    password: pwd
-                });
-
-                if (pkg.source.source_type === 'flatpak') {
-                    setCommandPreview(`$ flatpak uninstall ${pkg.name} -y`);
-                } else {
-                    setCommandPreview(`$ pacman -Rns --noconfirm ${pkg.name}`);
-                }
+                unwrap(await commands.uninstallPackage(pkg.name, pkg.source as any, pwd ?? null));
             } else {
-                await invoke('install_package', {
-                    name: pkg.name,
-                    source: pkg.source,
-                    password: pwd,
-                    repoName: pkg.repoName || null
-                });
-
-                // Set Command Preview
-                if (pkg.source.source_type === 'aur') {
-                    setCommandPreview(`$ git clone https://aur.archlinux.org/${pkg.name}.git && makepkg -si`);
-                } else if (pkg.source.source_type === 'flatpak') {
-                    setCommandPreview(`$ flatpak install flathub ${pkg.name} -y`);
-                } else {
-                    setCommandPreview(`$ pacman -S --noconfirm ${pkg.name}`);
-                }
+                unwrap(await commands.installPackage(pkg.name, pkg.source as any, pwd ?? null, pkg.repoName || null));
             }
             // The command is async spawned, completion comes via event
         } catch (e) {
             errorService.reportError(e as Error | string);
-            setLogs((prev: string[]) => [...prev, `Error launching: ${e}`]);
+            setLogs((prev) => [...prev, logEntry(`Error launching: ${e}`)]);
             setStatus('error');
         }
     };
@@ -465,35 +493,23 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     // Error Interceptor
     useEffect(() => {
-        if (status === 'error' && logs.some(l => l.includes('SystemUpdateRequired'))) {
-            // handled by handleAction catch block primarily, but checking logs is backup
+        if (status === 'error' && logs.some((l) => l.text.includes('SystemUpdateRequired'))) {
+            // handled by main install-complete listener (failed_update_required)
         }
     }, [status, logs]);
 
-    // Listener for specific failed_update_required event
-    useEffect(() => {
-        const unlistenUpdateReq = listen('install-complete', (event: { payload: string }) => {
-            if (event.payload === 'failed_update_required') {
-                setStatus('error');
-                setUpdateRequired(true);
-                setDetailedStatus("System Update Required");
-                setLogs(prev => [...prev, "STOP: Package not found in current database.", "This usually means your system is out of date."]);
-            }
-        });
-        return () => { unlistenUpdateReq.then(f => f()); };
-    }, []);
 
     // Retry after Repair (must be registered unconditionally; handleAction is defined earlier in this component)
     useEffect(() => {
         if (repairSuccess && autoRetryAttempted && status !== 'running' && status !== 'success') {
-            setLogs(prev => [...prev, '✓ System repaired. Retrying operation automatically...']);
+            setLogs(prev => [...prev, logEntry('✓ System repaired. Retrying operation automatically...')]);
             handleAction();
         }
     }, [repairSuccess, autoRetryAttempted]);
 
     if (!pkg) return null;
 
-    const errorDetails = status === 'error' && logs.length > 0 ? friendlyError(logs[logs.length - 1]) : null;
+    const errorDetails = status === 'error' && logs.length > 0 ? friendlyError(logs[logs.length - 1].text) : null;
 
     // STEPPER LOGIC
     const steps = [
@@ -517,9 +533,9 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             : status === 'success' ? `${mode === 'uninstall' ? 'Uninstallation' : 'Installation'} Complete`
                 : detailedStatus || (pkg.source.source_type === 'aur' ? 'Building App (This may take a while)...' : `${mode === 'uninstall' ? 'Uninstalling' : 'Installing'}...`);
 
-    // RENDER STEPPER
+    // RENDER STEPPER - clear progress for users, matches app semantic colors
     const renderStepper = () => (
-        <div className="flex items-center justify-between px-5 py-3 bg-app-bg/50 border-b border-app-border">
+        <div className="flex items-center justify-between px-5 py-4 bg-app-bg/40 border-b border-app-border">
             {steps.map((step, idx) => {
                 const isActive = currentStep === step.id;
                 const isCompleted = currentStep > step.id || status === 'success';
@@ -527,25 +543,24 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                 return (
                     <div key={step.id} className="flex flex-col items-center gap-2 relative z-10 w-20">
                         <div className={clsx(
-                            "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-500",
-                            isCompleted ? "bg-green-500 text-white" :
-                                isActive ? "bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.5)]" :
-                                    "bg-app-fg/10 text-app-muted"
+                            'w-9 h-9 rounded-full flex items-center justify-center transition-all duration-300',
+                            isCompleted ? 'bg-green-500/90 text-white' :
+                                isActive ? 'bg-app-accent text-white shadow-lg shadow-app-accent/25' :
+                                    'bg-app-fg/10 text-app-muted'
                         )}>
-                            {isCompleted ? <CheckCircle2 size={16} /> : <step.icon size={14} />}
+                            {isCompleted ? <CheckCircle2 size={18} /> : <step.icon size={16} />}
                         </div>
                         <span className={clsx(
-                            "text-[10px] font-bold uppercase tracking-wider transition-colors duration-300",
-                            (isActive || isCompleted) ? "text-app-fg" : "text-app-muted/50"
+                            'text-[10px] font-semibold uppercase tracking-wider transition-colors duration-300',
+                            (isActive || isCompleted) ? 'text-app-fg' : 'text-app-muted/60'
                         )}>
                             {step.label}
                         </span>
 
-                        {/* Connector Line */}
                         {idx < steps.length - 1 && (
-                            <div className="absolute top-4 left-[50%] w-[calc(100%+2rem)] h-[2px] bg-app-fg/5 -z-10">
+                            <div className="absolute top-[18px] left-[50%] w-[calc(100%+2rem)] h-0.5 bg-app-border -z-10">
                                 <div
-                                    className="h-full bg-green-500 transition-all duration-700"
+                                    className="h-full bg-green-500/80 transition-all duration-500 rounded-full"
                                     style={{ width: isCompleted ? '100%' : '0%' }}
                                 />
                             </div>
@@ -558,17 +573,17 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     if (minimized) {
         return (
-            <div className="fixed bottom-4 right-4 z-50 bg-app-card border border-app-border p-4 rounded-xl shadow-2xl flex items-center gap-4 w-80 animate-in slide-in-from-bottom-4 transition-colors">
-                <div className="bg-blue-500/20 p-2 rounded-lg text-blue-500 dark:text-blue-400">
+            <div className="fixed bottom-4 right-4 z-50 bg-app-card/95 backdrop-blur-xl border border-app-border p-4 rounded-2xl shadow-2xl flex items-center gap-4 w-80 animate-in slide-in-from-bottom-4 transition-colors">
+                <div className="bg-app-accent/20 p-2.5 rounded-xl text-app-accent">
                     <Loader2 size={20} className="animate-spin" />
                 </div>
-                <div className="flex-1">
-                    <div className="text-sm font-bold text-app-fg">{detailedStatus || `Installing ${pkg.name}`}</div>
+                <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-app-fg truncate">{detailedStatus || (mode === 'uninstall' ? `Uninstalling ${appDisplayName(pkg)}` : `Installing ${appDisplayName(pkg)}`)}</div>
                     <div className="w-full bg-app-fg/10 h-1.5 mt-2 rounded-full overflow-hidden">
-                        <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${visualProgress}%` }} />
+                        <div className="h-full bg-app-accent transition-all duration-300 rounded-full" style={{ width: `${visualProgress}%` }} />
                     </div>
                 </div>
-                <button onClick={() => setMinimized(false)} className="p-2 hover:bg-app-fg/10 rounded-lg text-app-muted" aria-label="Expand install window">
+                <button onClick={() => setMinimized(false)} className="p-2 hover:bg-app-hover rounded-xl text-app-muted transition-colors" aria-label="Expand install window">
                     <Maximize2 size={16} />
                 </button>
             </div>
@@ -576,14 +591,14 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     }
 
     // Heuristic Scan for Keyring Issues
-    const hasKeyringError = logs.some(l =>
-        l.includes("GPGME error") ||
-        l.includes("PGP signature") ||
-        l.includes("corrupted database") ||
-        l.includes("invalid or corrupted")
+    const hasKeyringError = logs.some((l) =>
+        l.text.includes('GPGME error') ||
+        l.text.includes('PGP signature') ||
+        l.text.includes('corrupted database') ||
+        l.text.includes('invalid or corrupted')
     );
 
-    const hasLockError = logs.some(l => l.includes("database is locked"));
+    const hasLockError = logs.some((l) => l.text.includes('database is locked'));
 
     // AUTO-HEAL LOGIC (DISABLED - Pillar 3: "Ask First" Rule)
     // We now rely on the UI button to trigger handleRepair, instead of doing it automatically.
@@ -600,11 +615,11 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         setAutoRetryAttempted(true); // Enable auto-retry after fix
         try {
             const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-            await invoke('repair_unlock_pacman', { password: pwd });
-            setLogs(prev => [...prev, '✓ Database unlocked.', 'Please try installing again.']);
+            unwrap(await commands.repairUnlockPacman(pwd ?? null));
+            setLogs(prev => [...prev, logEntry('✓ Database unlocked.'), logEntry('Please try installing again.')]);
             setRepairSuccess(true);
         } catch (e) {
-            setLogs(prev => [...prev, `Unlock Failed: ${e}`]);
+            setLogs(prev => [...prev, logEntry(`Unlock Failed: ${e}`)]);
         } finally {
             setIsRepairing(false);
         }
@@ -613,15 +628,15 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const handleRepair = async () => {
         setIsRepairing(true);
         setAutoRetryAttempted(true); // Enable auto-retry after fix
-        setLogs(prev => [...prev, '\n--- AUTO-HEALING: FIXING KEYRING ISSUES ---', 'The app detected a security key error.', 'Attempting to automatically repair trust database...', 'This will take a moment...']);
+        setLogs(prev => [...prev, logEntry('\n--- AUTO-HEALING: FIXING KEYRING ISSUES ---'), logEntry('The app detected a security key error.'), logEntry('Attempting to automatically repair trust database...'), logEntry('This will take a moment...')]);
         try {
             const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-            await invoke('repair_reset_keyring', { password: pwd });
-            setLogs(prev => [...prev, '✓ Keyring reset successfully.', '--- REPAIR COMPLETE ---']);
+            unwrap(await commands.repairResetKeyring(pwd ?? null));
+            setLogs(prev => [...prev, logEntry('✓ Keyring reset successfully.'), logEntry('--- REPAIR COMPLETE ---')]);
             setRepairSuccess(true);
         } catch (e) {
             errorService.reportError(e as Error | string);
-            setLogs(prev => [...prev, `Repair Failed: ${e}`]);
+            setLogs(prev => [...prev, logEntry(`Repair Failed: ${e}`)]);
         } finally {
             setIsRepairing(false);
         }
@@ -632,41 +647,57 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         setUpdateRequired(false);
         setStatus('running');
         setDetailedStatus('Updating System & Installing...');
-        setLogs([]); // Clear previous error logs
-        setLogs(prev => [...prev, '\n--- STARTING SYSTEM UPDATE ---', 'Syncing databases...', 'Performing full system upgrade (-Syu)...', 'This may take a while. Do not turn off your computer.']);
+        setLogs([
+            logEntry('\n--- STARTING SYSTEM UPDATE ---'),
+            logEntry('Syncing databases...'),
+            logEntry('Performing full system upgrade (-Syu)...'),
+            logEntry('This may take a while. Do not turn off your computer.'),
+        ]);
 
         try {
             const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-            await invoke('update_and_install_package', {
-                name: pkg.name,
-                repoName: pkg.repoName || null,
-                password: pwd
-            });
+            unwrap(await commands.updateAndInstallPackage(pkg.name, pkg.repoName || null, pwd ?? null));
             // Completion handled by event listener above
         } catch (e) {
-            setLogs(prev => [...prev, `Update Failed: ${e}`]);
+            setLogs(prev => [...prev, logEntry(`Update Failed: ${e}`)]);
             setStatus('error');
         }
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-app-bg/60 backdrop-blur-sm animate-in fade-in duration-200">
-            <div ref={focusTrapRef} className={clsx("w-full bg-app-card border border-app-border rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-colors", showLogs ? "max-w-2xl max-h-[85vh]" : "max-w-md max-h-[min(70vh,420px)]")} role="dialog" aria-modal="true" aria-labelledby="install-monitor-title">
-                {/* Header */}
-                <div className="px-5 py-4 border-b border-app-border flex items-center justify-between bg-app-fg/5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-app-bg/70 backdrop-blur-md animate-in fade-in duration-200">
+            <div ref={focusTrapRef} className={clsx("w-full bg-app-card/95 backdrop-blur-xl border border-app-border rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-all duration-200", showLogs ? "max-w-2xl max-h-[85vh]" : "max-w-md max-h-[min(88vh,580px)] min-h-[320px]")} role="dialog" aria-modal="true" aria-labelledby="install-monitor-title">
+                {/* Header - matches app card/sidebar styling */}
+                <div className="px-5 py-4 border-b border-app-border flex items-center justify-between bg-app-subtle/80">
                     <div className="flex items-center gap-3">
-                        <div className={clsx("w-10 h-10 rounded-full flex items-center justify-center",
-                            status === 'success' ? "bg-green-500/20 text-green-500" :
-                                (status === 'error' || updateRequired) ? "bg-red-500/20 text-red-500" :
-                                    "bg-blue-500/20 text-blue-500"
+                        <div className={clsx('w-11 h-11 rounded-xl flex items-center justify-center transition-colors',
+                            status === 'success' ? 'bg-green-500/20 text-green-500' :
+                                (status === 'error' || updateRequired) ? 'bg-red-500/20 text-red-500' :
+                                    'bg-app-accent/20 text-app-accent'
                         )}>
-                            {status === 'success' ? <CheckCircle2 size={20} /> :
-                                (status === 'error' || updateRequired) ? <XCircle size={20} /> :
-                                    <Terminal size={20} />}
+                            {status === 'success' ? <CheckCircle2 size={22} /> :
+                                (status === 'error' || updateRequired) ? <XCircle size={22} /> :
+                                    <Terminal size={22} />}
                         </div>
                         <div className="min-w-0">
                             <h2 id="install-monitor-title" className="text-lg font-bold text-app-fg truncate">
-                                {updateRequired ? "System Update Required" : displayStatus}
+                                {updateRequired
+                                    ? 'System Update Required'
+                                    : status === 'idle'
+                                        ? mode === 'uninstall'
+                                            ? `Uninstall ${appDisplayName(pkg)}`
+                                            : `Install ${appDisplayName(pkg)}`
+                                        : status === 'running'
+                                            ? mode === 'uninstall'
+                                                ? `Uninstalling ${appDisplayName(pkg)}`
+                                                : `Installing ${appDisplayName(pkg)}`
+                                            : status === 'success'
+                                                ? mode === 'uninstall'
+                                                    ? `${appDisplayName(pkg)} removed`
+                                                    : `${appDisplayName(pkg)} installed`
+                                                : status === 'error'
+                                                    ? 'Installation failed'
+                                                    : displayStatus}
                             </h2>
                             {status === 'error' && errorDetails && (
                                 <>
@@ -679,40 +710,41 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 </>
                             )}
                             {status !== 'error' && (
-                                <p className="text-app-muted text-sm">{pkg.source.label} Source</p>
+                                <p className="text-app-muted text-sm">{pkg.source.label} · {appDisplayName(pkg)}</p>
                             )}
                         </div>
                     </div>
-                        <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
                         <button
                             onClick={() => setShowLogs(!showLogs)}
                             className={clsx(
-                                "p-2 rounded-lg transition-colors border",
-                                showLogs ? "bg-app-fg/10 text-app-fg border-app-fg/10" : "text-app-muted hover:bg-app-fg/5 border-transparent"
+                                'p-2.5 rounded-xl transition-colors border',
+                                showLogs ? 'bg-app-accent/15 text-app-accent border-app-accent/30' : 'text-app-muted hover:bg-app-hover border-app-border hover:border-app-fg/20'
                             )}
-                            title={showLogs ? "Hide Logs" : "Show Transaction Logs"}
+                            title={showLogs ? 'Hide log' : 'View transaction log'}
                         >
                             <Terminal size={18} />
                         </button>
-                            <button
-                                onClick={copyLogsToClipboard}
-                                disabled={logs.length === 0}
-                                className={clsx(
-                                    "px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors",
-                                    logs.length === 0
-                                        ? "text-app-muted border-app-border/40 cursor-not-allowed opacity-60"
-                                        : "text-accent border-app-border hover:border-accent hover:opacity-80"
-                                )}
-                            >
-                                Copy Logs
-                            </button>
+                        <button
+                            onClick={copyLogsToClipboard}
+                            disabled={logs.length === 0}
+                            className={clsx(
+                                'px-3 py-2 rounded-xl text-xs font-semibold border transition-colors',
+                                logs.length === 0
+                                    ? 'text-app-muted border-app-border cursor-not-allowed opacity-60'
+                                    : 'text-app-accent border-app-border hover:bg-app-accent/10 hover:border-app-accent/40'
+                            )}
+                        >
+                            Copy log
+                        </button>
                         {status === 'running' && (
                             <>
                                 <button
                                     onClick={async () => {
                                         try {
-                                            await invoke('cancel_install');
-                                            setLogs(prev => [...prev, 'Installation cancelled.']);
+                                            unwrap(await commands.abortInstallation());
+                                            unwrap(await commands.cancelInstall());
+                                            setLogs(prev => [...prev, logEntry('Installation cancelled.')]);
                                             setStatus('error');
                                             setTimeout(() => onClose(), 800);
                                         } catch (e) {
@@ -737,8 +769,9 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                     );
                                     if (stop) {
                                         try {
-                                            await invoke('cancel_install');
-                                            setLogs(prev => [...prev, 'Installation cancelled.']);
+                                            unwrap(await commands.abortInstallation());
+                                            unwrap(await commands.cancelInstall());
+                                            setLogs(prev => [...prev, logEntry('Installation cancelled.')]);
                                             setStatus('error');
                                             setTimeout(() => onClose(), 800);
                                         } catch (e) {
@@ -749,7 +782,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 }
                                 onClose();
                             }}
-                            className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg text-app-muted transition-colors"
+                            className="p-2.5 hover:bg-app-hover hover:text-red-500 rounded-xl text-app-muted transition-colors"
                             aria-label="Close"
                         >
                             <XCircle size={20} />
@@ -757,11 +790,11 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     </div>
                 </div>
 
-                {/* Body */}
-                <div className="p-0 flex-1 overflow-hidden flex flex-col">
+                {/* Body: scrollable so success/Done and info are never cut off */}
+                <div className="p-0 flex-1 min-h-0 flex flex-col overflow-hidden">
                     {!minimized && status !== 'idle' && !updateRequired && renderStepper()}
                     {updateRequired ? (
-                        <div className="p-8 flex flex-col items-center justify-center space-y-6 animate-in slide-in-from-bottom-4">
+                        <div className="p-8 flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center space-y-6 animate-in slide-in-from-bottom-4">
                             <div className="w-16 h-16 bg-amber-500/20 rounded-full flex items-center justify-center mb-2">
                                 <RefreshCw size={32} className="text-amber-500" />
                             </div>
@@ -799,7 +832,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                             </div>
                         </div>
                     ) : status === 'idle' ? (
-                        <div className="p-8 flex flex-col items-center justify-center space-y-6">
+                        <div className="p-8 flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center space-y-6">
                             <div className="text-center space-y-2">
                                 <p className="text-app-fg font-bold text-lg">
                                     Authentication Required
@@ -842,17 +875,19 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                             </div>
                         </div>
                     ) : (
-                        <div className="flex-1 flex flex-col h-full bg-app-bg transition-colors">
+                        <div className="flex-1 min-h-0 flex flex-col overflow-y-auto bg-app-bg transition-colors">
                             {status === 'success' ? (
-                                <div className="px-5 py-5 flex flex-col items-center justify-center space-y-4 animate-in zoom-in-95 duration-500">
-                                    <div className="w-14 h-14 bg-green-500/20 rounded-full flex items-center justify-center shadow-lg shadow-green-500/10">
-                                        <CheckCircle2 size={28} className="text-green-500" />
+                                <div className="px-5 py-6 flex flex-col items-center justify-center space-y-5 animate-in zoom-in-95 duration-500">
+                                    <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center shadow-lg shadow-green-500/10">
+                                        <CheckCircle2 size={32} className="text-green-500" />
                                     </div>
-                                    <div className="text-center space-y-1">
-                                        <h3 className="text-xl font-bold text-app-fg">Success!</h3>
-                                        <p className="text-app-muted text-sm max-w-xs">
-                                            {pkg.name} has been successfully {mode === 'uninstall' ? 'removed' : 'installed'}.
+                                    <div className="text-center space-y-2">
+                                        <p className="text-app-muted text-sm">
+                                            {mode === 'uninstall' ? 'Successfully removed' : 'Successfully installed'}
                                         </p>
+                                        <div className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-app-fg/10 border border-app-border">
+                                            <span className="text-lg font-bold text-app-fg">{appDisplayName(pkg)}</span>
+                                        </div>
                                     </div>
 
                                     {mode !== 'uninstall' && (
@@ -869,37 +904,37 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                         </div>
                                     )}
 
-                                    <div className="w-full max-w-xs pt-2">
-                                        <div className="flex gap-2 w-full">
-                                            {mode !== 'uninstall' && (
-                                                <button
-                                                    onClick={() => {
-                                                        invoke('launch_app', { pkgName: pkg.name }).catch((e) => errorService.reportError(e as Error | string));
-                                                        onClose();
-                                                    }}
-                                                    className="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-green-500/20 active:scale-95 transition-all flex items-center justify-center gap-1.5 text-sm"
-                                                >
-                                                    <Play size={18} fill="currentColor" /> Launch Now
-                                                </button>
+                                    <div className="w-full max-w-xs space-y-3 pt-1">
+                                        <button
+                                            onClick={onClose}
+                                            className={clsx(
+                                                "w-full font-bold py-3.5 rounded-xl transition-all active:scale-[0.98] flex items-center justify-center gap-2 text-sm shadow-lg",
+                                                mode === 'uninstall'
+                                                    ? "bg-app-fg text-app-bg hover:brightness-110"
+                                                    : "bg-green-500 hover:bg-green-600 text-white shadow-green-500/20"
                                             )}
+                                        >
+                                            <CheckCircle2 size={18} />
+                                            Done
+                                        </button>
+                                        {mode !== 'uninstall' && (
                                             <button
-                                                onClick={onClose}
-                                                className={clsx(
-                                                    "font-bold py-3 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-1.5 text-sm",
-                                                    mode === 'uninstall'
-                                                        ? "flex-1 bg-app-fg text-app-bg hover:brightness-110 shadow-lg"
-                                                        : "px-5 text-app-muted hover:text-app-fg hover:bg-app-subtle"
-                                                )}
+                                                onClick={() => {
+                                                    commands.launchApp({ pkg_name: pkg.name }).then(unwrap).catch((e) => errorService.reportError(e as Error | string));
+                                                    onClose();
+                                                }}
+                                                className="w-full py-2.5 rounded-xl text-sm font-semibold text-app-fg hover:bg-app-hover border border-app-border transition-colors flex items-center justify-center gap-1.5"
                                             >
-                                                {mode === 'uninstall' ? 'Done' : 'Close'}
+                                                <Play size={16} fill="currentColor" />
+                                                Launch {appDisplayName(pkg)}
                                             </button>
-                                        </div>
+                                        )}
                                     </div>
                                 </div>
                             ) : (
                                 <>
-                                    {/* Progress Bar Area */}
-                                    <div className="bg-app-card px-5 py-4 border-b border-app-border">
+                                    {/* Progress Bar Area - clear status for users */}
+                                    <div className="bg-app-bg/30 px-5 py-5 border-b border-app-border">
                                         {/* ... existing logic for keyrings/locks ... */}
                                         {hasKeyringError && status === 'error' && !repairSuccess && !autoRetryAttempted && (
                                             <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-between animate-in slide-in-from-top-2">
@@ -955,73 +990,73 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                             </div>
                                         )}
 
-                                        <div className="flex justify-between text-sm text-app-muted mb-1">
-                                            <span>Status: {status === 'running' ? 'Working...' : status.toUpperCase()}</span>
-                                            <span>{Math.round(visualProgress)}%</span>
+                                        <div className="flex justify-between items-baseline text-sm mb-2">
+                                            <span className="font-medium text-app-fg">{displayStatus}</span>
+                                            <span className="text-app-muted tabular-nums">{Math.round(visualProgress)}%</span>
                                         </div>
                                         {pkg.source.source_type === 'aur' && status === 'running' && (detailedStatus.includes('Building') || detailedStatus.includes('Compiling') || detailedStatus.includes('Cloning') || detailedStatus.includes('Downloading Source') || (visualProgress >= 25 && visualProgress <= 85)) && (
-                                            <>
-                                                <div className="text-xs text-blue-400 font-bold animate-pulse mb-1">Building from source…</div>
-                                                <div className="text-[10px] text-app-muted mb-2">Large packages can take several minutes. You can cancel to skip the rest.</div>
-                                            </>
+                                            <p className="text-xs text-app-muted mb-2">Building from source — large packages can take several minutes.</p>
                                         )}
-                                        <div className="w-full bg-app-fg/10 h-2 rounded-full overflow-hidden">
-                                            {/* Progress Steps for AUR */}
+                                        {mode === 'uninstall' && status === 'running' && pkg.source.source_type !== 'flatpak' && (
+                                            <p className="text-xs text-app-muted mb-2">Large apps (e.g. OBS) may take 1–2 minutes while uninstall scripts run. Please wait.</p>
+                                        )}
+                                        {mode === 'install' && status === 'running' && pkg.source.source_type !== 'aur' && (visualProgress >= 45 && visualProgress <= 95) && (
+                                            <p className="text-xs text-app-muted mb-2">Large apps may take 1–2 minutes while install scripts run. Please wait.</p>
+                                        )}
+                                        <div className="w-full bg-app-fg/10 h-2.5 rounded-full overflow-hidden">
                                             {pkg.source.source_type === 'aur' && status === 'running' && (
-                                                <div className="flex justify-between text-[10px] text-app-muted mt-1 px-1">
-                                                    <span className={clsx(visualProgress > 10 && "text-blue-500 font-bold")}>Download</span>
-                                                    <span className={clsx(visualProgress > 30 && "text-blue-500 font-bold")}>Prepare</span>
-                                                    <span className={clsx(visualProgress > 50 && "text-blue-500 font-bold")}>Build</span>
-                                                    <span className={clsx(visualProgress > 90 && "text-blue-500 font-bold")}>Install</span>
+                                                <div className="flex justify-between text-[10px] text-app-muted mt-1.5 px-0.5">
+                                                    <span className={clsx(visualProgress > 10 && 'text-app-accent font-semibold')}>Download</span>
+                                                    <span className={clsx(visualProgress > 30 && 'text-app-accent font-semibold')}>Prepare</span>
+                                                    <span className={clsx(visualProgress > 50 && 'text-app-accent font-semibold')}>Build</span>
+                                                    <span className={clsx(visualProgress > 90 && 'text-app-accent font-semibold')}>Install</span>
                                                 </div>
                                             )}
                                             <div
-                                                className={clsx("h-full transition-all duration-150",
-                                                    (status as any) === 'success' ? "bg-green-500" :
-                                                        status === 'error' ? "bg-red-500" : "bg-blue-500 relative"
+                                                className={clsx('h-full transition-all duration-200 rounded-full',
+                                                    status === 'error' ? 'bg-red-500' : 'bg-app-accent relative'
                                                 )}
                                                 style={{ width: `${visualProgress}%` }}
                                             >
-                                                {status === 'running' && <div className="absolute inset-0 bg-white/20 animate-pulse" />}
+                                                {status === 'running' && <div className="absolute inset-0 bg-white/20 animate-pulse rounded-full" />}
                                             </div>
                                         </div>
                                     </div>
 
-                                    {/* Logs: compact by default; expand to view full log */}
+                                    {/* Advanced: expandable transaction log — out of the way by default */}
                                     <div className="flex justify-center mt-3 px-4">
                                         <button
                                             onClick={() => setShowLogs(!showLogs)}
-                                            className="text-xs text-app-muted hover:text-app-fg flex items-center gap-1.5 transition-colors py-2 px-3 rounded-lg hover:bg-app-fg/5"
+                                            className="text-xs font-medium text-app-muted hover:text-app-accent flex items-center gap-1.5 transition-colors py-2.5 px-4 rounded-xl hover:bg-app-hover border border-transparent hover:border-app-border"
                                             aria-expanded={showLogs}
                                         >
-                                            {showLogs ? <><ChevronUp size={14} /> Hide Logs</> : <><Terminal size={14} /> Show Details</>}
+                                            {showLogs ? <><ChevronUp size={14} /> Hide log</> : <><Terminal size={14} /> View transaction log</>}
                                         </button>
                                     </div>
 
-                                    {/* Logs Terminal — only when user expands; scrollable so you can copy full log */}
                                     {showLogs && (
-                                        <div className="flex flex-col min-h-[200px] max-h-[min(50vh,400px)] mt-2 mx-4 mb-4 rounded-lg border border-white/10 bg-black/20 overflow-hidden min-w-0 shrink-0">
-                                            <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 bg-app-fg/5 shrink-0">
-                                                <span className="text-xs font-medium text-app-muted">Transaction log</span>
+                                        <div className="flex flex-col min-h-[200px] max-h-[min(50vh,380px)] mt-3 mx-4 mb-4 rounded-xl border border-app-border bg-app-subtle overflow-hidden min-w-0 shrink-0 shadow-inner">
+                                            <div className="flex items-center justify-between px-4 py-2.5 border-b border-app-border bg-app-bg/50 shrink-0">
+                                                <span className="text-xs font-semibold text-app-fg">Transaction log</span>
                                                 <button
                                                     type="button"
                                                     onClick={() => setShowLogs(false)}
-                                                    className="text-app-muted hover:text-app-fg p-1.5 rounded hover:bg-app-fg/10 transition-colors"
+                                                    className="text-app-muted hover:text-app-fg p-2 rounded-lg hover:bg-app-hover transition-colors"
                                                     aria-label="Hide log"
                                                 >
-                                                    <ChevronUp size={16} />
+                                                    <ChevronUp size={18} />
                                                 </button>
                                             </div>
-                                            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto p-4 font-mono text-xs text-app-muted space-y-1 overscroll-contain">
+                                            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto p-4 font-mono text-xs text-app-muted space-y-1 overscroll-contain scroll-gpu">
                                                 {commandPreview && (
-                                                    <div className="mb-2 pb-2 border-b border-white/10 text-blue-400 font-bold">
+                                                    <div className="mb-3 pb-2 border-b border-app-border text-app-accent font-semibold">
                                                         {commandPreview}
                                                     </div>
                                                 )}
                                                 {logs.map((log, i) => (
-                                                    <div key={i} className="break-all whitespace-pre-wrap">
-                                                        <span className="text-app-muted opacity-50 mr-2">[{new Date().toLocaleTimeString()}]</span>
-                                                        {log}
+                                                    <div key={i} className="break-all whitespace-pre-wrap leading-relaxed">
+                                                        <span className="text-app-muted/70 mr-2 tabular-nums select-none">[{new Date(log.ts).toLocaleTimeString()}]</span>
+                                                        <span className="text-app-fg/90">{log.text}</span>
                                                     </div>
                                                 ))}
                                                 <div ref={logsEndRef} />
@@ -1034,12 +1069,11 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     )}
                 </div>
 
-                {/* Footer Actions - Enhanced with Smart Recovery */}
+                {/* Footer Actions - Smart Recovery */}
                 {(status === 'error' && !isRepairing && !updateRequired) && (
-                    <div className="p-4 bg-app-fg/5 border-t border-app-border">
-                        {/* Smart Recovery Card when we have a classified error */}
+                    <div className="p-4 bg-app-subtle/80 border-t border-app-border">
                         {classifiedError && (
-                            <div className="mb-4 p-4 bg-app-card rounded-xl border border-app-border">
+                            <div className="mb-4 p-4 bg-app-bg/50 rounded-xl border border-app-border">
                                 <div className="flex items-start gap-3 mb-3">
                                     <div className="p-2 bg-red-500/10 rounded-lg text-red-500">
                                         <XCircle size={20} />
@@ -1096,13 +1130,13 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                             <div className="flex justify-end gap-3">
                                 <button
                                     onClick={handleAction}
-                                    className="bg-app-accent hover:bg-app-accent/80 text-white px-6 py-2 rounded-lg font-medium transition-colors shadow-lg shadow-app-accent/20"
+                                    className="btn-accent px-6 py-2.5 rounded-xl font-semibold shadow-lg shadow-app-accent/20"
                                 >
                                     Retry
                                 </button>
                                 <button
                                     onClick={onClose}
-                                    className="bg-app-fg/10 hover:bg-app-fg/20 text-app-fg px-6 py-2 rounded-lg font-medium transition-colors"
+                                    className="bg-app-fg/10 hover:bg-app-hover text-app-fg px-6 py-2.5 rounded-xl font-medium transition-colors"
                                 >
                                     Close
                                 </button>

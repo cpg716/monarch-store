@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::fs;
 use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct LocalReview {
     pub app_id: String,
     pub rating: u32,
@@ -27,6 +28,7 @@ fn get_reviews_path(app: &AppHandle) -> PathBuf {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn submit_review(
     app: AppHandle,
     app_id: String,
@@ -63,6 +65,7 @@ pub async fn submit_review(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_local_reviews(app: AppHandle, app_id: String) -> Result<Vec<LocalReview>, String> {
     let path = get_reviews_path(&app);
     if !path.exists() {

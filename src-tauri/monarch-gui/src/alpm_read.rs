@@ -1,6 +1,7 @@
 use crate::models::{Package, PackageSource};
 use alpm::{Alpm, PackageReason, SigLevel};
 use std::path::Path;
+use std::process::Command;
 
 /// Collect all repository section names from pacman.conf and any Include'd files
 /// (e.g. /etc/pacman.d/monarch/*.conf) so core, extra, community, multilib are
@@ -79,7 +80,9 @@ fn glob_includes(pattern: &str) -> Vec<String> {
     out
 }
 
-fn register_syncdbs_from_conf(alpm: &Alpm, conf_path: &str) {
+/// Register all repo sections from system pacman.conf (and Include'd files).
+/// Call this before iterating syncdbs() so Manjaro, Garuda, Chaotic-AUR, CachyOS, etc. are discovered.
+pub fn register_syncdbs_from_conf(alpm: &Alpm, conf_path: &str) {
     let sections = collect_repo_sections_from_conf(conf_path);
     if sections.is_empty() {
         let _ = alpm.register_syncdb("core", SigLevel::PACKAGE_OPTIONAL);
@@ -93,30 +96,88 @@ fn register_syncdbs_from_conf(alpm: &Alpm, conf_path: &str) {
     }
 }
 
+/// Returns true if [chaotic-aur] is present in the loaded ALPM sync DBs (from pacman.conf).
+/// Used by check_chaotic_status to define "enabled" as ALPM-visible, not just file presence.
+pub fn chaotic_aur_in_syncdbs(conf_path: &str) -> bool {
+    let alpm = match Alpm::new("/", "/var/lib/pacman") {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    register_syncdbs_from_conf(&alpm, conf_path);
+    alpm.syncdbs()
+        .into_iter()
+        .any(|d| d.name() == "chaotic-aur")
+}
+
+pub fn vercmp_greater(v1: &str, v2: &str) -> bool {
+    alpm::vercmp(v1, v2) == std::cmp::Ordering::Greater
+}
 
 pub fn get_package_native(name: &str) -> Option<Package> {
     let alpm = Alpm::new("/", "/var/lib/pacman").ok()?;
 
-    // Register all repos (including from Include directives) and try sync DBs for real source
     register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
+    let installed_version = alpm
+        .localdb()
+        .pkg(name)
+        .ok()
+        .map(|p| p.version().to_string());
+    let distro = crate::distro_context::DistroContext::new();
+
+    // Prefer the syncdb whose package version matches the installed version (likely install origin)
+    let mut first: Option<(String, String, String, u64, u64)> = None;
     for db in alpm.syncdbs() {
         if let Ok(pkg) = db.pkg(name) {
-            let installed = alpm.localdb().pkg(name).is_ok();
-            return Some(Package {
-                name: pkg.name().to_string(),
-                version: pkg.version().to_string(),
-                description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-                source: PackageSource::from_repo_name(
-                    db.name(),
-                    pkg.version().as_str(),
-                    &crate::distro_context::DistroContext::new(),
-                ),
-                installed,
-                download_size: Some(pkg.download_size() as u64),
-                installed_size: Some(pkg.isize() as u64),
-                ..Default::default()
-            });
+            let version_matches = installed_version
+                .as_ref()
+                .map(|v| v == pkg.version().as_str())
+                .unwrap_or(false);
+            if version_matches {
+                let installed = alpm.localdb().pkg(name).is_ok();
+                return Some(Package {
+                    name: pkg.name().to_string(),
+                    version: pkg.version().to_string(),
+                    description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
+                    source: PackageSource::from_repo_name(
+                        db.name(),
+                        pkg.version().as_str(),
+                        &distro,
+                        &pkg.name(),
+                    ),
+                    installed,
+                    download_size: Some(pkg.download_size() as u64),
+                    installed_size: Some(pkg.isize() as u64),
+                    depends: Some(pkg.depends().iter().map(|d| d.to_string()).collect()),
+                    make_depends: Some(pkg.makedepends().iter().map(|d| d.to_string()).collect()),
+                    ..Default::default()
+                });
+            }
+            if first.is_none() {
+                first = Some((
+                    db.name().to_string(),
+                    pkg.version().to_string(),
+                    pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
+                    pkg.download_size() as u64,
+                    pkg.isize() as u64,
+                ));
+            }
         }
+    }
+    if let Some((db_name, version, description, download_size, isize)) = first {
+        let installed = alpm.localdb().pkg(name).is_ok();
+        return Some(Package {
+            name: name.to_string(),
+            version: version.clone(),
+            description,
+            source: PackageSource::from_repo_name(&db_name, &version, &distro, name),
+            installed,
+            download_size: Some(download_size),
+            installed_size: Some(isize),
+            depends: alpm.syncdbs().iter().find(|db| db.name() == db_name)
+                .and_then(|db| db.pkg(name).ok())
+                .map(|p| p.depends().iter().map(|d| d.to_string()).collect()),
+            ..Default::default()
+        });
     }
 
     // Installed but not in any sync DB (e.g. AUR-only): return localdb package; assume AUR
@@ -138,7 +199,10 @@ pub fn get_package_native(name: &str) -> Option<Package> {
 pub fn get_installed_packages_native() -> Vec<Package> {
     let alpm = match Alpm::new("/", "/var/lib/pacman") {
         Ok(a) => a,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            log::warn!("Alpm::new failed in get_installed_packages_native: {}", e);
+            return Vec::new(); // Caller handles empty by trying search_installed_packages_cli
+        }
     };
 
     alpm.localdb()
@@ -164,13 +228,32 @@ pub fn get_packages_batch(names: &[String], enabled_repos: &[String]) -> Vec<Pac
     }
     let alpm = match Alpm::new("/", "/var/lib/pacman") {
         Ok(a) => a,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            log::error!("[ALPM] Alpm::new failed: {}", e);
+            return Vec::new();
+        }
     };
 
     register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
 
     let names_set: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
     let mut results = Vec::new();
+
+    let dbs: Vec<String> = alpm.syncdbs().iter().map(|d| d.name().to_string()).collect();
+    if dbs.is_empty() {
+        log::warn!("[ALPM] No Sync DBs registered! Check pacman.conf or permissions.");
+        // If we can't find any DBs, attempting to register them explicitly again might help debugging
+        // but for now just warn.
+    }
+    
+    // Debug log for Essentials debugging
+    if names.contains(&"firefox".to_string()) {
+       log::debug!(
+           "[ALPM] get_packages_batch searching for 'firefox'. Registered DBs: {:?}. Enabled filter: {:?}", 
+           dbs, 
+           enabled_repos
+       );
+    }
 
     for db in alpm.syncdbs() {
         let db_name = db.name();
@@ -179,6 +262,7 @@ pub fn get_packages_batch(names: &[String], enabled_repos: &[String]) -> Vec<Pac
         }
         for pkg in db.pkgs() {
             if names_set.contains(pkg.name()) {
+                // log::debug!("[ALPM] Found {} in {}", pkg.name(), db_name);
                 let is_installed = alpm.localdb().pkg(pkg.name()).is_ok();
                 results.push(Package {
                     name: pkg.name().to_string(),
@@ -189,10 +273,13 @@ pub fn get_packages_batch(names: &[String], enabled_repos: &[String]) -> Vec<Pac
                         db_name,
                         pkg.version().as_str(),
                         &crate::distro_context::DistroContext::new(),
+                        pkg.name(),
                     ),
                     installed: is_installed,
                     download_size: Some(pkg.download_size() as u64),
                     installed_size: Some(pkg.isize() as u64),
+                    depends: Some(pkg.depends().iter().map(|d| d.to_string()).collect()),
+                    make_depends: Some(pkg.makedepends().iter().map(|d| d.to_string()).collect()),
                     last_modified: None,
                     ..Default::default()
                 });
@@ -221,11 +308,17 @@ pub fn get_packages_batch(names: &[String], enabled_repos: &[String]) -> Vec<Pac
 /// Returns true if a package of the given name is installed (localdb).
 /// Replaces read-only `pacman -Q <name>` checks.
 pub fn is_package_installed(name: &str) -> bool {
-    let alpm = match Alpm::new("/", "/var/lib/pacman") {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
-    alpm.localdb().pkg(name).is_ok()
+    // 1. Try ALPM Binding
+    if let Ok(alpm) = Alpm::new("/", "/var/lib/pacman") {
+        if alpm.localdb().pkg(name).is_ok() {
+            return true;
+        }
+    }
+    // 2. Fallback to pacman -Q (CLI) if binding fails or returns false (double check)
+    match Command::new("pacman").arg("-Q").arg(name).output() {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
 }
 
 /// Returns true if the package exists in any sync database (official or enabled repos).
@@ -315,7 +408,11 @@ pub fn get_orphans_native() -> Vec<String> {
 }
 
 /// Returns a list of packages that have upgrades available in the sync databases.
-/// Replicates `pacman -Qu`.
+/// Replicates `pacman -Qu`. Used for the Updates page; intentionally uses full pacman.conf
+/// (no filter by app "enabled" state) so that installed packages from any repo, including
+/// Chaotic-AUR, always get updates—for updates a repo is never "turned off".
+/// Distro-agnostic: we read the system pacman.conf and follow Include directives, so all
+/// distro repos (Arch core/extra, Manjaro, Garuda, CachyOS, Chaotic-AUR, EOS, etc.) are included.
 pub fn get_host_updates() -> Vec<crate::models::UpdateItem> {
     let alpm = match Alpm::new("/", "/var/lib/pacman") {
         Ok(a) => a,
@@ -341,13 +438,73 @@ pub fn get_host_updates() -> Vec<crate::models::UpdateItem> {
                             db_name,
                             pkg.version().as_str(),
                             &crate::distro_context::DistroContext::new(),
+                            pkg.name(),
                         ),
                         size: Some(pkg.download_size() as u64),
                         icon: None,
+                        display_name: None,
                     });
                 }
             }
         }
     }
     updates
+}
+
+/// Fallback Search via CLI `pacman -Qs`
+pub fn search_installed_packages_cli(query: &str) -> Vec<Package> {
+    let output = match std::process::Command::new("pacman")
+        .arg("-Qs")
+        .arg(query)
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut packages = Vec::new();
+    let lines: Vec<&str> = stdout.lines().collect();
+
+    let mut current_pkg: Option<Package> = None;
+
+    for line in lines {
+        if line.starts_with("local/") {
+            // Push previous if complete
+            if let Some(pkg) = current_pkg.take() {
+                packages.push(pkg);
+            }
+
+            // Parse new package line: "local/name version"
+            // Example: local/heroic-games-launcher-bin 2.19.0-1
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let full_name = parts[0].trim_start_matches("local/");
+                let version = parts[1];
+
+                let mut p = Package::default();
+                p.name = full_name.to_string();
+                p.version = version.to_string();
+                p.installed = true;
+                p.source = PackageSource::new("local", "local", version, "Installed (Local)");
+                current_pkg = Some(p);
+            }
+        } else if line.starts_with("    ") {
+            // Description line
+            if let Some(pkg) = &mut current_pkg {
+                pkg.description = line.trim().to_string();
+            }
+        }
+    }
+
+    // Push last one
+    if let Some(pkg) = current_pkg {
+        packages.push(pkg);
+    }
+
+    packages
 }

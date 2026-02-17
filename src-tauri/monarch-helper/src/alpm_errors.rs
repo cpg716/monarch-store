@@ -88,7 +88,7 @@ pub fn classify_alpm_error(error_msg: &str) -> AlpmClassifiedError {
             kind: "MirrorFailure".to_string(),
             title: "Download Failed".to_string(),
             description: "Could not download packages from mirrors. Check your internet connection or try refreshing your mirror list.".to_string(),
-            recovery_action: Some("RefreshMirrors".to_string()),
+            recovery_action: Some("UpdateAndInstall".to_string()),
             raw_message: error_msg.to_string(),
         };
     }

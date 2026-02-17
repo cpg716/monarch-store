@@ -48,11 +48,14 @@ export default defineConfig(async () => ({
   build: {
     chunkSizeWarningLimit: 1000, // Increase limit slightly for desktop apps
     ...(isDev ? {} : { esbuild: { drop: ['console', 'debugger'] } }),
+    minify: isDev ? false : 'esbuild',
+    target: 'esnext',
     rollupOptions: {
       output: {
         manualChunks: {
           vendor: ['react', 'react-dom', 'zustand'],
           ui: ['framer-motion', 'lucide-react', 'clsx', 'tailwind-merge'],
+          virtua: ['virtua'],
         },
       },
     },

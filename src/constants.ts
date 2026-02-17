@@ -1,27 +1,47 @@
-// Full pool of "Essentials" - Popular proprietary/chaotic apps
-export const ESSENTIALS_POOL = [
-    "google-chrome", "visual-studio-code-bin", "spotify", "discord", "slack-desktop", "zoom", "sublime-text-4",
-    "obsidian", "telegram-desktop-bin", "brave-bin", "edge-bin", "vlc", "gimp", "steam", "minecraft-launcher",
-    "teams-for-linux", "notion-app", "postman-bin", "figma-linux-bin", "anydesk-bin"
+// Curated list of 40 apps for Linux/Arch (fallback when backend fails). Kept in sync with docs/essentials.json and backend DEFAULT_ESSENTIALS.
+// Order: Web Browsers & Communication, Office & Productivity, Graphics & Design, Multimedia & Audio, Development, Games, System
+export const ESSENTIALS_POOL: string[] = [
+    "firefox",
+    "librewolf-bin",
+    "google-chrome",
+    "thunderbird",
+    "telegram-desktop",
+    "signal-desktop",
+    "discord",
+    "newsflash",
+    "libreoffice-fresh",
+    "obsidian",
+    "calibre",
+    "simplenote-electron-bin",
+    "okular",
+    "foliate",
+    "keepassxc",
+    "gimp",
+    "inkscape",
+    "blender",
+    "flameshot",
+    "krita",
+    "rawtherapee",
+    "vlc",
+    "audacity",
+    "obs-studio",
+    "handbrake",
+    "strawberry",
+    "easyeffects",
+    "ardour",
+    "visual-studio-code-bin",
+    "git",
+    "docker-desktop",
+    "steam",
+    "lutris",
+    "heroic-games-launcher-bin",
+    "timeshift",
+    "bitwarden-bin",
+    "gparted",
+    "kdeconnect",
+    "balena-etcher",
+    "peazip-bin"
 ];
 
-export const getRotatedEssentials = () => {
-    const now = new Date();
-    const start = new Date(now.getFullYear(), 0, 0);
-    const diff = (now.getTime() - start.getTime()) + ((start.getTimezoneOffset() - now.getTimezoneOffset()) * 60 * 1000);
-    const oneDay = 1000 * 60 * 60 * 24;
-    const day = Math.floor(diff / oneDay);
-    const week = Math.floor(day / 7);
-
-    const poolSize = ESSENTIALS_POOL.length;
-    const subsetSize = 12;
-    const startIndex = (week * 3) % poolSize;
-
-    let result: string[] = [];
-    for (let i = 0; i < subsetSize; i++) {
-        result.push(ESSENTIALS_POOL[(startIndex + i) % poolSize]);
-    }
-    return result;
-};
-
-export const ESSENTIAL_IDS = getRotatedEssentials();
+/** Fallback IDs when get_essentials_list fails (e.g. offline). */
+export const ESSENTIAL_IDS: string[] = [...ESSENTIALS_POOL];

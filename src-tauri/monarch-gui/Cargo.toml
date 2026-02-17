@@ -1,6 +1,6 @@
 [package]
 name = "monarch-store"
-version = "0.4.0-alpha"
+version = "0.4.6-alpha"
 description = "MonARCH Store - A premium software store for Arch Linux"
 authors = ["MonARCH Store Contributors"]
 license = "MIT"
@@ -19,7 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["image-png"] }
+tauri = { version = "2", features = ["image-png", "protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,9 +51,15 @@ cpufeatures = "0.2.12"
 which = "8.0.0"
 num_cpus = "1.16.0"
 log = "0.4"
+env_logger = "0.11"
 raur = "8.0.0"
 ashpd = "0.10" # Settings portal (theme) only; no gtk4 feature to avoid mixing GTK3 (Tauri/WebKit) and GTK4
 rfd = "0.15" # Native file dialogs via Portals
+feed-rs = "2.0" # RSS/Atom feed parsing (Operation Town Crier)
+rusqlite = { version = "0.33", features = ["bundled"] }
+specta = { version = "=2.0.0-rc.20", features = ["derive", "function", "serde", "serde_json"] }
+specta-typescript = "=0.0.7"
+tauri-specta = { version = "=2.0.0-rc.20", features = ["derive", "typescript"] }
 
 [dev-dependencies]
 tempfile = "3.24.0"

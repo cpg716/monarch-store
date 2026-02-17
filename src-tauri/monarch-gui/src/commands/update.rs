@@ -1,11 +1,12 @@
 use crate::aur_api;
 use crate::commands::package::PendingUpdate;
 use crate::repo_manager::RepoManager;
+use specta::Type;
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter, State};
 
 /// Command and label for "Update in terminal" (Apdatifier-style transparency).
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, Type)]
 pub struct SystemUpdateCommandPayload {
     pub command: String,
     pub description: String,
@@ -15,6 +16,7 @@ pub struct SystemUpdateCommandPayload {
 /// Use for "Update in terminal": copy to clipboard or open user's terminal.
 /// Always full -Syu (sync + upgrade) — never -Sy alone.
 #[tauri::command]
+#[specta::specta]
 pub fn get_system_update_command() -> SystemUpdateCommandPayload {
     SystemUpdateCommandPayload {
         command: "sudo pacman -Syu".to_string(),
@@ -23,14 +25,14 @@ pub fn get_system_update_command() -> SystemUpdateCommandPayload {
 }
 
 /// Payload for update-complete event so the UI can stop spinning and show result without blocking.
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, Type)]
 pub struct UpdateCompletePayload {
     pub success: bool,
     pub message: String,
 }
 
 /// Payload for update-progress so the Updates page progress bar and step can move (not just status text).
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, Type)]
 pub struct UpdateProgressPayload {
     pub phase: String,
     pub progress: u8,
@@ -38,20 +40,37 @@ pub struct UpdateProgressPayload {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn perform_system_update(
     app: AppHandle,
     _state: State<'_, RepoManager>,
     password: Option<String>,
+    include_aur: Option<bool>,
+    include_flatpak: Option<bool>,
 ) -> Result<String, String> {
-    log::info!("Update: starting process (background)");
+    let do_aur = include_aur.unwrap_or(true);
+    let do_flatpak = include_flatpak.unwrap_or(true);
+    log::info!(
+        "Update: starting process (background), AUR={}, Flatpak={}",
+        do_aur,
+        do_flatpak
+    );
 
-    // Run the full update in a background task so the app does not freeze.
+    let one_click = _state.inner().is_one_click_enabled().await;
+    let parallel_downloads = _state.inner().get_parallel_downloads().await;
     let app_bg = app.clone();
     let password_bg = password.clone();
     tauri::async_runtime::spawn(async move {
-        // Yield so the IPC response "started" is sent before we do any work.
         tokio::task::yield_now().await;
-        let result = run_system_update_impl(app_bg.clone(), password_bg).await;
+        let result = run_system_update_impl(
+            app_bg.clone(),
+            password_bg,
+            one_click,
+            do_aur,
+            do_flatpak,
+            Some(parallel_downloads),
+        )
+        .await;
         let (success, message) = match &result {
             Ok(msg) => (true, msg.clone()),
             Err(e) => (false, e.clone()),
@@ -65,9 +84,14 @@ pub async fn perform_system_update(
 }
 
 /// Runs the full system update; used inside the background task.
+/// include_aur / include_flatpak: when false, skip that phase (so "Update All" can match user's Sources settings).
 async fn run_system_update_impl(
     app: AppHandle,
     password: Option<String>,
+    one_click: bool,
+    include_aur: bool,
+    include_flatpak: bool,
+    parallel_downloads: Option<u32>,
 ) -> Result<String, String> {
     // Acquire global lock to prevent concurrent pacman operations
     let _guard = crate::utils::PRIVILEGED_LOCK.lock().await;
@@ -112,10 +136,12 @@ async fn run_system_update_impl(
             manifest: crate::models::TransactionManifest {
                 update_system: true,
                 refresh_db: true,
+                parallel_downloads,
                 ..Default::default()
             },
         },
         password.clone(),
+        one_click,
     )
     .await?;
 
@@ -146,11 +172,6 @@ async fn run_system_update_impl(
                     || msg.message.to_lowercase().contains("database")
                 {
                     "refresh"
-                } else if msg.message.to_lowercase().contains("download")
-                    || msg.message.to_lowercase().contains("install")
-                    || msg.message.to_lowercase().contains("upgrade")
-                {
-                    "upgrade"
                 } else {
                     "upgrade"
                 };
@@ -189,21 +210,27 @@ async fn run_system_update_impl(
         return Err(msg.to_string());
     }
 
-    // Phase 3: AUR Batch
-    let _ = app.emit("update-status", "Checking for AUR updates...");
-    let _ = app.emit(
-        "update-progress",
-        UpdateProgressPayload {
-            phase: "upgrade".to_string(),
-            progress: 100,
-            message: "System upgrade complete.".to_string(),
-        },
-    );
-
-    let aur_updates = check_aur_updates().await.unwrap_or_default();
-    if aur_updates.is_empty() {
-        let _ = app.emit("update-status", "No AUR updates found.");
+    // Phase 3: AUR Batch (only when user has AUR included in updates)
+    let aur_updates = if include_aur {
+        let _ = app.emit("update-status", "Checking for AUR updates...");
+        let _ = app.emit(
+            "update-progress",
+            UpdateProgressPayload {
+                phase: "upgrade".to_string(),
+                progress: 100,
+                message: "System upgrade complete.".to_string(),
+            },
+        );
+        check_aur_updates().await.unwrap_or_default()
     } else {
+        let _ = app.emit("update-status", "Skipping AUR (disabled in update scope).");
+        Vec::new()
+    };
+
+    if aur_updates.is_empty() && include_aur {
+        let _ = app.emit("update-status", "No AUR updates found.");
+    }
+    if !aur_updates.is_empty() {
         let _ = app.emit(
             "update-status",
             format!("Building {} AUR packages...", aur_updates.len()),
@@ -237,8 +264,69 @@ async fn run_system_update_impl(
         if !built_packages.is_empty() {
             let _ = app.emit("update-status", "Installing built AUR packages...");
 
-            install_built_packages(built_packages, &password, &app).await?;
+            install_built_packages(built_packages, &password, &app, one_click).await?;
         }
+    }
+
+    // Phase 4: Flatpak Updates (only when user has Flatpak included in updates)
+    if include_flatpak {
+        let _ = app.emit("update-status", "Checking for Flatpak updates...");
+        let _ = app.emit(
+            "update-progress",
+            UpdateProgressPayload {
+                phase: "flatpak".to_string(),
+                progress: 80,
+                message: "Checking Flatpak updates...".to_string(),
+            },
+        );
+
+        match crate::flathub_api::get_updates().await {
+            Ok(flatpak_updates) => {
+                if flatpak_updates.is_empty() {
+                    let _ = app.emit("update-status", "No Flatpak updates found.");
+                    let _ = app.emit("install-output", "No Flatpak updates available.");
+                } else {
+                    let _ = app.emit(
+                        "update-status",
+                        format!("Updating {} Flatpaks...", flatpak_updates.len()),
+                    );
+                    let _ = app.emit(
+                        "install-output",
+                        format!("Found {} Flatpak updates", flatpak_updates.len()),
+                    );
+
+                    for item in flatpak_updates {
+                        let _ = app.emit(
+                            "update-status",
+                            format!("Updating Flatpak: {}...", item.name),
+                        );
+                        let _ =
+                            app.emit("install-output", format!("Updating Flatpak: {}", item.name));
+
+                        if let Err(e) =
+                            crate::flathub_api::update_flatpak(app.clone(), item.name.clone()).await
+                        {
+                            let _ = app.emit(
+                                "install-output",
+                                format!("Flatpak update warning: {} - {}", item.name, e),
+                            );
+                            // Continue with other Flatpaks - don't abort the whole update
+                        }
+                    }
+
+                    let _ = app.emit("update-status", "Flatpak updates completed.");
+                }
+            }
+            Err(e) => {
+                // Flatpak errors are non-critical - log but don't fail the update
+                let _ = app.emit("install-output", format!("Flatpak check skipped: {}", e));
+            }
+        }
+    } else {
+        let _ = app.emit(
+            "update-status",
+            "Skipping Flatpak (disabled in update scope).",
+        );
     }
 
     let _ = app.emit("update-status", "All updates completed successfully.");
@@ -312,16 +400,16 @@ async fn install_built_packages(
     paths: Vec<String>,
     password: &Option<String>,
     app: &AppHandle,
+    one_click: bool,
 ) -> Result<(), String> {
-    // Zone 4: Copy to /tmp/monarch-install so root helper can read and verify
     let install_paths = crate::commands::package::copy_paths_to_monarch_install(paths).await?;
-    // ✅ NEW: Use ALPM transaction to install built AUR packages
     let mut rx = crate::helper_client::invoke_helper(
         app,
         crate::helper_client::HelperCommand::AlpmInstallFiles {
             paths: install_paths,
         },
         password.clone(),
+        one_click,
     )
     .await?;
 
@@ -334,23 +422,47 @@ async fn install_built_packages(
 }
 
 /// Unified Update Aggregator (Phase 2)
-/// Fetches updates from Repo, AUR, and Flatpak in parallel.
+/// Fetches updates from Repo (including Chaotic-AUR, CachyOS, etc.), AUR, and Flatpak.
+/// For updates, a source is never "turned off": we always check installed packages from every
+/// source; discovery toggles (Settings → Sources) only affect search/browse, not the Updates list.
+/// Repo updates come from full system pacman.conf (distro-agnostic: Arch, Manjaro, Garuda, CachyOS,
+/// EOS, etc.); no filtering by app "enabled" state. Params default to true.
 #[tauri::command]
-pub async fn check_updates() -> Result<Vec<crate::models::UpdateItem>, String> {
-    log::info!("Checking for updates (Unified)...");
+#[specta::specta]
+pub async fn check_updates(
+    state_registry: State<'_, crate::registry::RegistryState>,
+    include_aur: Option<bool>,
+    include_flatpak: Option<bool>,
+) -> Result<Vec<crate::models::UpdateItem>, String> {
+    let do_aur = include_aur.unwrap_or(true);
+    let do_flatpak = include_flatpak.unwrap_or(true);
+    log::info!(
+        "Checking for updates (Unified), AUR={}, Flatpak={}",
+        do_aur,
+        do_flatpak
+    );
 
     // Task A: Repo (Official) - Fast, local DB read
-    // Note: We assume DBs are refreshed. If not, user should hit "Refresh" or we call refresh separately.
-    let repo_task = tokio::task::spawn_blocking(crate::alpm_read::get_host_updates);
+    let repo_handle = tokio::task::spawn_blocking(crate::alpm_read::get_host_updates);
 
-    // Task B: AUR - Web query + Raur
-    let aur_task = crate::aur_api::get_candidate_updates();
+    // Tasks B & C: AUR and Flatpak (empty result when disabled)
+    let aur_fut = async move {
+        if do_aur {
+            crate::aur_api::get_candidate_updates().await
+        } else {
+            Ok(vec![])
+        }
+    };
+    let flatpak_fut = async move {
+        if do_flatpak {
+            crate::flathub_api::get_updates().await
+        } else {
+            Ok(vec![])
+        }
+    };
+    let (aur_res, flatpak_res) = tokio::join!(aur_fut, flatpak_fut);
 
-    // Task C: Flatpak - CLI process
-    let flatpak_task = crate::flathub_api::get_updates();
-
-    // Parallel Join
-    let (repo_res, aur_res, flatpak_res) = tokio::join!(repo_task, aur_task, flatpak_task);
+    let repo_res = repo_handle.await;
 
     let mut all_updates = Vec::new();
 
@@ -372,6 +484,65 @@ pub async fn check_updates() -> Result<Vec<crate::models::UpdateItem>, String> {
         Err(e) => log::error!("Failed to check Flatpak updates: {}", e),
     }
 
+    // IRON CORE (SSOT): Enrich Updates with Registry Metadata
+    // "Every Inch" enforcement: Updates tab must show "Discord" not "com.discordapp.Discord".
+    let mut candidate_keys = std::collections::HashSet::new();
+    for u in &all_updates {
+        // Flatpak text is usually ID in u.name.
+        // Repo text is package name in u.name.
+        candidate_keys.insert(u.name.clone());
+        candidate_keys.insert(u.name.to_lowercase());
+
+        // Also try canonical merge key logic if applicable
+        if u.source.source_type == "flatpak" {
+            // For flatpak, u.name IS the App ID.
+            // We can try to derive a name key if it has one?
+            // Usually just searching by ID (lowercase) is enough for Registry lookup.
+        } else {
+            // For Repo/AUR, u.name is "firefox".
+        }
+    }
+
+    let candidate_vec: Vec<String> = candidate_keys.into_iter().collect();
+    if !candidate_vec.is_empty() {
+        if let Ok(pkgs) = state_registry.get_packages_by_canonical_ids(&candidate_vec) {
+            let registry_map: std::collections::HashMap<String, crate::models::Package> = pkgs
+                .into_iter()
+                .map(|p| (p.canonical_id.clone(), p))
+                .collect();
+
+            if !registry_map.is_empty() {
+                for u in &mut all_updates {
+                    // Try to find registry match
+                    // 1. By exact name/ID
+                    let key1 = u.name.to_lowercase();
+                    // 2. By canonical key (if name has dots/suffixes)
+                    let key2 = crate::utils::canonical_merge_key(&u.name, None); // We don't have separate App ID easily here, but for Flatpak u.name IS App ID.
+
+                    let reg_entry = registry_map.get(&key1).or_else(|| registry_map.get(&key2));
+
+                    if let Some(reg) = reg_entry {
+                        if let Some(dn) = &reg.display_name {
+                            if !dn.is_empty() {
+                                u.display_name = Some(dn.clone());
+                            }
+                        }
+
+                        let reg_is_rich = reg
+                            .icon
+                            .as_deref()
+                            .map(|i| i.starts_with("http") || i.starts_with("data:"))
+                            .unwrap_or(false);
+                        if reg_is_rich || u.icon.is_none() {
+                            u.icon = reg.icon.clone();
+                        }
+                    }
+                }
+                log::info!("[UPDATES] Iron Core enriched {} updates", all_updates.len());
+            }
+        }
+    }
+
     log::info!("Found {} total updates", all_updates.len());
     Ok(all_updates)
 }
@@ -379,15 +550,17 @@ pub async fn check_updates() -> Result<Vec<crate::models::UpdateItem>, String> {
 /// Unified Execution Engine (Phase 3 & 4)
 /// Safely executes the update queue respecting the "Safety Lock".
 #[tauri::command]
+#[specta::specta]
 pub async fn apply_updates(
     app: AppHandle,
+    state_repo: State<'_, RepoManager>,
     targets: Vec<crate::models::UpdateItem>,
     password: Option<String>,
 ) -> Result<String, String> {
     if targets.is_empty() {
         return Ok("No updates selected".to_string());
     }
-
+    let one_click = state_repo.inner().is_one_click_enabled().await;
     log::info!("Applying {} updates...", targets.len());
 
     // Phase 4: Safety Lock
@@ -407,6 +580,7 @@ pub async fn apply_updates(
         .collect();
 
     // 1. Execute Repo Loop (The Iron Core)
+    let mut sysupgrade_failed = false;
     if has_official {
         log::info!("Safety Lock: Official updates detected. Enforcing System Upgrade.");
         // We reuse the existing logic which does -Syu
@@ -436,15 +610,35 @@ pub async fn apply_updates(
                 },
             },
             password.clone(),
+            one_click,
         )
         .await?;
 
-        // Monitor Sysupgrade
+        // Monitor Sysupgrade with Safety Gate
         while let Some(msg) = rx.recv().await {
             let _ = app.emit("install-output", &msg.message);
-            if msg.message.starts_with("Error:") {
-                return Err(format!("System update failed: {}", msg.message));
+            if msg.message.starts_with("Error:")
+                || msg.message.contains("Transaction preparation failed")
+                || msg.message.contains("failed retrieving")
+                || msg.message.to_lowercase().contains("404")
+            {
+                sysupgrade_failed = true;
             }
+        }
+
+        // Safety Gate: If sysupgrade failed, abort AUR/Flatpak updates to prevent partial upgrade state
+        if sysupgrade_failed {
+            let msg = "System update failed. Aborting AUR/Flatpak updates to prevent partial upgrade state.";
+            let _ = app.emit("update-status", msg);
+            let _ = app.emit("install-output", msg);
+            let _ = app.emit(
+                "update-complete",
+                UpdateCompletePayload {
+                    success: false,
+                    message: msg.into(),
+                },
+            );
+            return Err(msg.to_string());
         }
     }
 
@@ -472,7 +666,7 @@ pub async fn apply_updates(
 
         if !built_paths.is_empty() {
             let _ = app.emit("update-status", "Installing AUR packages...");
-            install_built_packages(built_paths, &password, &app).await?;
+            install_built_packages(built_paths, &password, &app, one_click).await?;
         }
     }
 

@@ -2145,16 +2145,28 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Allows all custom commands",
+          "description": "Privileged and state-changing commands (install, uninstall, repair, sync, policy, repo/settings write)",
           "type": "string",
-          "const": "app-commands",
-          "markdownDescription": "Allows all custom commands"
+          "const": "app-commands-privileged",
+          "markdownDescription": "Privileged and state-changing commands (install, uninstall, repair, sync, policy, repo/settings write)"
+        },
+        {
+          "description": "Read-only and non-privileged app commands (search, metadata, status, user cache, telemetry)",
+          "type": "string",
+          "const": "app-commands-read",
+          "markdownDescription": "Read-only and non-privileged app commands (search, metadata, status, user cache, telemetry)"
         },
         {
           "description": "Enables the track_event command without any pre-configured scope.",
           "type": "string",
           "const": "aptabase:allow-track-event",
           "markdownDescription": "Enables the track_event command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the aptabase telemetry plugin",
+          "type": "string",
+          "const": "aptabase:default",
+          "markdownDescription": "Default permissions for the aptabase telemetry plugin"
         },
         {
           "description": "Denies the track_event command without any pre-configured scope.",

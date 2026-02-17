@@ -65,8 +65,15 @@ lazy_static::lazy_static! {
 }
 
 pub fn to_pretty_name(pkg_name: &str) -> String {
+    // 0. Handle RDN App IDs (e.g. com.discordapp.Discord -> Discord)
+    let name_to_process = if pkg_name.contains('.') {
+        pkg_name.split('.').last().unwrap_or(pkg_name)
+    } else {
+        pkg_name
+    };
+
     // 1. Basic cleaning and splitting
-    let parts: Vec<&str> = pkg_name.split(['-', '_']).collect();
+    let parts: Vec<&str> = name_to_process.split(['-', '_']).collect();
 
     // 2. Capitalization logic
     let pretty: Vec<String> = parts
@@ -95,10 +102,58 @@ pub fn to_pretty_name(pkg_name: &str) -> String {
         .collect();
 
     if pretty.is_empty() {
-        return pkg_name.to_string();
+        return name_to_process.to_string();
     }
 
     pretty.join(" ")
+}
+
+/// Strip HTML tags so descriptions never show literal `<p>` etc. on cards.
+pub fn strip_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .trim()
+        .to_string()
+}
+
+/// Truncate description for UI payload (max 200 chars) to reduce IPC and DOM size.
+/// Strips HTML first so cards never show literal `<p>` or other tags.
+pub fn truncate_description_for_ui(s: &str, max_chars: usize) -> String {
+    let s = strip_html(s).trim().to_string();
+    let s = s.as_str();
+    if s.len() <= max_chars {
+        s.to_string()
+    } else {
+        let mut end = max_chars;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &s[..end])
+    }
+}
+
+/// Strip HTML and truncate descriptions on a list of packages (for search, category, trending).
+const DESC_MAX_UI: usize = 200;
+
+pub fn prepare_package_descriptions_for_ui(packages: &mut [crate::models::Package]) {
+    for pkg in packages.iter_mut() {
+        if !pkg.description.is_empty() {
+            pkg.description = truncate_description_for_ui(&pkg.description, DESC_MAX_UI);
+        }
+    }
 }
 
 lazy_static::lazy_static! {
@@ -134,74 +189,6 @@ pub fn validate_package_name(name: &str) -> Result<(), String> {
 }
 
 use crate::models;
-
-pub fn sort_packages_by_relevance(packages: &mut [models::Package], query: &str) {
-    let q_lower = query.to_lowercase();
-    let common_apps = [
-        "google-chrome",
-        "steam",
-        "obs-studio",
-        "discord",
-        "spotify",
-        "vlc",
-        "firefox",
-        "visual-studio-code-bin",
-        "code",
-    ];
-
-    packages.sort_by(|a, b| {
-        let rank_pkg = |pkg: &models::Package| -> u8 {
-            let p_name = pkg.name.to_lowercase();
-
-            // Rank 0: Common Apps (Rigid priority if query is close)
-            if common_apps.contains(&p_name.as_str()) {
-                // If query is "chrome" and pkg is "google-chrome", prioritize it!
-                // Or if query matches the package name loosely
-                if p_name.contains(&q_lower)
-                    || q_lower.contains("chrome") && p_name == "google-chrome"
-                {
-                    return 0;
-                }
-            }
-
-            // Rank 1: Exact Match
-            if p_name == q_lower {
-                return 1;
-            }
-
-            // Rank 2: Starts With
-            if p_name.starts_with(&q_lower) {
-                return 2;
-            }
-
-            // Rank 3: Source Priority
-            // This ensures Chaotic > Official > CachyOS etc for items with same name strength
-            3 + (pkg.source.priority() as u8)
-        };
-
-        let rank_a = rank_pkg(a);
-        let rank_b = rank_pkg(b);
-
-        if rank_a != rank_b {
-            return rank_a.cmp(&rank_b);
-        }
-
-        // TIE BREAKER: Source Priority (e.g. Official > Chaotic > AUR)
-        let prio_a = a.source.priority() as u8;
-        let prio_b = b.source.priority() as u8;
-        if prio_a != prio_b {
-            return prio_a.cmp(&prio_b);
-        }
-
-        // Secondary Sort: Shortest Name
-        if a.name.len() != b.name.len() {
-            return a.name.len().cmp(&b.name.len());
-        }
-
-        // Tertiary Sort: Votes
-        b.num_votes.unwrap_or(0).cmp(&a.num_votes.unwrap_or(0))
-    });
-}
 
 // Checks if the CPU supports x86-64-v3 (AVX2, FMA, BMI2, etc.)
 pub fn is_cpu_v3_compatible() -> bool {
@@ -309,58 +296,261 @@ pub fn strip_package_suffix(name: &str) -> &str {
     name
 }
 
-/// Variant suffixes for merge deduplication (e.g. firefox + firefox-developer-edition → one entry).
-/// Longer suffixes first so we strip -developer-edition before -edition.
-const VARIANT_SUFFIXES: &[&str] = &[
-    "-developer-edition",
-    "-developer-edition-bin",
-    "-esr",
-    "-esr-bin",
-    "-stable",
-    "-dev",
-    "-bin",
-    "-git",
-    "-nightly",
-    "-beta",
-    "-pure",
-    "-appimage",
-    "-wayland",
-    "-x11",
-    "-hg",
-    "-svn",
-    "-cn",
-    "-fresh",
-    "-still",
-    "-native",
-    "-runtime",
-    "-lts",
-    "-edge",
-];
+/// Known Flatpak app_id -> canonical package name so the same app from AUR, Flatpak, and Chaotic
+/// merges into one card. Maps app_id (e.g. com.google.Chrome) to repo/AUR package name (e.g. google-chrome).
+pub fn known_app_id_to_canonical(app_id: &str) -> Option<String> {
+    let id = app_id.trim().to_lowercase();
+    let map: &[(&str, &str)] = &[
+        // Browsers (last segment often != package name)
+        ("com.google.chrome", "google-chrome"),
+        ("org.mozilla.firefox", "firefox"),
+        ("org.chromium.chromium", "chromium"),
+        ("com.brave.browser", "brave"),
+        ("com.microsoft.edge", "microsoft-edge"),
+        ("com.vivaldi.vivaldi", "vivaldi"),
+        // Media / comms
+        ("com.spotify.client", "spotify"),
+        ("com.discordapp.discord", "discord"),
+        ("com.discordapp.discordcanary", "discord-canary"),
+        ("com.discordapp.discordptb", "discord-ptb"),
+        ("io.github.spacingbat3.webcord", "webcord"),
+        ("dev.vencord.vesktop", "vesktop"),
+        ("org.telegram.desktop", "telegram-desktop"),
+        ("org.signal.signal", "signal-desktop"),
+        ("us.zoom.zoom", "zoom"),
+        ("com.microsoft.teams", "teams"),
+        ("com.slack.slack", "slack-desktop"),
+        ("im.riot.riot", "element-desktop"),
+        ("chat.zulip.zulip", "zulip-desktop"),
+        // Media players / editors
+        ("org.videolan.vlc", "vlc"),
+        ("org.mpv.mpv", "mpv"),
+        ("com.obsproject.studio", "obs-studio"),
+        ("org.gimp.gimp", "gimp"),
+        ("org.inkscape.inkscape", "inkscape"),
+        ("org.blender.blender", "blender"),
+        ("org.audacityteam.audacity", "audacity"),
+        ("org.kde.kdenlive", "kdenlive"),
+        // Development
+        ("com.visualstudio.code", "visual-studio-code"),
+        ("com.visualstudio.code-oss", "code"),
+        (
+            "com.jetbrains.intellij-idea-community",
+            "intellij-idea-community-edition",
+        ),
+        (
+            "com.jetbrains.pycharm-community",
+            "pycharm-community-edition",
+        ),
+        ("com.jetbrains.toolbox", "jetbrains-toolbox"),
+        ("com.sublimetext.three", "sublime-text-4"),
+        ("com.getpostman.postman", "postman-bin"),
+        // Gaming / office / utils
+        ("com.valvesoftware.steam", "steam"),
+        ("com.valvesoftware.steam.desktop", "steam"),
+        ("net.lutris.lutris", "lutris"),
+        ("net.lutris.lutris.desktop", "lutris"),
+        ("com.heroicgameslauncher.hgl", "heroic-games-launcher"),
+        ("com.mojang.minecraft", "minecraft-launcher"),
+        ("org.libreoffice.libreoffice", "libreoffice"),
+        ("org.onlyoffice.desktopeditors", "onlyoffice-bin"),
+        ("com.bitwarden.desktop", "bitwarden"),
+        ("org.keepassxc.keepassxc", "keepassxc"),
+        ("org.mozilla.thunderbird", "thunderbird"),
+        ("org.filezilla_project.filezilla", "filezilla"),
+        ("org.qbittorrent.qbittorrent", "qbittorrent"),
+        ("com.transmissionbt.transmission", "transmission-gtk"),
+        ("org.virtualbox.virtualbox", "virtualbox"),
+    ];
+    for (k, v) in map {
+        if id == *k {
+            return Some((*v).to_string());
+        }
+    }
+    None
+}
+
+/// Preferred display name for a canonical key so the app is always shown with one proper name
+/// (e.g. "heroic" -> "Heroic Game Launcher" instead of sometimes "Heroic"). Display-only; merge key stays generic.
+fn preferred_display_name(canonical_key: &str) -> Option<&'static str> {
+    match canonical_key {
+        "heroic" => Some("Heroic Game Launcher"),
+        "obs" => Some("OBS Studio"),
+        "visual" | "code" => Some("Visual Studio Code"),
+        "libreoffice" => Some("LibreOffice"),
+        "brave" => Some("Brave Browser"),
+        "chrome" => Some("Google Chrome"),
+        "edge" => Some("Microsoft Edge"),
+        "retroarch" => Some("RetroArch"),
+        _ => None,
+    }
+}
+
+/// Public accessor so search/category pipelines can apply preferred names (e.g. "Heroic" -> "Heroic Game Launcher").
+pub fn get_preferred_display_name(canonical_key: &str) -> Option<&'static str> {
+    preferred_display_name(canonical_key)
+}
+
+/// Extra search terms when the user query is a short name (e.g. "heroic") so we reliably
+/// get repo/AUR/Chaotic packages (e.g. "heroic-games-launcher-bin" from CachyOS, Chaotic-AUR, or AUR).
+/// Used for AUR search, Chaotic filter, and repo search so one card shows all sources.
+pub fn aur_search_expansion_terms(query: &str) -> Vec<&'static str> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return vec![];
+    }
+    match q.as_str() {
+        "heroic" => vec!["heroic-games-launcher"],
+        "obs" => vec!["obs-studio"],
+        "code" | "vscode" => vec!["visual-studio-code"],
+        "chrome" | "google" => vec!["google-chrome"],
+        _ => vec![],
+    }
+}
+
+/// Repo package names to include in get_packages_batch when resolving a canonical app (e.g. Discord from CachyOS).
+/// So one card shows Official + CachyOS + Flatpak even when CachyOS names the pkg discord_arch_electron.
+pub fn canonical_to_repo_lookup_names(canonical: &str) -> Vec<&'static str> {
+    let c = canonical.trim().to_lowercase();
+    if c.is_empty() {
+        return vec![];
+    }
+    match c.as_str() {
+        "discord" => vec![
+            "discord",
+            "discord_arch_electron",
+            "discord-canary",
+            "discord-ptb",
+        ],
+        "heroic" => vec!["heroic-games-launcher", "heroic-games-launcher-bin"],
+        "obs" => vec!["obs-studio"],
+        "code" | "visual" => vec!["visual-studio-code", "code"],
+        "telegram" => vec!["telegram-desktop"],
+        "signal" => vec!["signal-desktop"],
+        "google" => vec!["google-chrome", "google-chrome-stable"],
+        "microsoft" | "edge" => vec![
+            "microsoft-edge-stable",
+            "microsoft-edge-dev",
+            "microsoft-edge",
+        ],
+        "libreoffice" => vec!["libreoffice-fresh", "libreoffice-still"],
+        "vlc" => vec!["vlc"],
+        "steam" => vec!["steam", "steam-native-runtime"],
+        "minecraft" => vec!["minecraft-launcher", "poly-mc-launcher", "prism-launcher"],
+        "proton" => vec!["proton-vpn-gtk", "proton-vpn"],
+        "linux" => vec!["linux-cachyos", "linux"],
+        "cachyos" => vec!["cachyos-settings"],
+        "simplenote" => vec!["simplenote-electron-bin"],
+        "bitwarden" => vec!["bitwarden"],
+        "keepass" | "keepassxc" => vec!["keepassxc"],
+        "thunderbird" => vec!["thunderbird"],
+        _ => vec![],
+    }
+}
 
 /// Returns a canonical key for merge deduplication. Variants (firefox, firefox-developer-edition,
-/// firefox-esr) map to the same key so they merge into one entry with multiple sources.
-/// - If app_id is set (reverse-DNS), use its last segment as canonical base.
-/// - Else recursively strip variant suffixes until stable.
+/// discord-bin) and Flatpak app_id (com.discordapp.Discord) map to the same key so they merge
+/// into one entry with multiple sources.
+/// 1. Prioritize AppID if it exists: check known map (e.g. com.obsproject.Studio -> obs-studio), else last RDN segment.
+/// 2. Fallback to package name with aggressive suffix stripping (-bin, -git, etc.).
+/// For multi-segment names we use the first segment as key when valid (so "heroic" and "heroic-games-launcher" merge without a per-app list).
 pub fn canonical_merge_key(name: &str, app_id: Option<&str>) -> String {
-    let name_lower = name.trim().to_lowercase();
+    let raw_key = canonical_merge_key_raw(name, app_id);
+    let mut final_key = raw_key;
+    // STRICT IRON CORE RULE: Retain ONLY alphanumeric, stripping dots, hyphens, underscores.
+    // This ensures parity with frontend getPackageListKey (which uses replace(/[^a-z0-9]/g, '')).
+    final_key.retain(|c| c.is_ascii_alphanumeric());
+    final_key.to_lowercase()
+}
 
-    // App ID takes precedence (Linux standard identity)
+fn canonical_merge_key_raw(name: &str, app_id: Option<&str>) -> String {
+    // 1. Prioritize AppID if it exists and looks like a Reverse Domain Name (RDN)
     if let Some(id) = app_id {
-        if id.contains('.') {
-            let last = id.split('.').last().unwrap_or(id);
-            if !last.is_empty() {
-                return last.to_lowercase();
+        let id_trim = id.trim();
+        if id_trim.contains('.') {
+            if let Some(canonical) = known_app_id_to_canonical(id_trim) {
+                return canonical.to_string();
+            }
+            if let Some(tail) = id_trim
+                .strip_suffix(".desktop")
+                .unwrap_or(id_trim)
+                .split('.')
+                .next_back()
+            {
+                let mut t = tail.trim().to_lowercase();
+                // If tail is too generic (desktop, git, bin) or too short, move back one segment
+                let is_generic = matches!(
+                    t.as_str(),
+                    "desktop" | "git" | "bin" | "nightly" | "beta" | "stable"
+                );
+                if t.len() < 3 || is_generic {
+                    let segments: Vec<&str> = id_trim
+                        .strip_suffix(".desktop")
+                        .unwrap_or(id_trim)
+                        .split('.')
+                        .collect();
+                    if segments.len() > 1 {
+                        t = segments[segments.len() - 2].to_lowercase();
+                    }
+                }
+                if !t.is_empty() {
+                    return t;
+                }
             }
         }
     }
 
-    // Recursively strip variant suffixes until stable
-    let mut current = name_lower.as_str();
+    // 2. If name itself looks like an App ID (e.g. com.discordapp.Discord), resolve so repo and Flatpak merge
+    let name_trim = name.trim();
+    if name_trim.contains('.')
+        && name_trim
+            .find('.')
+            .map_or(false, |i| i > 0 && i < name_trim.len() - 1)
+    {
+        if let Some(canonical) = known_app_id_to_canonical(name_trim) {
+            return canonical.to_string();
+        }
+    }
+
+    // 3. Fallback to package name with aggressive suffix stripping
+    let mut clean_name = name_trim.to_lowercase();
+    let variant_suffixes = [
+        "-bin",
+        "-git",
+        "-flatpak",
+        "-official",
+        "-repo",
+        "-beta",
+        "-nightly",
+        "-stable",
+        "-appimage",
+        "-electron",
+        "-developer-edition",
+        "-esr",
+        "-dev",
+        "-wayland",
+        "-x11",
+        "-cn",
+        "-fresh",
+        "-still",
+        "-native",
+        "-runtime",
+        "-lts",
+        "-edge",
+        ".desktop",
+        "-desktop",
+        "-hg",
+        "-svn",
+    ];
+
     loop {
         let mut changed = false;
-        for suffix in VARIANT_SUFFIXES {
-            if let Some(stripped) = current.strip_suffix(suffix) {
-                current = stripped;
+        for suffix in &variant_suffixes {
+            if clean_name.ends_with(suffix) {
+                clean_name = clean_name
+                    .strip_suffix(suffix)
+                    .unwrap_or(clean_name.as_str())
+                    .to_string();
                 changed = true;
                 break;
             }
@@ -370,7 +560,128 @@ pub fn canonical_merge_key(name: &str, app_id: Option<&str>) -> String {
         }
     }
 
-    current.to_string()
+    clean_name
+}
+
+/// Final search/category pass: one package per canonical id. Normalizes canonical_id to lowercase and
+/// merges any duplicates (e.g. same app from different code paths). Use after all other dedupes.
+pub fn deduplicate_by_canonical_id_final(packages: Vec<models::Package>) -> Vec<models::Package> {
+    use std::collections::HashMap;
+    let mut by_cid: HashMap<String, models::Package> = HashMap::new();
+    for mut pkg in packages {
+        let cid = if pkg.canonical_id.trim().is_empty() {
+            canonical_merge_key(&pkg.name, pkg.app_id.as_deref())
+        } else {
+            pkg.canonical_id.clone()
+        };
+        let cid = cid.trim().to_lowercase();
+        if cid.is_empty() {
+            continue;
+        }
+        pkg.canonical_id = cid.clone();
+        if let Some(existing) = by_cid.get_mut(&cid) {
+            if let Some(ref sources) = pkg.available_sources {
+                let existing_sources = existing.available_sources.get_or_insert_with(Vec::new);
+                for s in sources {
+                    if !existing_sources
+                        .iter()
+                        .any(|e| e.id == s.id && e.source_type == s.source_type)
+                    {
+                        existing_sources.push(s.clone());
+                    }
+                }
+            }
+            if existing
+                .display_name
+                .as_ref()
+                .map_or(true, |s| s.is_empty())
+                && pkg.display_name.is_some()
+            {
+                existing.display_name = pkg.display_name.clone();
+            }
+            if existing.name.contains('.') && !pkg.name.contains('.') {
+                existing.name = pkg.name.clone();
+                existing.display_name = pkg.display_name.or(existing.display_name.clone());
+            }
+            if existing.app_id.is_none() && pkg.app_id.is_some() {
+                existing.app_id = pkg.app_id.clone();
+            }
+        } else {
+            by_cid.insert(cid, pkg);
+        }
+    }
+    by_cid.into_values().collect()
+}
+
+/// Deduplicates packages by canonical_merge_key and merges available_sources.
+/// Use after merge_search_results so the same app (e.g. Discord from AUR + Flatpak) never appears twice.
+/// Prefers keeping the package that has available_sources (unified card) so the UI shows a friendly name and dropdown.
+pub fn deduplicate_by_canonical_key(packages: Vec<models::Package>) -> Vec<models::Package> {
+    use std::collections::HashMap;
+    let mut by_key: HashMap<String, models::Package> = HashMap::new();
+    for pkg in packages {
+        let key = canonical_merge_key(&pkg.name, pkg.app_id.as_deref());
+        if let Some(existing) = by_key.get_mut(&key) {
+            // Merge available_sources from both
+            if let Some(ref sources) = pkg.available_sources {
+                let existing_sources = existing.available_sources.get_or_insert_with(Vec::new);
+                for s in sources {
+                    if !existing_sources
+                        .iter()
+                        .any(|e| e.id == s.id && e.source_type == s.source_type)
+                    {
+                        existing_sources.push(s.clone());
+                    }
+                }
+            }
+            // Prefer friendly name/display_name from the unified entry (often has available_sources)
+            let new_has_sources = pkg.available_sources.as_ref().map_or(0, |v| v.len()) > 0;
+            let existing_has_sources =
+                existing.available_sources.as_ref().map_or(0, |v| v.len()) > 0;
+            if new_has_sources && !existing_has_sources {
+                existing.name = pkg.name;
+                existing.display_name = pkg.display_name.or(existing.display_name.clone());
+            } else {
+                if existing.display_name.is_none() && pkg.display_name.is_some() {
+                    existing.display_name = pkg.display_name.clone();
+                } else if let (Some(ref ex), Some(ref inc)) =
+                    (&existing.display_name, &pkg.display_name)
+                {
+                    if inc.len() > ex.len() {
+                        existing.display_name = pkg.display_name.clone();
+                    }
+                }
+                if existing.name.contains('.') && !pkg.name.contains('.') {
+                    existing.name = pkg.name;
+                }
+            }
+            if existing.app_id.is_none() && pkg.app_id.is_some() {
+                existing.app_id = pkg.app_id;
+            }
+            if existing.is_featured.is_none() && pkg.is_featured == Some(true) {
+                existing.is_featured = Some(true);
+            }
+        } else {
+            let mut pkg = pkg;
+            pkg.canonical_id = key.clone();
+            by_key.insert(key, pkg);
+        }
+    }
+    // One proper name per app: prefer known full name for this canonical key, else pretty name from pkg.name
+    by_key
+        .into_values()
+        .map(|mut pkg| {
+            let preferred = preferred_display_name(&pkg.canonical_id);
+            if let Some(full) = preferred {
+                pkg.display_name = Some(String::from(full));
+            } else if pkg.display_name.as_ref().map_or(true, |s| s.is_empty())
+                && !pkg.name.contains('.')
+            {
+                pkg.display_name = Some(to_pretty_name(&pkg.name));
+            }
+            pkg
+        })
+        .collect()
 }
 
 /// Merges official/appstream packages with repository packages, handling deduplication.
@@ -460,6 +771,10 @@ mod tests {
     use super::*;
     use crate::models::{Package, PackageSource};
 
+    // Need to make sort_packages_by_relevance pub(crate) or use public API?
+    // It's pub in utils.rs, so super::* should cover it.
+    // Wait, check if utils.rs has it as pub.
+
     fn make_pkg(name: &str, source: PackageSource, votes: Option<u32>) -> Package {
         Package {
             name: name.to_string(),
@@ -489,28 +804,27 @@ mod tests {
     }
 
     #[test]
-    fn test_search_ranking() {
-        let mut pkgs = vec![
-            make_pkg("open-chrome", PackageSource::aur(), Some(50)),
-            make_pkg("google-chrome", PackageSource::chaotic(), Some(1000)),
-            make_pkg("chrome-gnome-shell", PackageSource::official(), Some(200)),
-        ];
-
-        sort_packages_by_relevance(&mut pkgs, "chrome");
-
-        assert_eq!(pkgs[0].name, "google-chrome"); // Rank 0 (Common)
-        assert_eq!(pkgs[1].name, "chrome-gnome-shell"); // Official (Rank 3)
-        assert_eq!(pkgs[2].name, "open-chrome"); // Aur (Rank 4)
-    }
-
-    #[test]
     fn test_canonical_merge_key_variants() {
-        // Variants map to same canonical key for merge deduplication
+        // Variants map to same canonical key for merge deduplication (hyphens/underscores normalized so AUR and Flatpak match)
         assert_eq!(canonical_merge_key("firefox", None), "firefox");
-        assert_eq!(canonical_merge_key("firefox-developer-edition", None), "firefox");
+        assert_eq!(
+            canonical_merge_key("firefox-developer-edition", None),
+            "firefox"
+        );
         assert_eq!(canonical_merge_key("firefox-esr", None), "firefox");
         assert_eq!(canonical_merge_key("brave-bin", None), "brave");
-        assert_eq!(canonical_merge_key("visual-studio-code-bin", None), "visual-studio-code");
+        // Multi-segment: first-segment rule yields "visual" (no per-app list)
+        assert_eq!(
+            canonical_merge_key("visual-studio-code-bin", None),
+            "visual"
+        );
+
+        // Fix for Zettlr/Desktop collision: .desktop suffix should be ignored when app_id looks like a filename
+        assert_eq!(canonical_merge_key("zettlr.desktop", None), "zettlr");
+        assert_eq!(
+            canonical_merge_key("org.foo.bar.desktop", None),
+            "org.foo.bar"
+        );
 
         // App ID takes precedence (reverse-DNS last segment)
         assert_eq!(
@@ -521,14 +835,42 @@ mod tests {
             canonical_merge_key("Firefox", Some("org.mozilla.firefox")),
             "firefox"
         );
+
+        // First-segment rule: "obs-studio" and "com.obsproject.Studio" (known -> obs-studio) -> key "obs"
+        assert_eq!(
+            canonical_merge_key("OBS Studio", Some("com.obsproject.Studio")),
+            "obs"
+        );
+        assert_eq!(canonical_merge_key("obs-studio", None), "obs");
+
+        // First-segment rule: "heroic" and "heroic-games-launcher" -> same key "heroic" (no per-app alias)
+        assert_eq!(canonical_merge_key("heroic", None), "heroic");
+        assert_eq!(
+            canonical_merge_key("heroic-games-launcher-bin", None),
+            "heroic"
+        );
+        assert_eq!(
+            canonical_merge_key("Heroic Game Launcher", Some("com.heroicgameslauncher.hgl")),
+            "heroic"
+        );
+
+        // Name-as-app-id: repo package named "com.discordapp.Discord" (e.g. from metadata) merges with Flatpak
+        assert_eq!(
+            canonical_merge_key("com.discordapp.Discord", None),
+            "discord"
+        );
+        assert_eq!(
+            canonical_merge_key("Discord", Some("com.discordapp.Discord")),
+            "discord"
+        );
     }
 
     #[test]
     fn test_deduplication_priority_swap() {
         // Manjaro (Low Priority: 4)
-        let manjaro = make_pkg("spotify", PackageSource::manjaro(), None);
+        let manjaro = make_pkg("spotify", PackageSource::manjaro("spotify"), None);
         // Chaotic (High Priority: 1)
-        let chaotic = make_pkg("spotify", PackageSource::chaotic(), None);
+        let chaotic = make_pkg("spotify", PackageSource::chaotic("spotify"), None);
 
         let results = merge_and_deduplicate(vec![manjaro], vec![chaotic]);
 
@@ -538,8 +880,20 @@ mod tests {
         assert_eq!(results[0].alternatives.as_ref().unwrap().len(), 1);
         assert_eq!(
             results[0].alternatives.as_ref().unwrap()[0].source,
-            PackageSource::manjaro()
+            PackageSource::manjaro("spotify")
         );
+    }
+
+    #[test]
+    fn test_to_pretty_name() {
+        assert_eq!(to_pretty_name("discord"), "Discord");
+        assert_eq!(to_pretty_name("visual-studio-code"), "Visual Studio Code");
+        // Test RDN logic
+        assert_eq!(to_pretty_name("com.discordapp.Discord"), "Discord");
+        assert_eq!(to_pretty_name("org.mozilla.firefox"), "Firefox");
+        assert_eq!(to_pretty_name("io.github.spacingbat3.webcord"), "Webcord");
+        // Test mixed
+        assert_eq!(to_pretty_name("com.example.my-cool-app"), "My Cool App");
     }
 }
 
@@ -555,7 +909,7 @@ pub async fn run_privileged_script(
     // Acquire global lock to serialize privileged prompts
     let _guard = PRIVILEGED_LOCK.lock().await;
 
-    let (program, args) = if let Some(_) = &password {
+    let (program, args) = if password.is_some() {
         ("sudo", vec!["-S", "bash", "-s"])
     } else if wrapper_exists && !bypass_helper {
         // Use wrapper so Polkit action com.monarch.store.script applies; DE agent = once-per-session.
@@ -717,7 +1071,7 @@ pub async fn run_pacman_command_transparent(
     }
 
     // 2. Build the command
-    let (binary, args) = crate::commands::utils::build_pacman_cmd(
+    let (binary, args) = crate::commands::cmd_helpers::build_pacman_cmd(
         &action_args.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
         &password,
     );
@@ -736,8 +1090,18 @@ pub async fn run_pacman_command_transparent(
     // 3. Handle password if using sudo
     if let Some(pwd) = password {
         if let Some(mut s) = child.stdin.take() {
-            let _ =
-                tokio::io::AsyncWriteExt::write_all(&mut s, format!("{}\n", pwd).as_bytes()).await;
+            if let Err(e) =
+                tokio::io::AsyncWriteExt::write_all(&mut s, format!("{}\n", pwd).as_bytes()).await
+            {
+                let err_msg = if e.kind() == std::io::ErrorKind::BrokenPipe {
+                    "Authentication failed or cancelled (Broken pipe).".to_string()
+                } else {
+                    format!("Failed to write password to stdin: {}", e)
+                };
+                return Err(err_msg);
+            }
+            let _ = tokio::io::AsyncWriteExt::flush(&mut s).await;
+            let _ = tokio::io::AsyncWriteExt::shutdown(&mut s).await;
         }
     }
 

@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, useRef, ReactNode } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { commands } from '../services/bindings';
 import { useToast } from './ToastContext';
 import { friendlyError, FriendlyError } from '../utils/friendlyError';
 
@@ -51,32 +51,32 @@ export interface ErrorContextType {
      * Report an error with automatic severity detection
      */
     report: (error: ErrorInput, severity?: ErrorSeverity, recoveryAction?: { type: string; label: string; handler?: () => void | Promise<void> }) => void;
-    
+
     /**
      * Report a critical error that requires user attention (shows modal)
      */
     reportCritical: (error: ErrorInput, recoveryAction?: { type: string; label: string; handler?: () => void | Promise<void> }) => void;
-    
+
     /**
      * Report a simple error (shows toast)
      */
     reportError: (error: ErrorInput) => void;
-    
+
     /**
      * Report a warning (shows toast)
      */
     reportWarning: (error: ErrorInput) => void;
-    
+
     /**
      * Report info (shows toast)
      */
     reportInfo: (message: string) => void;
-    
+
     /**
      * Get current critical error (for ErrorModal)
      */
     currentCriticalError: ErrorReport | null;
-    
+
     /**
      * Dismiss current critical error
      */
@@ -109,7 +109,7 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
                 classified
             };
         }
-        
+
         // FriendlyError from frontend
         if (typeof error === 'object' && 'title' in error && 'description' in error && !('kind' in error)) {
             const friendly = error as FriendlyError;
@@ -119,7 +119,7 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
                 friendly
             };
         }
-        
+
         // Error object
         if (error instanceof Error) {
             const friendly = friendlyError(error.message);
@@ -130,7 +130,7 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
                 friendly
             };
         }
-        
+
         // String
         if (typeof error === 'string') {
             const friendly = friendlyError(error);
@@ -141,7 +141,7 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
                 friendly
             };
         }
-        
+
         // Fallback
         return {
             title: 'Error',
@@ -177,17 +177,13 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
         // Add to history (keep last 50)
         setErrorHistory(prev => [...prev.slice(-49), report]);
 
-        // Aptabase: track error (non-blocking; never break UI)
-        invoke('track_event', {
-            event: 'error_reported',
-            payload: {
-                severity: report.severity,
-                title: normalized.title,
-                description: normalized.description?.slice(0, 300),
-                kind: normalized.classified?.kind,
-                raw_preview: normalized.raw ? normalized.raw.slice(0, 200) : undefined,
-            },
-        }).catch(() => {});
+        commands.trackTelemetryEvent('error_reported', {
+            severity: report.severity,
+            title: normalized.title,
+            description: normalized.description?.slice(0, 300),
+            kind: normalized.classified?.kind,
+            raw_preview: normalized.raw ? normalized.raw.slice(0, 200) : undefined,
+        } as any).catch(() => { });
 
         // Route based on severity
         if (severity === 'critical') {

@@ -1,53 +1,12 @@
-
-import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { ESSENTIAL_IDS } from '../constants';
 
-export function useSmartEssentials() {
-    const [smartEssentials, setSmartEssentials] = useState<string[]>(ESSENTIAL_IDS);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        const fetchInstalled = async () => {
-            try {
-                // 1. Fetch Essentials Pool (Dynamic)
-                const essentialsPool = await invoke<string[]>('get_essentials_list');
-
-                // 2. Get raw list of installed packages (pacman -Qq)
-                const installed = await invoke<string[]>('get_all_installed_names');
-                const installedSet = new Set(installed);
-
-                // 3. Filter out apps that are already installed
-                // This implicitly handles "Hide Steam on Garuda" because Garuda has steam installed.
-                const filtered = essentialsPool.filter(id => {
-                    // Check direct match
-                    if (installedSet.has(id)) return false;
-
-                    // Simple heuristic: if package name sans "-bin" exists?
-                    const baseName = id.replace(/-bin$/, "");
-                    if (installedSet.has(baseName)) return false;
-
-                    return true;
-                });
-
-                // 4. Ensure at least 4 apps are shown even if they are installed
-                // This prevents the homepage from looking "empty" for power users.
-                if (filtered.length < 4) {
-                    setSmartEssentials(essentialsPool.slice(0, 8));
-                } else {
-                    setSmartEssentials(filtered);
-                }
-            } catch (err) {
-                console.error("Failed to curate essentials:", err);
-                // Fallback to static list on error (Logic kept in backend usually, but defensive here)
-                setSmartEssentials(ESSENTIAL_IDS);
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        fetchInstalled();
-    }, []);
-
-    return { essentials: smartEssentials, loading };
+/**
+ * Returns the essentials list for the home section.
+ * @param initialFromApp - When set (from App startup), use this. When null, returns the curated fallback (35 apps). App is the single source of the fetched list at startup, so the hook does not fetch and there is no duplicate request.
+ */
+export function useSmartEssentials(initialFromApp: string[] | null = null) {
+    return {
+        essentials: initialFromApp ?? ESSENTIAL_IDS,
+        loading: false,
+    };
 }

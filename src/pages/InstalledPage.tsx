@@ -1,32 +1,29 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Search, Trash2, Play, HardDrive, Calendar, Package as PackageIcon, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { clsx } from 'clsx';
-import { invoke } from '@tauri-apps/api/core';
+import { commands, InstalledPackage, Package as BackendPackage } from '../services/bindings';
+import { unwrap } from '../utils/specta';
 import ConfirmationModal from '../components/ConfirmationModal';
 import { useToast } from '../context/ToastContext';
 import { useErrorService } from '../context/ErrorContext';
 import { useSessionPassword } from '../context/useSessionPassword';
 import { useAppStore } from '../store/internal_store';
-import { Package } from '../components/PackageCard';
+import { useSettings } from '../hooks/useSettings';
+import type { Package } from '../services/bindings';
 
-interface InstalledApp {
-    name: string;
-    version: string;
-    size: string | null;
-    install_date: string | null;
-    description: string;
-    icon: string | null;
-}
+// using types from bindings.ts instead
 
 // Helper component for Icon
 import archLogo from '../assets/arch-logo.png';
+import { resolveIconUrl } from '../utils/iconHelper';
 
 const AppIcon = ({ appName, appIcon }: { appName: string; appIcon: string | null }) => {
     const [icon, setIcon] = useState<string | null>(appIcon);
 
     useEffect(() => {
-        // Optimizing "The Storm": Disable client-side fetch loop entirely. 
+        // Optimizing "The Storm": Disable client-side fetch loop entirely.
         // We rely on the backend batch fetch.
         if (appIcon) {
             setIcon(appIcon);
@@ -35,14 +32,14 @@ const AppIcon = ({ appName, appIcon }: { appName: string; appIcon: string | null
         }
     }, [appName, appIcon]);
 
-    const displayIcon = icon || archLogo;
+    const displayIcon = resolveIconUrl(icon) || archLogo;
 
     return <img src={displayIcon} alt={appName} className={clsx("w-full h-full object-contain", !icon && "opacity-50 grayscale")} />;
 };
 
 export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (pkg: Package) => void }) {
     const [searchQuery, setSearchQuery] = useState('');
-    const [apps, setApps] = useState<InstalledApp[]>([]);
+    const [apps, setApps] = useState<InstalledPackage[]>([]);
     const [loading, setLoading] = useState(true);
     const [totalSize, setTotalSize] = useState('Calculating...');
 
@@ -51,30 +48,40 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
     const errorService = useErrorService();
     const { requestSessionPassword } = useSessionPassword();
     const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
+    const setLastInstallTarget = useAppStore((s) => s.setLastInstallTarget);
+    const { isFlatpakEnabled, isAurEnabled, isChaoticEnabled } = useSettings();
+
+    const fetchInstalled = useCallback(async () => {
+        setLoading(true);
+        try {
+            const packages = unwrap(await commands.getInstalledPackages());
+            setApps(packages);
+
+            // [IRON CORE PURGE] Size calculation logic removed.
+            // Backend should provide pre-calculated stats if needed.
+            // setTotalSize(`${sizeSum.toFixed(1)} MiB used`);
+            setTotalSize("Size calculation disabled");
+        } catch (e) {
+            errorService.reportError(e as Error | string);
+        } finally {
+            setLoading(false);
+        }
+    }, [errorService]);
 
     // Fetch installed packages on mount
     useEffect(() => {
-        const fetchInstalled = async () => {
-            setLoading(true);
-            try {
-                const packages = await invoke<InstalledApp[]>('get_installed_packages');
-                setApps(packages);
-
-                // Calculate total size
-                const sizeSum = packages.reduce((acc, pkg) => {
-                    const match = (pkg.size || "").match(/(\d+\.?\d*)/);
-                    return acc + (match ? parseFloat(match[1]) : 0);
-                }, 0);
-                setTotalSize(`${sizeSum.toFixed(1)} MiB used`);
-            } catch (e) {
-                errorService.reportError(e as Error | string);
-            } finally {
-                setLoading(false);
-            }
-        };
-
         fetchInstalled();
-    }, []);
+    }, [fetchInstalled]);
+
+    // Refetch when an install/uninstall completes so the list stays in sync (e.g. uninstall from details page)
+    useEffect(() => {
+        const unlisten = listen<string>('install-complete', (event) => {
+            if (event.payload === 'success') fetchInstalled();
+        });
+        return () => {
+            unlisten.then((f) => f()).catch(() => { });
+        };
+    }, [fetchInstalled]);
 
     const filteredApps = apps.filter(app =>
         app.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -90,9 +97,11 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
         const { id, name } = confirmModal;
 
         try {
+            setLastInstallTarget({ name: id, mode: 'uninstall' });
             const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-            await invoke('uninstall_package', { name: id, password: pwd });
-            setApps(apps.filter(a => a.name !== id));
+            await commands.uninstallPackage(id, null, pwd).then(unwrap);
+            setApps((prev) => prev.filter((a) => a.name !== id));
+            setConfirmModal(null);
             success(`${name} uninstalled successfully`);
         } catch (e) {
             errorService.reportError(e as Error | string);
@@ -101,26 +110,36 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
 
     const handleLaunch = async (id: string) => {
         try {
-            await invoke('launch_app', { pkgName: id });
+            await commands.launchApp({ pkg_name: id });
         } catch (e) {
             errorService.reportError(e as Error | string);
         }
     };
 
-    const handleNavigation = async (app: InstalledApp) => {
+    const handleNavigation = async (app: InstalledPackage) => {
         try {
-            // Try to get proper package info
-            const results = await invoke<Package[]>('get_packages_by_names', { names: [app.name] });
+            // Resolve package for details: include all sources (Flatpak/AUR/Chaotic) so installed app opens correctly even when sources are off
+            const results = unwrap(await commands.getPackagesByNames([app.name], {
+                flatpak_enabled: isFlatpakEnabled,
+                aur_enabled: isAurEnabled,
+                chaotic_enabled: isChaoticEnabled,
+                for_installed_lookup: true
+            }, null));
             if (results && results.length > 0) {
-                onSelectPackage(results[0]);
+                onSelectPackage(results[0] as any);
             } else {
-                // Search as fallback
-                const searchResults = await invoke<Package[]>('search_packages', { query: app.name });
+                // Search as fallback (same: include all sources for installed app resolution)
+                const searchResults = unwrap(await commands.searchPackages(app.name, {
+                    flatpak_enabled: isFlatpakEnabled,
+                    aur_enabled: isAurEnabled,
+                    chaotic_enabled: isChaoticEnabled,
+                    for_installed_lookup: true
+                }));
                 const exactMatch = searchResults.find(p => p.name.toLowerCase() === app.name.toLowerCase());
                 if (exactMatch) {
-                    onSelectPackage(exactMatch);
+                    onSelectPackage(exactMatch as any);
                 } else if (searchResults.length > 0) {
-                    onSelectPackage(searchResults[0]);
+                    onSelectPackage(searchResults[0] as any);
                 }
             }
         } catch (e) {
@@ -171,9 +190,9 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
                 ) : (
                     <div className="space-y-2 max-w-4xl mx-auto">
                         <AnimatePresence>
-                            {filteredApps.map((app) => (
+                            {filteredApps.map((app, idx) => (
                                 <motion.div
-                                    key={app.name}
+                                    key={typeof app.name === 'string' ? app.name : `app-${idx}`}
                                     initial={{ opacity: 0, y: 8 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     exit={{ opacity: 0, height: 0 }}

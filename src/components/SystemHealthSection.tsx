@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { commands, HealthIssue } from "../services/bindings";
+import { unwrap } from "../utils/specta";
 import { listen } from "@tauri-apps/api/event";
 import {
     LockOpen,
@@ -20,14 +21,6 @@ import { clsx } from 'clsx';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { useErrorService } from '../context/ErrorContext';
-
-interface HealthIssue {
-    category: string;
-    severity: string;
-    message: string;
-    action_label: string;
-    action_command: string | null;
-}
 
 export default function SystemHealthSection() {
     const errorService = useErrorService();
@@ -67,8 +60,8 @@ export default function SystemHealthSection() {
 
     const checkLock = async () => {
         try {
-            const locked = await invoke("check_pacman_lock");
-            setIsLocked(locked as boolean);
+            const locked = await commands.checkPacmanLock();
+            setIsLocked(locked);
         } catch (e) {
             errorService.reportError(e as Error | string);
         }
@@ -76,7 +69,7 @@ export default function SystemHealthSection() {
 
     const checkHealth = async () => {
         try {
-            const issues = await invoke<HealthIssue[]>("check_system_health");
+            const issues = unwrap(await commands.checkSystemHealth());
             setHealthIssues(issues);
         } catch (e) {
             errorService.reportError(e as Error | string);
@@ -99,47 +92,42 @@ export default function SystemHealthSection() {
         setLogs((p) => [...p, `>>> STARTING: ${pendingAction.toUpperCase()} ...`]);
 
         try {
-            let cmd = "";
-            let args = {};
+            const pwd = password || null;
 
             switch (pendingAction) {
                 case "unlock":
-                    cmd = "repair_unlock_pacman";
+                    unwrap(await commands.repairUnlockPacman(pwd));
                     break;
                 case "keyring":
                 case "trigger_repair_flow":
                 case "repair_reset_keyring":
-                    cmd = "fix_keyring_issues_alias";
+                    unwrap(await commands.fixKeyringIssues(pwd));
                     break;
                 case "emergency_sync":
-                    cmd = "repair_emergency_sync";
+                    unwrap(await commands.repairEmergencySync(pwd));
                     break;
                 case "install_monarch_policy":
-                    cmd = "install_monarch_policy";
+                    unwrap(await commands.installMonarchPolicy(pwd));
                     break;
                 case "orphans":
                     setLogs(p => [...p, "Scanning for unused files..."]);
-                    const orphans = await invoke<string[]>("get_orphans");
+                    const orphans = unwrap(await commands.getOrphans());
                     if (orphans && orphans.length > 0) {
                         setLogs(p => [...p, `Found ${orphans.length} leftovers: ${orphans.join(", ")}`]);
-                        await invoke("remove_orphans", { orphans });
+                        unwrap(await commands.removeOrphans(orphans));
                         setLogs(p => [...p, ">>> SUCCESS: System cleaned."]);
                     } else {
                         setLogs(p => [...p, "System is already clean!"]);
                     }
-                    cmd = "";
                     break;
                 case "cache":
-                    cmd = "clear_cache";
+                    unwrap(await commands.clearCache());
                     break;
             }
 
-            if (cmd) {
-                await invoke(cmd, { password: password || null, ...args });
-                setLogs((p) => [...p, `>>> SUCCESS: ${pendingAction.toUpperCase()} COMPLETED.`]);
-                checkHealth();
-                checkLock();
-            }
+            setLogs((p) => [...p, `>>> SUCCESS: ${pendingAction.toUpperCase()} COMPLETED.`]);
+            checkHealth();
+            checkLock();
         } catch (e) {
             errorService.reportError(e as Error | string);
             setLogs((p) => [...p, `>>> ERROR: ${e}`]);

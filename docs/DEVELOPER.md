@@ -1,8 +1,8 @@
 # MonARCH Store — Developer Documentation
 
-**Last updated:** 2026-02-02 (v0.4.0-alpha)
+**Last updated:** 2026-02-14 (v0.4.6-alpha)
 
-Single reference for developers working on MonARCH Store: setup, architecture, code style, and critical rules.
+Single reference for developers working on MonARCH Store: setup, architecture, code style, and critical rules. For a full summary of recent changes (Universal Data Engine, unification, Operation Chaotic Good, onboarding, labels), see [RECENT_CHANGES.md](RECENT_CHANGES.md) and [UNIVERSAL_DATA_ENGINE.md](UNIVERSAL_DATA_ENGINE.md).
 
 ---
 
@@ -10,11 +10,16 @@ Single reference for developers working on MonARCH Store: setup, architecture, c
 
 MonARCH Store is a **Host-Adaptive software store** for Arch, Manjaro, Garuda, and CachyOS. It provides:
 
-- **Host-Adaptive** repositories: We respect `/etc/pacman.conf` as the source of truth instad of managing internal state.
-- **Unified Search**: Aggregates Official, AUR, and Flatpak results.
+- **Host-Adaptive** repositories: We respect `/etc/pacman.conf` as the source of truth instead of managing internal state.
+- **Unified Search**: Aggregates Official, AUR, and Flatpak results; variant merging via `canonical_merge_key` (first-segment rule, no per-app list); friendly labels from `labels::get_friendly_label`. See `docs/UNIVERSAL_DATA_ENGINE.md`.
 - **Native AUR Builder**: User-level `makepkg` builds with streaming logs.
-- **The Iron Core (v0.3.6):** Implemented `SafeUpdateTransaction` for atomic, borrow-safe ALPM operations. Enforces `-Syu` for all transactions.
+- **The Iron Core (v0.3.6+):** Implemented `SafeUpdateTransaction` for atomic, borrow-safe ALPM operations. Enforces `-Syu` for all transactions. **Iron Core Purge (v0.4.6):** Fully offloaded metadata hydration to the backend; frontend is now a **Dumb View**.
+- **Safe Guard (Install & Update):** Helper respects host `IgnorePkg`/`IgnoreGroup`; update-and-install runs full system upgrade **before** installing target; on stale-DB install failure, GUI emits `failed_update_required` (no silent full upgrade).
 - **Silent Guard (Atomic Batch):** Use `TransactionManifest` to bundle multiple operations (Refresh, Upgrade, Install) into a single helper invocation, reducing password prompts.
+- **Unified Pipeline & Dumb View:** Frontend uses `bindings.ts` types for the `Package` struct. Most hydration hooks (`usePackageMetadata`, `useRatings`, `usePrewarmCards`) have been deleted.
+- **One card per app / one proper name:** Backend `deduplicate_by_canonical_key` and `canonical_id` on `Package`; first-segment canonical key and `preferred_display_name` so one app has one card and one label (e.g. "Heroic Game Launcher"); list keys use `canonical_id`.
+- **Operation Chaotic Good:** Chaotic-AUR safe toggle—we do **not** edit `/etc/pacman.conf`. `check_chaotic_status` / `prepare_chaotic_components` (Helper installs keyring + mirrorlist only); Settings SourcesTab shows Active/Inactive/Blocked and "Final Step" modal; onboarding wizard includes conditional Chaotic-AUR step. Package cards/details: when only source is Chaotic-AUR and not enabled, show "Configure Source" (opens Settings).
+- **Liquid UI:** Min window 800×600; responsive grids; mobile bottom nav; responsive package details.
 - **Wayland Ghost Protocol:** Automated flicker/artifact prevention on Wayland sessions.
 - **Chameleon Theme Engine:** Native dark mode detection via XDG Portals (`ashpd`).
 - **Two-process backend**: GUI (user) + Helper (root via Polkit) so ALPM writes are isolated.
@@ -49,6 +54,7 @@ monarch-store/
 │   ├── monarch-gui/              # Tauri app (user process)
 │   │   ├── src/
 │   │   │   ├── commands/         # package, search, system, update, reviews, utils
+│   │   │   ├── middleware/       # aggregation.rs (unification logic)
 │   │   │   ├── helper_client.rs # Temp-file + pkexec → monarch-helper
 │   │   │   ├── alpm_read.rs      # Read-only ALPM
 │   │   │   ├── error_classifier.rs
@@ -261,7 +267,8 @@ See [INSTALL_UPDATE_AUDIT.md](INSTALL_UPDATE_AUDIT.md) and [SECURITY.md](../SECU
 | Module | Role |
 |--------|------|
 | `commands/package.rs` | Install/uninstall; builds command, calls helper client |
-| `commands/search.rs` | Search packages; merge/dedup, relevance sort |
+| `commands/search.rs` | Search entry point (calls middleware) |
+| `middleware/aggregation.rs` | Core aggregation logic: merge/dedup, relevance sort |
 | `commands/update.rs` | System update: Sysupgrade (repos) + AUR-only batch (filter by `is_in_sync_repos`) |
 | `commands/system.rs` | Repo sync, health, repair |
 | `helper_client.rs` | Build JSON command, write temp file, spawn pkexec helper |

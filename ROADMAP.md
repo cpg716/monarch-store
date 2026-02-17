@@ -1,5 +1,7 @@
 # MonARCH Store Roadmap 🗺️
 
+**Last updated:** 2026-02-14 (v0.4.6-alpha)
+
 This document outlines the planned trajectory for MonARCH Store. As an alpha-stage project, our focus is on building a rock-solid, host-adaptive foundation first.
 
 ---
@@ -8,7 +10,14 @@ This document outlines the planned trajectory for MonARCH Store. As an alpha-sta
 *   [x] **Mission Control**: Full settings overhaul for source and builder management.
 *   [x] **Unified Update Engine**: Parallel checks for ALPM, AUR, and Flatpak.
 *   [x] **Sanitary Audit**: Removal of legacy "Ghost Commands" and tech debt.
+*   [x] **Iron Core Purge**: Full offloading of metadata hydration to the backend; frontend as a 'Dumb View'.
 *   [x] **Built from Source**: Clear UX indicators for AUR compilation.
+*   [x] **Safe Guard (Install & Update)**: IgnorePkg respect, update-before-install, no silent full upgrade on download fail.
+*   [x] **Liquid UI**: Responsive grids, mobile bottom nav, min window 800×600, responsive package details.
+*   [x] **Unified Pipeline**: Variant merging (canonical keys), source selector and badges on cards and details.
+*   [x] **One card per app**: Backend `deduplicate_by_canonical_key` and `canonical_id`; frontend list keys so browse/trending/category show exactly one card per app; details dropdown always includes card source and prefers it for selection.
+*   [x] **Operation Chaotic Good**: Chaotic-AUR safe toggle (read-only pacman.conf); traffic light in Settings (Active/Inactive/Blocked); onboarding wizard (Welcome → Sources → Chaotic-AUR [conditional] → Security & Theme → Confirmation); "Configure Source" on cards/details when only source is Chaotic-AUR and not enabled.
+*   [x] **UI/UX (labels & dropdown)**: RepoSelector AUR entries show pkg_name; "Other repository" shows repo id; Arch Official label; PackageCard version selector spacing.
 
 ---
 
@@ -30,7 +39,7 @@ This document outlines the planned trajectory for MonARCH Store. As an alpha-sta
 
 ## 🌠 Phase 3: Expansion (Long-term)
 *   [ ] **MonARCH Hub**: A community-driven discovery portal with curated "Collections".
-*   [ ] **Mobile Layout**: Responsive UI refinements for devices like the PinePhone or Steam Deck.
+*   [ ] **Mobile Layout (further)**: Additional responsive refinements for very small screens (e.g. PinePhone, Steam Deck); core responsive grids and mobile nav are done (Liquid UI).
 *   [ ] **Multi-Distro Support**: Investigating support for Fedora (DNF) or Nix (though our heart remains in Arch).
 
 ---

@@ -1,19 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
+import { useAppStore } from '../store/internal_store';
 
 type ThemeMode = 'system' | 'light' | 'dark';
 
 export function useTheme() {
-    const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
-        return (localStorage.getItem('theme-mode') as ThemeMode) || 'system';
-    });
-
-    const [accentColor, setAccentColor] = useState(() => {
-        return localStorage.getItem('accent-color') || '#3b82f6';
-    });
+    const themeMode = useAppStore(state => state.themeMode);
+    const setThemeMode = useAppStore(state => state.setThemeMode);
+    const accentColor = useAppStore(state => state.accentColor);
+    const setAccentColor = useAppStore(state => state.setAccentColor);
 
     useEffect(() => {
         const applyTheme = () => {
-            localStorage.setItem('theme-mode', themeMode);
             const root = window.document.documentElement;
 
             // Handle Theme Mode
@@ -38,7 +35,7 @@ export function useTheme() {
             // Handle Accent Color
             root.style.setProperty('--app-accent', accentColor);
 
-            // Update selection color too (optional but nice)
+            // Update selection color
             root.style.setProperty('--tw-selection-bg', `${accentColor}4D`); // 30% opacity
         };
 

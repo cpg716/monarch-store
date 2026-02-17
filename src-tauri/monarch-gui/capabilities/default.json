@@ -8,7 +8,7 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "app-commands",
+    "app-commands-read","app-commands-privileged",
     "notification:default",
     "aptabase:default",
     "core:window:allow-minimize",
@@ -19,11 +19,18 @@
     "store:allow-load",
     "store:allow-save",
     "store:allow-has",
+    "store:allow-get",
+    "store:allow-set",
+    "store:allow-delete",
+    "store:allow-keys",
     {
       "identifier": "fs:allow-read",
       "allow": [
         {
           "path": "$CACHE/monarch-store/**"
+        },
+        {
+          "path": "$CACHE/monarch/**"
         }
       ]
     }

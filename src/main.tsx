@@ -13,6 +13,10 @@ import { SessionPasswordProvider } from './context/SessionPasswordContext';
 if (typeof window !== 'undefined') {
   window.onerror = (message, _source, _lineno, _colno, error) => {
     const msg = error?.message ?? String(message);
+    // Ignore benign ResizeObserver errors common in complex layouts
+    if (msg.includes("ResizeObserver loop")) {
+      return false;
+    }
     getErrorService()?.reportCritical(msg);
     return false;
   };

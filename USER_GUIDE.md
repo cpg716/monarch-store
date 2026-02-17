@@ -1,5 +1,7 @@
 # MonARCH Store — User Guide 🚀
 
+**Current version:** v0.4.5-alpha · **Last updated:** 2026-02-08
+
 Welcome to MonARCH Store, the host-adaptive software manager for Arch Linux and its derivatives. This guide will help you understand how to use MonARCH and how it works under the hood.
 
 ---
@@ -16,6 +18,9 @@ It provides a unified interface for:
 ---
 
 ## 2. Getting Started
+
+### 🧭 Onboarding (first run)
+On first launch, a short wizard guides you: **Welcome** (your distro and philosophy), **Source Manager** (Flatpak, AUR, Chaotic-AUR toggles—Chaotic is not available on some distros, e.g. Manjaro), **Chaotic-AUR Setup** (if supported—on Garuda/CachyOS it may show “Already enabled”; otherwise install keys and mirrors, then add the repo to pacman.conf), **Security & Privacy** (one prompt per session vs system dialog every time, and telemetry), **Theme** (Light/Dark, accent), and **Confirmation**. You can change these later in Settings.
 
 ### 🛸 The Dashboard
 When you launch MonARCH, the Dashboard gives you a bird's-eye view of your system:
@@ -35,7 +40,11 @@ Searching in MonARCH is powerful. When you type a query, MonARCH searches all th
 2.  Click the package to see details.
 3.  Select your preferred **Source** (Official, Flatpak, or AUR).
 4.  Click **Install**.
-5.  If prompted, enter your password. MonARCH uses standard system authentication (Polkit).
+5.  If prompted, enter your password. With **Reduce password prompts** on (Settings), you’ll see MonARCH’s prompt once per session; with it off, you’ll see the system authentication (Polkit) dialog each time.
+
+For **official repository** packages, MonARCH runs a full system upgrade first, then installs your package—this keeps your system consistent and avoids partial upgrades. If an install fails because databases are out of date, you will be prompted to run a system update; we do not upgrade in the background without your confirmation.
+
+If an app is **only** available from Chaotic-AUR and you have not enabled that repo yet, the card shows **Setup Required** and a **Configure Source** button that opens Settings so you can complete the Chaotic-AUR setup (keys, mirrors, then add the repo to pacman.conf).
 
 ### 🗑️ Removing Apps
 Navigate to your **Library**, find the application, and click **Uninstall**. For repository packages, MonARCH will also offer to remove "orphans" (dependencies that are no longer needed).
@@ -59,6 +68,8 @@ Mission Control is where you fine-tune your MonARCH experience.
 ### 🦎 Sources
 Enable or disable repositories. MonARCH automatically detects CachyOS, Garuda, or EndeavourOS specific repos.
 
+**Chaotic-AUR:** MonARCH shows Chaotic-AUR as **Active** (in pacman.conf and in use), **Inactive** (not in pacman.conf), or **Blocked** (e.g. on Manjaro). To enable Chaotic-AUR: turn the toggle on, click **Install Keys & Mirrors** (MonARCH installs the keyring and mirrorlist), then add the repo block to `/etc/pacman.conf` as shown in the "Final Step" modal. The modal explains: open the file in a text editor (e.g. `sudo nano /etc/pacman.conf`), add the two lines at the end, save, then click **Check Again**. MonARCH never edits pacman.conf for you—you add the repo manually.
+
 ### 🛠️ AUR Builder
 Settings for how your machine builds AUR packages. You can clean build directories automatically to save space or enable verbose logging if a build fails.
 
@@ -72,11 +83,12 @@ If something feels wrong (e.g., "Database locked" or GPG errors), use the **Adva
 
 ## 6. How it Works (For the curious)
 
-MonARCH is built with a **dual-brain** architecture:
-1.  **The GUI (User)**: The beautiful interface you see. It runs as your normal user and cannot touch system files directly.
-2.  **The Helper (Root)**: A small, high-security background tool that runs as root. When you click "Install," the GUI sends a command to the Helper, which then talks to the system's package manager (`libalpm`).
+MonARCH is built with a **Highly-Integrated Backend** and a **Dumb View Frontend**:
+1.  **The Brain (Backend)**: The Rust backend handles all the heavy lifting—parallel searches, metadata hydration (icons, descriptions), and security checks. It acts as the single source of truth for all application data.
+2.  **The View (Frontend)**: The beautiful interface you see is a "Dumb View." It doesn't guess metadata or manage complex state; it simply renders the enriched data provided by the backend via a type-safe contract (`bindings.ts`).
+3.  **The Helper (Root)**: A privileged tool that handles system modifications (ALPM) separately from the user interface, ensuring maximum security and stability.
 
-This ensures that your system remains secure while providing a modern, premium experience.
+This architecture ensures that your experience is fast, unified, and inherently stable.
 
 ---
 

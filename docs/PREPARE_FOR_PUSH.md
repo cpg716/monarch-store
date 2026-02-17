@@ -1,8 +1,8 @@
-# Prepare for Push to GitHub — v0.3.5-alpha
+# Prepare for Push to GitHub — v0.4.5-alpha
 
-**Last updated:** 2025-01-31
+**Last updated:** 2026-02-03
 
-Use this checklist before pushing to GitHub (main and/or release tag).
+Use this checklist before pushing to GitHub (main and/or release tag). For a summary of recent features (one card per app, details dropdown, Operation Chaotic Good, onboarding), see [RECENT_CHANGES.md](RECENT_CHANGES.md).
 
 ---
 
@@ -14,7 +14,7 @@ Use this checklist before pushing to GitHub (main and/or release tag).
 | **Rust** | `cd src-tauri && cargo check` | ✅ Must pass |
 | **.gitignore** | `.cursor` and build artifacts ignored | ✅ Done |
 | **No secrets** | No API keys, tokens, or `.env` committed | ⬜ Verify |
-| **Version** | package.json, tauri.conf.json, Cargo.toml, PKGBUILD = 0.3.5-alpha / 0.3.5_alpha | ✅ Synced |
+| **Version** | package.json, tauri.conf.json, Cargo.toml (monarch-gui + monarch-helper), PKGBUILD = 0.4.5-alpha | ✅ Synced |
 
 ---
 
@@ -41,7 +41,7 @@ Use this checklist before pushing to GitHub (main and/or release tag).
 
 ```bash
 git push origin main
-git push origin v0.3.5_alpha
+git push origin v0.4.5-alpha
 ```
 
 **Otherwise**, from repo root:
@@ -54,14 +54,14 @@ git add -A
 git status
 
 # 3. Commit (adjust message if needed)
-git commit -m "Release v0.3.5-alpha: Omni-User, Titan Polish, Aptabase, docs"
+git commit -m "Release v0.4.5-alpha: Version bump, Chaotic Good, unification"
 
 # 4. Push main
 git push origin main
 
-# 5. (Optional) Create and push release tag
-git tag -a v0.3.5_alpha -m "Release v0.3.5-alpha"
-git push origin v0.3.5_alpha
+# 5. (Optional) Create and push release tag (triggers CI build + draft release)
+git tag -a v0.4.5-alpha -m "Release v0.4.5-alpha"
+git push origin v0.4.5-alpha
 ```
 
 If you use SSH for GitHub:
@@ -69,7 +69,7 @@ If you use SSH for GitHub:
 ```bash
 git remote set-url origin git@github.com:cpg716/monarch-store.git
 git push origin main
-git push origin v0.3.5_alpha
+git push origin v0.4.5-alpha
 ```
 
 ---
@@ -87,6 +87,6 @@ Then push the updated PKGBUILD and .SRCINFO: `git push origin main`.
 
 ---
 
-## 5. Optional: GitHub Release
+## 5. GitHub Release (container-built)
 
-On GitHub: **Releases** → **Draft a new release** → choose tag `v0.3.5_alpha`, add title and notes (e.g. from `docs/GITHUB_RELEASE_TEMPLATE_v0.3.5.md`), publish.
+Pushing a tag (e.g. `v0.4.5-alpha`) triggers the **Release** workflow: it builds the app in Docker and creates a **draft** GitHub Release. The release body is **dynamic** — generated from `RELEASE_NOTES.md` for the pushed tag. After the workflow completes, open the draft release, verify artifacts, and publish. See [RELEASE_PUSH_STEPS.md](RELEASE_PUSH_STEPS.md).

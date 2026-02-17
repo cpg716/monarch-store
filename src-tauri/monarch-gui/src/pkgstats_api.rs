@@ -1,3 +1,7 @@
+//! pkgstats.archlinux.de API for package popularity. Kept for potential future use;
+//! trending now uses DiscoveryManager (AUR + Flathub).
+#![allow(dead_code)]
+
 use crate::models;
 use serde::Deserialize;
 
@@ -33,7 +37,7 @@ pub async fn fetch_top_packages(limit: u32) -> Result<Vec<models::Package>, Stri
             display_name: Some(p.name.clone()), // We might prettify this later
             description: format!("Popularity: {:.2}%", p.popularity), // Placeholder desc until metdata hydrates
             version: "latest".to_string(),
-            source: models::PackageSource::official(),
+            source: models::PackageSource::official(&p.name),
             maintainer: None,
             license: None,
             url: None,

@@ -1,7 +1,7 @@
 # Maintainer: cpg716 (developer and creator; built with the help of AI coding tools)
 # https://github.com/cpg716/monarch-store
 pkgname=monarch-store
-pkgver=0.3.5_alpha
+pkgver=0.4.6_alpha
 pkgrel=1
 # pkgdesc kept under 80 chars for terminal clarity
 pkgdesc="Distro-aware software store for Arch, Manjaro, CachyOS (Tauri)"

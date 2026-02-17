@@ -35,9 +35,13 @@ pub struct TransactionManifest {
     pub refresh_db: bool,             // Should we run -Sy?
     pub clear_cache: bool,            // Should we run -Sc?
     pub remove_lock: bool,            // Should we remove pacman lock?
+    pub remove_orphans: bool,         // Should we remove unused dependencies?
     pub install_targets: Vec<String>, // List of repo packages
     pub remove_targets: Vec<String>,  // List of packages to remove
     pub local_paths: Vec<String>,     // List of pre-built AUR packages (.pkg.tar.zst) to install
+    pub parallel_downloads: Option<u32>,
+    pub cpu_optimization: Option<String>,
+    pub target_repo: Option<String>,
 }
 
 fn emit_progress_event(event: AlpmProgressEvent) {
@@ -155,7 +159,7 @@ fn ensure_keyrings_updated(alpm: &Alpm) -> Result<(), String> {
     }
 
     let output = std::process::Command::new("pacman")
-        .args(&["-S", "--noconfirm", "--needed"])
+        .args(["-S", "--noconfirm", "--needed"])
         .args(&targets)
         .env("LC_ALL", "C")
         .output()
@@ -183,24 +187,22 @@ pub fn execute_alpm_install(
 
     emit_simple_progress(5, "Initializing transaction...");
 
-    if sync_first {
-        if check_db_freshness(alpm) {
-            emit_simple_progress(10, "Synchronizing databases...");
-            if let Err(e) = alpm.syncdbs_mut().update(false) {
-                let err = e.to_string();
-                if is_corrupt_db_error(&err) {
-                    force_refresh_sync_dbs(alpm)?;
-                    alpm.syncdbs_mut().update(true).map_err(|e| e.to_string())?;
-                } else {
-                    return Err(format!("Database sync failed: {}", err));
-                }
+    if sync_first && check_db_freshness(alpm) {
+        emit_simple_progress(10, "Synchronizing databases...");
+        if let Err(e) = alpm.syncdbs_mut().update(false) {
+            let err = e.to_string();
+            if is_corrupt_db_error(&err) {
+                force_refresh_sync_dbs(alpm)?;
+                alpm.syncdbs_mut().update(true).map_err(|e| e.to_string())?;
+            } else {
+                return Err(format!("Database sync failed: {}", err));
             }
         }
     }
 
     emit_simple_progress(20, "Resolving packages...");
 
-    // ATTEMPT 1: Lookup in current DBs
+    // ATTEMPT 1: Lookup in current DBs (optionally restricted to target_repo)
     let mut found_packages = lookup_packages(alpm, &packages, &target_repo);
 
     // If failed, FORCE SYNC and RETRY
@@ -210,8 +212,15 @@ pub fn execute_alpm_install(
             logger::warn(&format!("Database sync warning: {}", e));
             // Don't error out yet, maybe the package is there but sync failed partially
         }
-        // ATTEMPT 2: Retry Lookup
+        // ATTEMPT 2: Retry Lookup (same target_repo)
         found_packages = lookup_packages(alpm, &packages, &target_repo);
+    }
+
+    // If still not found and we were restricting to a specific repo (e.g. "community"), the repo
+    // may not exist on this distro (e.g. CachyOS uses cachyos-extra-v4). Fall back to searching
+    // all syncdbs so the package can be found in whatever repo actually provides it.
+    if found_packages.len() != packages.len() && target_repo.is_some() {
+        found_packages = lookup_packages(alpm, &packages, &None);
     }
 
     // Final Check
@@ -277,7 +286,10 @@ pub fn execute_alpm_install(
         msg
     })?;
 
-    emit_simple_progress(50, "Downloading packages...");
+    emit_simple_progress(
+        50,
+        "Installing packages and running install scripts (large apps may take 1–2 minutes)…",
+    );
     match alpm.trans_commit() {
         Ok(_) => {
             emit_simple_progress(100, "Installation complete!");
@@ -328,7 +340,7 @@ pub fn execute_alpm_check_updates_safe(_alpm: &mut Alpm) {
     emit_simple_progress(20, "Syncing Safe DBs...");
 
     let sync_status = std::process::Command::new("pacman")
-        .args(&["-Sy", "--dbpath", temp_path.to_str().unwrap()])
+        .args(["-Sy", "--dbpath", temp_path.to_str().unwrap()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
@@ -337,7 +349,7 @@ pub fn execute_alpm_check_updates_safe(_alpm: &mut Alpm) {
         Ok(s) if s.success() => {
             emit_simple_progress(50, "Checking for updates...");
             let qu_out = std::process::Command::new("pacman")
-                .args(&["-Qu", "--dbpath", temp_path.to_str().unwrap()])
+                .args(["-Qu", "--dbpath", temp_path.to_str().unwrap()])
                 .output();
 
             if let Ok(qu) = qu_out {
@@ -371,6 +383,8 @@ pub fn execute_alpm_check_updates_safe(_alpm: &mut Alpm) {
     }
 }
 
+/// Uninstall packages via ALPM. Package scriptlets (e.g. post_remove) run synchronously
+/// during trans_commit; if a scriptlet blocks, the whole uninstall blocks until it finishes.
 pub fn execute_alpm_uninstall(
     packages: Vec<String>,
     remove_deps: bool,
@@ -394,7 +408,7 @@ pub fn execute_alpm_uninstall(
     setup_progress_callbacks(alpm)?;
     alpm.trans_prepare().map_err(|e| e.to_string())?;
 
-    emit_simple_progress(50, "Removing packages...");
+    emit_simple_progress(50, "Removing packages and running uninstall scripts (large apps like OBS may take 1–2 minutes)…");
     match alpm.trans_commit() {
         Ok(_) => {
             emit_simple_progress(100, "Uninstallation complete!");
@@ -555,6 +569,7 @@ pub fn execute_alpm_install_files(paths: Vec<String>, alpm: &mut Alpm) -> Result
 
     setup_progress_callbacks(alpm)?;
     alpm.trans_prepare().map_err(|e| e.to_string())?;
+    emit_simple_progress(80, "Installing packages and running install scripts…");
     match alpm.trans_commit() {
         Ok(_) => Ok(()),
         Err(e) => Err(e.to_string()),
@@ -626,4 +641,22 @@ fn lookup_packages<'a>(
         }
     }
     found_packages
+}
+pub fn find_orphans(alpm: &Alpm) -> Vec<String> {
+    let mut required = std::collections::HashSet::new();
+    for pkg in alpm.localdb().pkgs() {
+        for dep in pkg.depends() {
+            required.insert(dep.name().to_string());
+        }
+        for provide in pkg.provides() {
+            let name = provide.name().split('=').next().unwrap_or(provide.name());
+            required.insert(name.to_string());
+        }
+    }
+    alpm.localdb()
+        .pkgs()
+        .iter()
+        .filter(|pkg| pkg.reason() == alpm::PackageReason::Depend && !required.contains(pkg.name()))
+        .map(|pkg| pkg.name().to_string())
+        .collect()
 }

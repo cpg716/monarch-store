@@ -1,6 +1,6 @@
 # Universal Protocol Report Card
-**Audit Date:** 2026-02-02  
-**Codebase:** MonARCH Store v0.4.0-alpha  
+**Audit Date:** 2026-02-08  
+**Codebase:** MonARCH Store v0.4.5-alpha  
 **Scope:** Backend (Rust), Frontend (React/TS), Configuration
 
 ---
@@ -21,11 +21,12 @@
 
 ### Checkpoint 1: Repo Safety Protocol
 - **No repo injection:** `repo_manager.rs` explicitly states: "We no longer modify pacman.conf or manage .conf files directly via HelperCommand::{WriteFiles, RemoveFiles}."
+- **Chaotic-AUR safe toggle (Operation Chaotic Good):** We do **not** edit `/etc/pacman.conf`. `prepare_chaotic_components` only installs keyring and mirrorlist via Helper (`pacman -U --noconfirm`); the user adds the repo block manually. Settings and Onboarding show a "Final Step" modal with the snippet and "Copy to Clipboard" / "Check Again."
 - **apply_os_config** only triggers `ExecuteBatch { refresh_db: true }` — no drop-in file writes.
 - **Manjaro guard:** `set_repo_state` blocks enabling chaotic-aur on Manjaro (`ChaoticSupport::Blocked`).
 - **Install guard:** `package.rs` blocks installing chaotic-aur/cachyos packages on Manjaro.
 - **Host-adaptive discovery:** Repos are read from ALPM; `chaotic_enabled` is checked via `std::fs::read_to_string("/etc/pacman.conf")` (read-only).
-- **SourcesTab:** Disables chaotic toggle when not in pacman.conf; tooltip: "Not available in /etc/pacman.conf."
+- **SourcesTab:** Disables chaotic toggle when not in pacman.conf; tooltip: "Not available in /etc/pacman.conf." Traffic light (Active/Inactive/Blocked) and "Final Step" modal for Chaotic-AUR setup.
 
 ### Checkpoint 2: Native Builder Protocol
 - **makepkg never as root:** Explicit check in `package.rs` (lines 740–756): `if is_root { return Err("Security Violation: Attempted to run makepkg as root. This is forbidden.") }`
@@ -42,9 +43,10 @@
 - **Install flow:** One `install_package` per user action; no frontend loop of installs.
 
 ### Checkpoint 4: Unified State Protocol
-- **Search deduplication:** `merge_and_deduplicate` in `utils.rs`; `package_map` in `search.rs` merges Official > Flatpak > AUR.
-- **available_sources:** Populated for merged results; UI can show source selector.
-- **Friendly labels:** `get_friendly_label` maps repo + distro to "Manjaro Official", "CachyOS (Optimized)", etc.
+- **Search deduplication:** `merge_and_deduplicate` and `deduplicate_by_canonical_key` in `utils.rs`; `middleware/aggregation.rs` merges Official > Flatpak > AUR; each `Package` has `canonical_id` for one card per app.
+- **Canonical key (Universal Data Engine):** `canonical_merge_key` uses a **first-segment rule** for multi-segment names (no per-app alias list); app_id path uses `known_app_id_to_canonical` then first-segment when applicable. After dedup, display names are set via `preferred_display_name(canonical_id)` or `to_pretty_name(name)` so one app has one proper name (e.g. "Heroic Game Launcher"). See `docs/UNIVERSAL_DATA_ENGINE.md`.
+- **available_sources:** Populated for merged results; UI can show source selector. Details page always includes card source in variant list and prefers it for selection.
+- **Friendly labels:** `get_friendly_label` maps repo + distro to "Manjaro Official", "CachyOS (Optimized)", "Arch Official", "Other repository (id)", etc. RepoSelector shows AUR with pkg_name (e.g. "AUR (vlc-git)").
 - **Distro context:** `DistroContext` drives label selection and Manjaro guard.
 
 ### Checkpoint 5: Zombie Code (Partial)
@@ -100,6 +102,16 @@
 
 ---
 
+## Post-Audit Fixes (Feb 2026 — Safe Guard)
+
+Following the Install & Update (Safe Guard) audit:
+
+- **IgnorePkg:** Helper question callback now sets `InstallIgnorepkg` to skip install for ignored packages—host `IgnorePkg`/`IgnoreGroup` are respected.
+- **Update-before-install:** `update_and_install_package` (GUI) runs a full system upgrade (ExecuteBatch with `update_system: true`, `refresh_db: true`) **before** installing the target package.
+- **No silent full upgrade:** On repo install failure due to stale DB (e.g. 404), the GUI emits `failed_update_required` and returns an error; the user must explicitly confirm a system upgrade (no auto `-Syu` in the background).
+
+---
+
 ## File Reference
 
 | Area | Key Files |
@@ -107,5 +119,5 @@
 | Repo / Config | `repo_manager.rs`, `commands/system.rs`, `repair.rs` |
 | AUR Build | `commands/package.rs`, `aur_api.rs` |
 | Helper | `monarch-helper/main.rs`, `transactions.rs` |
-| Search | `commands/search.rs`, `utils.rs` (merge_and_deduplicate) |
+| Search | `commands/search.rs`, `utils.rs` (merge, canonical_merge_key), `labels.rs` |
 | Frontend Install | `InstallMonitor.tsx`, `UpdatesPage.tsx` |

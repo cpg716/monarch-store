@@ -6,3 +6,4 @@ Icon=monarch-store
 Terminal=false
 Type=Application
 Categories=System;Settings;
+StartupWMClass=com.monarch.store

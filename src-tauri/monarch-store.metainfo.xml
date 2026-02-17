@@ -48,6 +48,11 @@
     <content_attribute id="money-gambling">none</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.4.5-alpha" date="2026-02-03">
+      <description>
+        <p>Version bump. One card per app, details dropdown, Operation Chaotic Good (Chaotic-AUR safe toggle, onboarding wizard), UI/UX labels. See RELEASE_NOTES.md.</p>
+      </description>
+    </release>
     <release version="0.4.0-alpha" date="2026-02-02">
       <description>
         <p>Universal MonARCH Architecture: Hybrid Host-Adaptive backend, native AUR builder with streaming logs, full Flatpak integration, and a premium tabbed Settings redesign (Operation Mission Control).</p>

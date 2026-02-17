@@ -1,8 +1,18 @@
+use crate::commands::search;
 use crate::{chaotic_api, metadata};
 use base64::prelude::*;
+use serde::Deserialize;
+use specta::Type;
 use tauri::State;
 
+#[derive(Debug, Deserialize, Type)]
+pub(crate) struct LaunchAppArgs {
+    #[serde(alias = "pkgName")]
+    pkg_name: String,
+}
+
 #[tauri::command]
+#[specta::specta]
 pub async fn get_package_icon(pkg_name: String) -> Result<Option<String>, String> {
     let icons_dir = metadata::get_icons_dir();
     if let Ok(entries) = std::fs::read_dir(&icons_dir) {
@@ -26,6 +36,7 @@ pub async fn get_package_icon(pkg_name: String) -> Result<Option<String>, String
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn clear_cache(
     state_meta: State<'_, metadata::MetadataState>,
     state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
@@ -36,15 +47,35 @@ pub async fn clear_cache(
     state_chaotic.inner().clear_cache().await;
     state_flathub.inner().clear_cache();
     state_scm.inner().0.clear_cache();
+    search::clear_search_and_list_caches();
     state_repo.inner().sync_all(true, 0, None).await?;
     state_meta.inner().init(0).await;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn launch_app(pkg_name: String) -> Result<(), String> {
+#[specta::specta]
+pub async fn launch_app(LaunchAppArgs { pkg_name }: LaunchAppArgs) -> Result<(), String> {
+    let pkg_name = pkg_name.trim();
+    if pkg_name.is_empty() {
+        return Err("Package name is empty".to_string());
+    }
+
+    // Flatpak: app IDs contain a dot (e.g. org.mozilla.firefox). Launch via flatpak run.
+    if pkg_name.contains('.') {
+        let flatpak = crate::flathub_api::flatpak_binary()?;
+        if let Ok(mut child) = std::process::Command::new(&flatpak)
+            .args(["run", pkg_name])
+            .spawn()
+        {
+            let _ = child.wait();
+            return Ok(());
+        }
+        return Err(format!("Failed to launch Flatpak app: {}", pkg_name));
+    }
+
     let status = std::process::Command::new("gtk-launch")
-        .arg(&pkg_name)
+        .arg(pkg_name)
         .status();
 
     if let Ok(s) = status {
@@ -66,7 +97,7 @@ pub async fn launch_app(pkg_name: String) -> Result<(), String> {
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.contains(&pkg_name) && name.ends_with(".desktop") {
+                if name.contains(pkg_name) && name.ends_with(".desktop") {
                     let _ = std::process::Command::new("gtk-launch").arg(name).spawn();
                     return Ok(());
                 }
@@ -74,7 +105,7 @@ pub async fn launch_app(pkg_name: String) -> Result<(), String> {
         }
     }
 
-    std::process::Command::new(&pkg_name)
+    std::process::Command::new(pkg_name)
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Failed to launch {}: {}", pkg_name, e))

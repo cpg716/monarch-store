@@ -305,6 +305,12 @@
           "type": "string",
           "const": "deny-track-event",
           "markdownDescription": "Denies the track_event command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the aptabase telemetry plugin",
+          "type": "string",
+          "const": "default",
+          "markdownDescription": "Default permissions for the aptabase telemetry plugin"
         }
       ]
     }

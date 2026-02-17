@@ -1,11 +1,15 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, Default)]
+use specta::Type;
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, Default, Type)]
 pub struct PackageSource {
     pub source_type: String, // "repo", "aur", "flatpak", "local"
     pub id: String,          // "core", "extra", "flathub", "chaotic-aur"
     pub version: String,     // Version available in this source
     pub label: String,       // "Manjaro Official", "Flatpak (Sandboxed)", etc.
+    #[serde(default)]
+    pub package_name: Option<String>, // Actual package name (e.g. "discord" vs "com.discordapp.Discord")
 }
 
 impl PackageSource {
@@ -15,6 +19,23 @@ impl PackageSource {
             id: id.to_string(),
             version: version.to_string(),
             label: label.to_string(),
+            package_name: None,
+        }
+    }
+
+    pub fn new_with_name(
+        source_type: &str,
+        id: &str,
+        version: &str,
+        label: &str,
+        name: &str,
+    ) -> Self {
+        Self {
+            source_type: source_type.to_string(),
+            id: id.to_string(),
+            version: version.to_string(),
+            label: label.to_string(),
+            package_name: Some(name.to_string()),
         }
     }
 
@@ -23,8 +44,8 @@ impl PackageSource {
             "repo" => {
                 // Give priority to optimized repos?
                 match self.id.as_str() {
-                    "chaotic-aur" | "cachyos" | "cachyos-v3" => 1,
-                    _ => 2, // Standard repos
+                    "chaotic-aur" | "cachyos" => 1, // cachyos = any CachyOS repo (v3/v4/znver4)
+                    _ => 2,                         // Standard repos
                 }
             }
             "flatpak" => 3,
@@ -35,49 +56,56 @@ impl PackageSource {
 
     /// Map sync DB / repo name to the correct source. Uses Grand Unification labels
     /// so CachyOS, Chaotic, Manjaro, SteamOS, etc. are labeled per distro identity.
+    /// Normalizes empty or "unknown" repo names to "other" so the UI never shows "Unknown Repository".
     pub fn from_repo_name(
         name: &str,
         version: &str,
         distro: &crate::distro_context::DistroContext,
+        pkg_name: &str,
     ) -> Self {
-        let source_type = if name == "aur" { "aur" } else { "repo" };
-        let id = match name {
+        let name_repo = if name.trim().is_empty() || name.eq_ignore_ascii_case("unknown") {
+            "other"
+        } else {
+            name
+        };
+        let source_type = if name_repo == "aur" { "aur" } else { "repo" };
+        let id = match name_repo {
             n if n.starts_with("cachyos") => "cachyos",
             n if n.starts_with("manjaro") => "manjaro",
             n if n.starts_with("garuda") => "garuda",
             n if n.starts_with("endeavour") => "endeavour",
-            "core" | "extra" | "community" | "multilib" => name,
-            _ => name,
+            "core" | "extra" | "community" | "multilib" => name_repo,
+            _ => name_repo,
         };
-        let label = crate::labels::get_friendly_label(name, distro.id_str());
+        let label = crate::labels::get_friendly_label(name_repo, distro.id_str());
 
-        PackageSource::new(source_type, id, version, label)
+        PackageSource::new_with_name(source_type, id, version, label, pkg_name)
     }
 
-    pub fn official() -> Self {
-        Self::new("repo", "core", "latest", "Official Repository")
+    pub fn official(name: &str) -> Self {
+        Self::new_with_name("repo", "core", "latest", "Arch Official", name)
     }
 
-    pub fn chaotic() -> Self {
-        Self::new("repo", "chaotic-aur", "latest", "Chaotic-AUR")
+    pub fn chaotic(name: &str) -> Self {
+        Self::new_with_name("repo", "chaotic-aur", "latest", "Chaotic-AUR", name)
     }
 
-    pub fn cachyos() -> Self {
-        Self::new("repo", "cachyos", "latest", "CachyOS")
-    }
-
-    #[allow(dead_code)]
-    pub fn aur() -> Self {
-        Self::new("aur", "aur", "latest", "AUR")
+    pub fn cachyos(name: &str) -> Self {
+        Self::new_with_name("repo", "cachyos", "latest", "CachyOS", name)
     }
 
     #[allow(dead_code)]
-    pub fn manjaro() -> Self {
-        Self::new("repo", "manjaro", "latest", "Manjaro Official")
+    pub fn aur(name: &str) -> Self {
+        Self::new_with_name("aur", "aur", "latest", "AUR", name)
+    }
+
+    #[allow(dead_code)]
+    pub fn manjaro(name: &str) -> Self {
+        Self::new_with_name("repo", "manjaro", "latest", "Manjaro Official", name)
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, Type)]
 pub struct Package {
     pub name: String,
     pub display_name: Option<String>,
@@ -96,6 +124,9 @@ pub struct Package {
     pub screenshots: Option<Vec<String>>,
     pub provides: Option<Vec<String>>,
     pub app_id: Option<String>,
+    /// Canonical key used for merge deduplication (e.g. "discord"). Set during merge; used as React key.
+    #[serde(default)]
+    pub canonical_id: String,
     pub is_optimized: Option<bool>,
     pub depends: Option<Vec<String>>,
     pub make_depends: Option<Vec<String>>,
@@ -105,9 +136,13 @@ pub struct Package {
     pub installed_size: Option<u64>,
     pub alternatives: Option<Vec<Package>>,
     pub available_sources: Option<Vec<PackageSource>>, // For consolidated search results
+    pub rating: Option<crate::odrs_api::OdrsRating>,
+    pub long_description: Option<String>,
+    #[serde(default)]
+    pub installed_sources: Option<Vec<String>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct PackageVariant {
     pub source: PackageSource,
     pub version: String,
@@ -115,9 +150,10 @@ pub struct PackageVariant {
     pub pkg_name: Option<String>, // Actual package name (e.g. firefox-nightly)
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct UpdateItem {
     pub name: String,
+    pub display_name: Option<String>,
     pub current_version: String,
     pub new_version: String,
     pub source: PackageSource, // "official", "aur", "flatpak"
@@ -125,13 +161,22 @@ pub struct UpdateItem {
     pub icon: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, Type)]
 pub struct TransactionManifest {
     pub update_system: bool,          // Should we run -Syu?
     pub refresh_db: bool,             // Should we run -Sy?
     pub clear_cache: bool,            // Should we run -Sc?
     pub remove_lock: bool,            // Should we remove pacman lock?
+    pub remove_orphans: bool,         // Should we remove unused dependencies?
     pub install_targets: Vec<String>, // List of repo packages
     pub remove_targets: Vec<String>,  // List of packages to remove
     pub local_paths: Vec<String>,     // List of pre-built AUR packages (.pkg.tar.zst) to install
+    pub parallel_downloads: Option<u32>,
+    pub cpu_optimization: Option<String>,
+    pub target_repo: Option<String>,
+}
+#[derive(Serialize, Deserialize, Debug, Clone, Default, Type)]
+pub struct CacheStats {
+    pub total_size_bytes: u64,
+    pub package_count: u32,
 }

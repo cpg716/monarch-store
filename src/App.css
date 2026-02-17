@@ -149,26 +149,30 @@
   will-change: transform;
   transition: transform 0.2s ease-out;
 }
+
 .badge-hover:hover {
   transform: scale(1.05);
 }
 
 /* Skeleton shimmer: GPU-accelerated (will-change + compositor-friendly animation) */
 @keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
 }
 
 .skeleton-shimmer {
   will-change: background-position;
-  background: linear-gradient(
-    90deg,
-    var(--app-subtle-bg) 0%,
-    var(--app-subtle-bg) 40%,
-    rgba(255, 255, 255, 0.12) 50%,
-    var(--app-subtle-bg) 60%,
-    var(--app-subtle-bg) 100%
-  );
+  background: linear-gradient(90deg,
+      var(--app-subtle-bg) 0%,
+      var(--app-subtle-bg) 40%,
+      rgba(255, 255, 255, 0.12) 50%,
+      var(--app-subtle-bg) 60%,
+      var(--app-subtle-bg) 100%);
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
 }
@@ -299,5 +303,26 @@ input[data-monarch-search]:focus {
     min-height: 100vh;
     overflow: hidden;
     transition: background-color 0.2s, color 0.2s;
+  }
+}
+
+/* Accessibility: Respect user's motion preferences */
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .butterfly-icon,
+  .animate-flap,
+  .animate-butterfly,
+  .animate-fade-in-up,
+  .skeleton-shimmer {
+    animation: none !important;
   }
 }

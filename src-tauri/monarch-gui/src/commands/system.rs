@@ -1,10 +1,122 @@
-use crate::{chaotic_api, repo_manager, utils};
+use crate::{chaotic_api, distro_context, helper_client, repo_manager, utils};
 use serde::Serialize;
+use specta::Type;
+use std::process::Command;
 use tauri::{AppHandle, Emitter, State};
+#[cfg(not(target_os = "linux"))]
+use tauri_plugin_notification::NotificationExt;
 
 /// Embedded Polkit rules for passwordless package-manage (wheel → YES) and script (AUTH_ADMIN_KEEP).
 const MONARCH_POLKIT_RULES: &str = include_str!("../../../rules/10-monarch-store.rules");
 const MONARCH_POLKIT_POLICY: &str = include_str!("../../com.monarch.store.policy");
+
+#[derive(Serialize, serde::Deserialize, Type, Clone, Debug)]
+pub enum SnapshotTool {
+    Snapper,
+    Timeshift,
+    None,
+}
+
+#[derive(Serialize, Type)]
+pub struct SnapshotStatus {
+    pub tool: SnapshotTool,
+    pub is_configured: bool,
+    pub message: String,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_snapshot_status() -> Result<SnapshotStatus, String> {
+    // 1. Check Timeshift
+    let ts_check = std::process::Command::new("timeshift")
+        .arg("--list-devices")
+        .output();
+
+    if let Ok(output) = ts_check {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.contains("No devices found") {
+                return Ok(SnapshotStatus {
+                    tool: SnapshotTool::Timeshift,
+                    is_configured: true,
+                    message: "Timeshift is ready".to_string(),
+                });
+            }
+        }
+    }
+
+    // 2. Check Snapper
+    let sn_check = std::process::Command::new("snapper")
+        .arg("list-configs")
+        .output();
+
+    if let Ok(output) = sn_check {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // Snapper output usually has a header; check if there's at least one config line
+            let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+            if lines.len() > 1 {
+                // More than just header
+                return Ok(SnapshotStatus {
+                    tool: SnapshotTool::Snapper,
+                    is_configured: true,
+                    message: "Snapper is ready".to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(SnapshotStatus {
+        tool: SnapshotTool::None,
+        is_configured: false,
+        message: "No snapshot tool detected or configured".to_string(),
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn create_system_snapshot(
+    app: AppHandle,
+    tool: SnapshotTool,
+    comment: String,
+) -> Result<String, String> {
+    log::info!("Creating system snapshot using {:?}: {}", tool, comment);
+    let _ = app.emit("update-status", "Creating system snapshot...");
+
+    match tool {
+        SnapshotTool::Timeshift => {
+            let output = tokio::process::Command::new("pkexec")
+                .args([
+                    "timeshift",
+                    "--create",
+                    "--comments",
+                    &comment,
+                    "--scripted",
+                ])
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run timeshift: {}", e))?;
+
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).to_string());
+            }
+            Ok("Timeshift snapshot created".to_string())
+        }
+        SnapshotTool::Snapper => {
+            let output = tokio::process::Command::new("pkexec")
+                .args(["snapper", "create", "--description", &comment])
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run snapper: {}", e))?;
+
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).to_string());
+            }
+            Ok("Snapper snapshot created".to_string())
+        }
+        SnapshotTool::None => Err("No snapshot tool selected".to_string()),
+    }
+}
 
 fn set_policy_allow_active(policy: &str, action_id: &str, allow_active: &str) -> String {
     let action_marker = format!("<action id=\"{}\">", action_id);
@@ -37,7 +149,7 @@ fn set_policy_allow_active(policy: &str, action_id: &str, allow_active: &str) ->
     updated
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Type)]
 pub struct SystemInfo {
     pub kernel: String,
     pub distro: String,
@@ -47,14 +159,14 @@ pub struct SystemInfo {
 }
 
 /// Typed response for get_cache_size (replaces raw serde_json::json!).
-#[derive(Serialize)]
+#[derive(Serialize, Type)]
 pub struct CacheSizeResult {
     pub size_bytes: u64,
     pub human_readable: String,
 }
 
 /// Typed response for get_orphans_with_size (replaces raw serde_json::json!).
-#[derive(Serialize)]
+#[derive(Serialize, Type)]
 pub struct OrphansWithSizeResult {
     pub orphans: Vec<String>,
     pub total_size_bytes: u64,
@@ -62,6 +174,7 @@ pub struct OrphansWithSizeResult {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_system_info() -> Result<SystemInfo, String> {
     let kernel = std::process::Command::new("uname")
         .arg("-r")
@@ -111,7 +224,112 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
     })
 }
 
+/// Chaotic-AUR status: compatible = host may enable (not Manjaro); chaotic_in_alpm = [chaotic-aur] in syncdbs.
+#[derive(Serialize, Type)]
+pub struct ChaoticStatus {
+    pub compatible: bool,
+    pub chaotic_in_alpm: bool,
+}
+
 #[tauri::command]
+#[specta::specta]
+pub async fn check_chaotic_status() -> Result<ChaoticStatus, String> {
+    let distro = distro_context::DistroContext::new();
+    let compatible = distro.is_chaotic_compatible();
+    let chaotic_in_alpm = tokio::task::spawn_blocking(|| {
+        crate::alpm_read::chaotic_aur_in_syncdbs("/etc/pacman.conf")
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?;
+    Ok(ChaoticStatus {
+        compatible,
+        chaotic_in_alpm,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn prepare_chaotic_components(
+    app: AppHandle,
+    state_repo: State<'_, repo_manager::RepoManager>,
+    password: Option<String>,
+) -> Result<(), String> {
+    let one_click = state_repo.inner().is_one_click_enabled().await;
+    let mut rx = crate::helper_client::invoke_helper(
+        &app,
+        crate::helper_client::HelperCommand::PrepareChaoticComponents,
+        password,
+        one_click,
+    )
+    .await?;
+    while let Some(msg) = rx.recv().await {
+        if msg.message.starts_with("Error:") {
+            return Err(msg.message);
+        }
+    }
+    Ok(())
+}
+
+/// Prepares Flatpak for use: if the flatpak binary is missing, installs the flatpak package via pacman, then ensures the Flathub remote exists.
+/// Call this when the user enables Flatpak in onboarding or Settings so they can install Flatpak apps without a separate "install flatpak" step.
+#[tauri::command]
+#[specta::specta]
+pub async fn prepare_flatpak(
+    app: AppHandle,
+    state_repo: State<'_, repo_manager::RepoManager>,
+    password: Option<String>,
+) -> Result<(), String> {
+    if crate::flathub_api::flatpak_binary().is_ok() {
+        return crate::flathub_api::ensure_flathub_remote(app).await;
+    }
+    let repo_manager = state_repo.inner();
+    let one_click = repo_manager.is_one_click_enabled().await;
+    let all_repos = repo_manager.get_all_repos().await;
+    let mut enabled_repos: Vec<String> = all_repos
+        .iter()
+        .filter(|r| r.enabled)
+        .map(|r| r.name.clone())
+        .collect();
+    for sys in ["core", "extra", "community", "multilib"] {
+        if !enabled_repos.contains(&sys.to_string()) {
+            enabled_repos.push(sys.to_string());
+        }
+    }
+    let _guard = utils::PRIVILEGED_LOCK.lock().await;
+    let _ = app.emit(
+        "install-output",
+        "Installing Flatpak (required for Flathub apps)...",
+    );
+    let mut rx = helper_client::invoke_helper(
+        &app,
+        helper_client::HelperCommand::AlpmInstall {
+            packages: vec!["flatpak".to_string()],
+            sync_first: true,
+            enabled_repos,
+            cpu_optimization: None,
+            target_repo: None,
+        },
+        password,
+        one_click,
+    )
+    .await
+    .map_err(|e| format!("Failed to install Flatpak: {}", e))?;
+    while let Some(msg) = rx.recv().await {
+        let _ = app.emit("install-output", &msg.message);
+    }
+    crate::flathub_api::ensure_flathub_remote(app).await
+}
+
+/// Ensures the Flathub remote exists so Flatpak install/uninstall work when Flatpak is turned on (onboarding or Settings).
+/// Call this when the user enables Flatpak; also run before first install (done inside install_flatpak).
+#[tauri::command]
+#[specta::specta]
+pub async fn ensure_flathub_remote(app: AppHandle) -> Result<(), String> {
+    crate::flathub_api::ensure_flathub_remote(app).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn get_all_installed_names() -> Result<Vec<String>, String> {
     let output = std::process::Command::new("pacman")
         .arg("-Qq")
@@ -123,6 +341,7 @@ pub async fn get_all_installed_names() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_infra_stats(
     state: State<'_, chaotic_api::ChaoticApiClient>,
 ) -> Result<crate::chaotic_api::InfraStats, String> {
@@ -130,6 +349,7 @@ pub async fn get_infra_stats(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_repo_counts(
     state_repo: State<'_, repo_manager::RepoManager>,
     state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
@@ -143,6 +363,7 @@ pub async fn get_repo_counts(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_repo_states(
     state: State<'_, repo_manager::RepoManager>,
 ) -> Result<Vec<repo_manager::RepoConfig>, String> {
@@ -150,11 +371,13 @@ pub async fn get_repo_states(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn is_aur_enabled(state: State<'_, repo_manager::RepoManager>) -> Result<bool, String> {
     Ok(state.inner().is_aur_enabled().await)
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn toggle_repo(
     app: tauri::AppHandle,
     state: State<'_, repo_manager::RepoManager>,
@@ -167,6 +390,7 @@ pub async fn toggle_repo(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn toggle_repo_family(
     app: tauri::AppHandle,
     state: State<'_, repo_manager::RepoManager>,
@@ -185,16 +409,18 @@ pub async fn toggle_repo_family(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn set_aur_enabled(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     state: State<'_, repo_manager::RepoManager>,
     enabled: bool,
 ) -> Result<(), String> {
-    state.inner().set_aur_enabled(&app, enabled).await;
+    state.inner().set_aur_enabled(enabled).await;
     Ok(())
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn is_one_click_enabled(
     state: State<'_, repo_manager::RepoManager>,
 ) -> Result<bool, String> {
@@ -220,6 +446,7 @@ pub async fn is_one_click_enabled(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn set_one_click_enabled(
     state: State<'_, repo_manager::RepoManager>,
     enabled: bool,
@@ -228,7 +455,22 @@ pub async fn set_one_click_enabled(
     Ok(())
 }
 
+/// Returns names of required runtime binaries that are missing (git, checkupdates, pkexec).
+/// Surfaces in Settings so users know why AUR or system updates may fail.
 #[tauri::command]
+#[specta::specta]
+pub fn get_missing_required_bins() -> Result<Vec<String>, String> {
+    let required = ["git", "checkupdates", "pkexec"];
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|bin| which::which(*bin).is_err())
+        .map(|s| (*s).to_string())
+        .collect();
+    Ok(missing)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn check_security_policy() -> Result<bool, String> {
     let helper_path = std::path::Path::new("/usr/lib/monarch-store/monarch-helper");
     let policy_path = std::path::Path::new("/usr/share/polkit-1/actions/com.monarch.store.policy");
@@ -241,14 +483,18 @@ pub async fn check_security_policy() -> Result<bool, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn install_monarch_policy(
     state: State<'_, repo_manager::RepoManager>,
     password: Option<String>,
 ) -> Result<String, String> {
     let one_click = state.inner().is_one_click_enabled().await;
     let allow_active = if one_click { "yes" } else { "auth_admin_keep" };
-    let policy_content =
-        set_policy_allow_active(MONARCH_POLKIT_POLICY, "com.monarch.store.package-manage", allow_active);
+    let policy_content = set_policy_allow_active(
+        MONARCH_POLKIT_POLICY,
+        "com.monarch.store.package-manage",
+        allow_active,
+    );
 
     let rules_escaped = MONARCH_POLKIT_RULES.replace('{', "{{").replace('}', "}}");
     let script = format!(
@@ -267,11 +513,12 @@ RULESEOF
         policy_content, rules_escaped, allow_active
     );
 
-    let result = utils::run_privileged_script(&script, password, true).await;
+    let result = utils::run_privileged_script(script.as_str(), password, true).await;
     result
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn optimize_system(password: Option<String>) -> Result<String, String> {
     let script = r#"
         echo '--- Starting MonARCH System Optimization ---'
@@ -289,9 +536,10 @@ pub async fn optimize_system(password: Option<String>) -> Result<String, String>
         fi
         echo '✓ System optimization complete!'
     "#;
-    utils::run_privileged_script(&script, password, false).await
+    utils::run_privileged_script(script, password, false).await
 }
 #[tauri::command]
+#[specta::specta]
 pub async fn trigger_repo_sync(
     app: tauri::AppHandle,
     state_repo: State<'_, repo_manager::RepoManager>,
@@ -315,6 +563,7 @@ pub async fn trigger_repo_sync(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn update_and_install_package(
     app: tauri::AppHandle,
     state_repo: State<'_, repo_manager::RepoManager>,
@@ -345,71 +594,40 @@ pub async fn update_and_install_package(
         "Synchronizing databases and updating system...",
     );
 
-    // Step 1: Perform full system upgrade (refresh + upgrade) before install.
-    let mut sys_rx = crate::helper_client::invoke_helper(
+    let one_click = state_repo.inner().is_one_click_enabled().await;
+    let housekeeping = state_repo.inner().is_automatic_housekeeping_enabled().await;
+
+    let parallel_downloads = Some(state_repo.inner().get_parallel_downloads().await);
+
+    // ✅ OPERATION SILENT GUARD: Bundle Update + Install into ONE helper invocation
+    // This provides a single password prompt and ensures atomicity.
+    let mut rx = crate::helper_client::invoke_helper(
         &app,
         crate::helper_client::HelperCommand::ExecuteBatch {
             manifest: crate::models::TransactionManifest {
                 update_system: true,
                 refresh_db: true,
+                remove_orphans: housekeeping,
+                clear_cache: housekeeping,
+                install_targets: vec![name.clone()],
+                cpu_optimization,
+                target_repo: repo_name,
+                parallel_downloads,
                 ..Default::default()
             },
         },
         password.clone(),
+        one_click,
     )
     .await?;
 
-    while let Some(msg) = sys_rx.recv().await {
+    while let Some(msg) = rx.recv().await {
         let _ = app.emit("install-output", &msg.message);
         if msg.message.starts_with("Error:") {
             let _ = app.emit("install-complete", "failed");
             return Err(format!(
-                "System update failed while preparing to install {}: {}",
+                "Update & Install failed for {}: {}",
                 name, msg.message
-            ));
-        }
-    }
-
-    // Step 2: Install target package (only if Step 1 succeeded)
-    let mut enabled_repos: Vec<String> = state_repo
-        .inner()
-        .get_all_repos()
-        .await
-        .iter()
-        .filter(|r| r.enabled)
-        .map(|r| r.name.clone())
-        .collect();
-    for sys in ["core", "extra", "community", "multilib"] {
-        if !enabled_repos.contains(&sys.to_string()) {
-            enabled_repos.push(sys.to_string());
-        }
-    }
-
-    let _ = app.emit(
-        "install-output",
-        format!("Installing/upgrading {}...", name),
-    );
-
-    let mut rx2 = crate::helper_client::invoke_helper(
-        &app,
-        crate::helper_client::HelperCommand::AlpmInstall {
-            packages: vec![name.clone()],
-            sync_first: false,
-            enabled_repos,
-            cpu_optimization,
-            target_repo: repo_name,
-        },
-        password.clone(),
-    )
-    .await?;
-
-    while let Some(msg) = rx2.recv().await {
-        let _ = app.emit("install-output", &msg.message);
-        if msg.message.starts_with("Error:") {
-            let _ = app.emit("install-complete", "failed");
-            return Err(format!(
-                "Installation failed after system update: {}",
-                msg.message
             ));
         }
     }
@@ -433,12 +651,226 @@ pub async fn update_and_install_package(
         ))
     }
 }
+
 #[tauri::command]
+#[specta::specta]
+pub async fn is_onboarding_completed(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<bool, String> {
+    Ok(state.inner().is_onboarding_completed().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_onboarding_completed(
+    state: State<'_, repo_manager::RepoManager>,
+    completed: bool,
+) -> Result<(), String> {
+    state.inner().set_onboarding_completed(completed).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_theme_mode(state: State<'_, repo_manager::RepoManager>) -> Result<String, String> {
+    Ok(state.inner().get_theme_mode().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_theme_mode(
+    state: State<'_, repo_manager::RepoManager>,
+    mode: String,
+) -> Result<(), String> {
+    state.inner().set_theme_mode(mode).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_accent_color(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<String, String> {
+    Ok(state.inner().get_accent_color().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_accent_color(
+    state: State<'_, repo_manager::RepoManager>,
+    color: String,
+) -> Result<(), String> {
+    state.inner().set_accent_color(color).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn is_declined_system_setup(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<bool, String> {
+    Ok(state.inner().is_declined_system_setup().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_declined_system_setup(
+    state: State<'_, repo_manager::RepoManager>,
+    declined: bool,
+) -> Result<(), String> {
+    state.inner().set_declined_system_setup(declined).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn is_sidebar_expanded(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<bool, String> {
+    Ok(state.inner().is_sidebar_expanded().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_sidebar_expanded(
+    state: State<'_, repo_manager::RepoManager>,
+    expanded: bool,
+) -> Result<(), String> {
+    state.inner().set_sidebar_expanded(expanded).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn is_alpha_notice_dismissed(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<bool, String> {
+    Ok(state.inner().is_alpha_notice_dismissed().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_alpha_notice_dismissed(
+    state: State<'_, repo_manager::RepoManager>,
+    dismissed: bool,
+) -> Result<(), String> {
+    state.inner().set_alpha_notice_dismissed(dismissed).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_search_history(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<Vec<String>, String> {
+    Ok(state.inner().get_search_history().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_search_history(
+    state: State<'_, repo_manager::RepoManager>,
+    history: Vec<String>,
+) -> Result<(), String> {
+    state.inner().set_search_history(history).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_read_news_ids(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<Vec<String>, String> {
+    Ok(state.inner().get_read_news_ids().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_read_news_ids(
+    state: State<'_, repo_manager::RepoManager>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    state.inner().set_read_news_ids(ids).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_active_tab(state: State<'_, repo_manager::RepoManager>) -> Result<String, String> {
+    Ok(state.inner().get_active_tab().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_active_tab(
+    state: State<'_, repo_manager::RepoManager>,
+    tab: String,
+) -> Result<(), String> {
+    state.inner().set_active_tab(tab).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn is_automatic_housekeeping_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<bool, String> {
+    Ok(state.inner().is_automatic_housekeeping_enabled().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_automatic_housekeeping_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+    enabled: bool,
+) -> Result<(), String> {
+    state
+        .inner()
+        .set_automatic_housekeeping_enabled(enabled)
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn perform_housekeeping(
+    app: AppHandle,
+    state_repo: State<'_, repo_manager::RepoManager>,
+    password: Option<String>,
+) -> Result<(), String> {
+    let one_click = state_repo.inner().is_one_click_enabled().await;
+    let mut rx = crate::helper_client::invoke_helper(
+        &app,
+        crate::helper_client::HelperCommand::ExecuteBatch {
+            manifest: crate::models::TransactionManifest {
+                remove_orphans: true,
+                clear_cache: true,
+                refresh_db: true,
+                ..Default::default()
+            },
+        },
+        password,
+        one_click,
+    )
+    .await?;
+
+    while let Some(msg) = rx.recv().await {
+        let _ = app.emit("housekeeping-progress", &msg.message);
+        if msg.message.starts_with("Error:") {
+            return Err(msg.message);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn is_advanced_mode(state: State<'_, repo_manager::RepoManager>) -> Result<bool, String> {
     Ok(state.inner().is_advanced_mode().await)
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn set_advanced_mode(
     state: State<'_, repo_manager::RepoManager>,
     enabled: bool,
@@ -448,6 +880,7 @@ pub async fn set_advanced_mode(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn check_app_update() -> Result<Option<String>, String> {
     // Uses checkupdates from pacman-contrib to check for updates safely without root
     let output = std::process::Command::new("checkupdates")
@@ -469,6 +902,7 @@ pub async fn check_app_update() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn is_telemetry_enabled(
     state: State<'_, repo_manager::RepoManager>,
 ) -> Result<bool, String> {
@@ -476,6 +910,7 @@ pub async fn is_telemetry_enabled(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn set_telemetry_enabled(
     state: State<'_, repo_manager::RepoManager>,
     enabled: bool,
@@ -486,6 +921,7 @@ pub async fn set_telemetry_enabled(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn is_notifications_enabled(
     state: State<'_, repo_manager::RepoManager>,
 ) -> Result<bool, String> {
@@ -493,6 +929,7 @@ pub async fn is_notifications_enabled(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn set_notifications_enabled(
     state: State<'_, repo_manager::RepoManager>,
     enabled: bool,
@@ -502,6 +939,152 @@ pub async fn set_notifications_enabled(
 }
 
 #[tauri::command]
+#[specta::specta]
+pub async fn is_flatpak_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<bool, String> {
+    Ok(state.inner().is_flatpak_enabled().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_flatpak_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.inner().set_flatpak_enabled(enabled).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_sync_interval_hours(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<u32, String> {
+    Ok(state.inner().get_sync_interval_hours().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_sync_interval_hours(
+    state: State<'_, repo_manager::RepoManager>,
+    hours: u32,
+) -> Result<(), String> {
+    state.inner().set_sync_interval_hours(hours).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_repo_priority_order(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<Vec<String>, String> {
+    Ok(state.inner().get_repo_priority_order().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_repo_priority_order(
+    state: State<'_, repo_manager::RepoManager>,
+    order: Vec<String>,
+) -> Result<(), String> {
+    state.inner().set_repo_priority_order(order).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn is_verbose_logs_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<bool, String> {
+    Ok(state.inner().is_verbose_logs_enabled().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_verbose_logs_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.inner().set_verbose_logs_enabled(enabled).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn is_clean_build_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<bool, String> {
+    Ok(state.inner().is_clean_build_enabled().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_clean_build_enabled(
+    state: State<'_, repo_manager::RepoManager>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.inner().set_clean_build_enabled(enabled).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_parallel_downloads(
+    state: State<'_, repo_manager::RepoManager>,
+) -> Result<u32, String> {
+    Ok(state.inner().get_parallel_downloads().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_parallel_downloads(
+    state: State<'_, repo_manager::RepoManager>,
+    count: u32,
+) -> Result<(), String> {
+    state.inner().set_parallel_downloads(count).await;
+    Ok(())
+}
+
+/// Show a desktop notification. On Linux we use notify-send in a blocking thread to avoid
+/// "Cannot start a runtime from within a runtime" (tauri-plugin-notification uses notify-rust/zbus
+/// which calls block_on). On other platforms we use the plugin from the same blocking thread.
+pub async fn show_desktop_notification_safe(app: &AppHandle, title: String, body: String) {
+    #[cfg(target_os = "linux")]
+    let _ = app;
+    #[cfg(target_os = "linux")]
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let _ = Command::new("notify-send")
+            .arg(&title)
+            .arg(&body)
+            .arg("--app-name=MonARCH Store")
+            .output();
+    })
+    .await;
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let app = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let _ = app.notification().builder().title(title).body(body).show();
+        })
+        .await;
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn show_desktop_notification(
+    app: AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    show_desktop_notification_safe(&app, title, body).await;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn get_install_mode_command() -> String {
     match utils::get_install_mode() {
         utils::InstallMode::System => "system".to_string(),
@@ -511,6 +1094,7 @@ pub fn get_install_mode_command() -> String {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn is_sync_on_startup_enabled(
     state: State<'_, repo_manager::RepoManager>,
 ) -> Result<bool, String> {
@@ -518,6 +1102,7 @@ pub async fn is_sync_on_startup_enabled(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn set_sync_on_startup_enabled(
     state: State<'_, repo_manager::RepoManager>,
     enabled: bool,
@@ -529,6 +1114,7 @@ pub async fn set_sync_on_startup_enabled(
 /// Returns true if the pacman hook set a refresh flag (user ran pacman in terminal);
 /// we clear the flag and the caller should trigger a repo sync.
 #[tauri::command]
+#[specta::specta]
 pub fn check_and_clear_refresh_requested() -> Result<bool, String> {
     let path = dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -542,6 +1128,7 @@ pub fn check_and_clear_refresh_requested() -> Result<bool, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_cache_size() -> Result<CacheSizeResult, String> {
     tokio::task::spawn_blocking(|| {
         let cache_dir = std::path::Path::new("/var/cache/pacman/pkg");
@@ -586,6 +1173,7 @@ pub async fn get_cache_size() -> Result<CacheSizeResult, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_orphans_with_size() -> Result<OrphansWithSizeResult, String> {
     tokio::task::spawn_blocking(|| {
         let output = std::process::Command::new("pacman")
@@ -616,7 +1204,7 @@ pub async fn get_orphans_with_size() -> Result<OrphansWithSizeResult, String> {
                 for line in info.lines() {
                     if line.starts_with("Installed Size") {
                         if let Some(size_str) = line.split(':').nth(1) {
-                            let parts: Vec<&str> = size_str.trim().split_whitespace().collect();
+                            let parts: Vec<&str> = size_str.split_whitespace().collect();
                             if parts.len() >= 2 {
                                 if let Ok(num) = parts[0].parse::<f64>() {
                                     let multiplier = match parts[1] {
@@ -655,29 +1243,8 @@ pub async fn get_orphans_with_size() -> Result<OrphansWithSizeResult, String> {
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
-#[tauri::command]
-pub async fn set_parallel_downloads(
-    count: u32,
-    password: Option<String>,
-) -> Result<String, String> {
-    let script = format!(
-        r#"
-        echo 'Updating ParallelDownloads in /etc/pacman.conf...'
-        cp /etc/pacman.conf /etc/pacman.conf.bak.parallel.$(date +%s) || true
-        if grep -q "^ParallelDownloads" /etc/pacman.conf; then
-            sed -i "s/^ParallelDownloads.*/ParallelDownloads = {}/" /etc/pacman.conf
-        else
-            sed -i '/^\[options\]/a ParallelDownloads = {}' /etc/pacman.conf
-        fi
-        echo '✓ ParallelDownloads set to {}. Restart MonARCH for full effect.'
-    "#,
-        count, count, count
-    );
-    utils::run_privileged_script(&script, password, false).await
-}
-
 /// Result of testing one mirror: URL and optional latency in ms.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct MirrorTestResult {
     pub url: String,
     pub latency_ms: Option<u32>,
@@ -686,6 +1253,7 @@ pub struct MirrorTestResult {
 /// Test mirrors for a repo without changing system config. Returns top 3 with latency (ms).
 /// repo_key: "arch" | "Arch" | "cachyos" | "chaotic-aur" (others fall back to arch or N/A).
 #[tauri::command]
+#[specta::specta]
 pub async fn test_mirrors(repo_key: String) -> Result<Vec<MirrorTestResult>, String> {
     let key = repo_key.to_lowercase();
     let (distro, mirrorlist_path): (&str, Option<std::path::PathBuf>) =
@@ -806,6 +1374,7 @@ fn parse_mirrorlist_latency(text: &str, take: usize) -> Result<Vec<MirrorTestRes
 /// Returns which mirror-ranking tool will be used (distro-aware). Used by Settings UI to show correct label.
 /// Never runs reflector on Manjaro — rank_mirrors script uses pacman-mirrors there.
 #[tauri::command]
+#[specta::specta]
 pub fn get_mirror_rank_tool() -> Option<String> {
     if std::path::Path::new("/usr/bin/pacman-mirrors").exists()
         && std::path::Path::new("/etc/manjaro-release").exists()
@@ -822,6 +1391,7 @@ pub fn get_mirror_rank_tool() -> Option<String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn rank_mirrors(password: Option<String>) -> Result<String, String> {
     let script = r#"
         echo 'Ranking mirrors by download speed (this may take ~30 seconds)...'
@@ -840,21 +1410,25 @@ pub async fn rank_mirrors(password: Option<String>) -> Result<String, String> {
             exit 1
         fi
     "#;
-    utils::run_privileged_script(&script, password, false).await
+    utils::run_privileged_script(script, password, false).await
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn emit_sync_progress(app: AppHandle, status: String) -> Result<(), String> {
     let _ = app.emit("sync-progress", status);
     Ok(())
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn force_refresh_databases(
     app: AppHandle,
+    state_repo: State<'_, repo_manager::RepoManager>,
     password: Option<String>,
 ) -> Result<(), String> {
     let _ = app.emit("install-output", "Force refreshing sync databases...");
+    let one_click = state_repo.inner().is_one_click_enabled().await;
     let mut rx = crate::helper_client::invoke_helper(
         &app,
         crate::helper_client::HelperCommand::ExecuteBatch {
@@ -864,6 +1438,7 @@ pub async fn force_refresh_databases(
             },
         },
         password,
+        one_click,
     )
     .await?;
     while let Some(msg) = rx.recv().await {
@@ -876,8 +1451,14 @@ pub async fn force_refresh_databases(
 /// Updates system pacman sync DBs (/var/lib/pacman/sync/). At launch we only run when DBs are stale (>6h) so we don't sync every open.
 /// Emits to "sync-progress" so the UI can show status.
 #[tauri::command]
-pub async fn sync_system_databases(app: AppHandle, password: Option<String>) -> Result<(), String> {
+#[specta::specta]
+pub async fn sync_system_databases(
+    app: AppHandle,
+    state_repo: State<'_, repo_manager::RepoManager>,
+    password: Option<String>,
+) -> Result<(), String> {
     let _ = app.emit("sync-progress", "Updating package databases...");
+    let one_click = state_repo.inner().is_one_click_enabled().await;
     let mut rx = crate::helper_client::invoke_helper(
         &app,
         crate::helper_client::HelperCommand::ExecuteBatch {
@@ -887,6 +1468,7 @@ pub async fn sync_system_databases(app: AppHandle, password: Option<String>) -> 
             },
         },
         password,
+        one_click,
     )
     .await?;
     while let Some(msg) = rx.recv().await {
@@ -895,4 +1477,107 @@ pub async fn sync_system_databases(app: AppHandle, password: Option<String>) -> 
     let _ = app.emit("sync-progress", "Package databases up to date.");
     crate::repair::write_last_sync_timestamp();
     Ok(())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn open_chaotic_terminal() -> Result<(), String> {
+    let script_content = r#"#!/bin/bash
+clear
+echo -e "\033[1;35mChaotic-AUR Setup\033[0m"
+echo "================="
+echo "This script will enable the Chaotic-AUR repository on your system."
+echo "This provides pre-built binaries for popular AUR packages."
+echo ""
+echo -e "\033[1;33mWARNING: Trust & Security\033[0m"
+echo "Chaotic-AUR is a third-party repository. While widely trusted,"
+echo "you are trusting their build servers with your system security."
+echo ""
+echo "Steps to be performed:"
+echo "1. Receive & Sign Chaotic keys"
+echo "2. Install keyring & mirrorlist"
+echo "3. Configure /etc/pacman.conf"
+echo ""
+read -p "Press [Enter] to proceed or Ctrl+C to cancel..."
+
+echo ""
+echo "1. Installing Keys..."
+sudo pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com
+sudo pacman-key --lsign-key 3056513887B78AEB
+
+echo ""
+echo "2. Installing Repository Packages..."
+sudo pacman -U --noconfirm 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
+
+echo ""
+echo "3. Updating Configuration..."
+if ! grep -q "\[chaotic-aur\]" /etc/pacman.conf; then
+    echo "Appending to /etc/pacman.conf..."
+    echo -e "\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist" | sudo tee -a /etc/pacman.conf
+else
+    echo "Chaotic-AUR already present in pacman.conf"
+fi
+
+echo ""
+echo "4. Refreshing Databases..."
+sudo pacman -Sy
+
+echo ""
+echo -e "\033[1;32mSuccess! Chaotic-AUR is now enabled.\033[0m"
+echo "You can now close this window."
+read -p "Press [Enter] to exit..."
+"#;
+
+    let script_path = "/tmp/monarch_chaotic_setup.sh";
+    std::fs::write(script_path, script_content).map_err(|e| e.to_string())?;
+
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(script_path)
+        .map_err(|e| e.to_string())?
+        .permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(script_path, perms).map_err(|e| e.to_string())?;
+
+    let terminals = [
+        ("xdg-terminal-exec", vec![]),
+        ("konsole", vec!["-e"]),
+        ("gnome-terminal", vec!["--"]),
+        ("xfce4-terminal", vec!["-x"]),
+        ("kitty", vec![]), // kitty script.sh works
+        ("alacritty", vec!["-e"]),
+        ("wezterm", vec!["start"]),
+        ("terminator", vec!["-x"]),
+        ("tilix", vec!["-e"]),
+        ("xterm", vec!["-e"]),
+    ];
+
+    for (term, args) in terminals {
+        if which::which(term).is_ok() {
+            let mut cmd = std::process::Command::new(term);
+            cmd.args(args);
+            // gnome-terminal requires special handling if passing arguments, but for basic script it might be tricky with '--'.
+            // Actually, gnome-terminal -- /bin/bash -c "script" is standard.
+            // For simplicity, let's try to run the script directly.
+            // Most terminals accept [TERMINAL] [ARGS] [COMMAND]
+
+            // Refined args logic:
+            if term == "gnome-terminal" {
+                cmd.args(["--", "/bin/bash", "-c", script_path]);
+            } else if term == "xfce4-terminal" || term == "terminator" {
+                cmd.args(["-x", "/bin/bash", "-c", script_path]);
+            } else if term == "kitty" {
+                cmd.arg(script_path);
+            } else if term == "xdg-terminal-exec" {
+                cmd.arg(script_path);
+            } else {
+                // konsole -e, alacritty -e, xterm -e, tilix -e
+                cmd.args(["-e", "/bin/bash", "-c", script_path]);
+            }
+
+            if cmd.spawn().is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    Err("No supported terminal emulator found".to_string())
 }

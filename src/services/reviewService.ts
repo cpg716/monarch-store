@@ -1,5 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
-import { invoke } from '@tauri-apps/api/core';
+import { commands } from './bindings';
+import { unwrap } from '../utils/specta';
+import { getErrorService } from '../context/getErrorService';
 
 const SUPABASE_URL = "https://tcmbahxvwhcetfbtnxlj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_H5McpvxB2eoujN9LNzhy1w_lJup-ZcX";
@@ -50,7 +52,7 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
     for (const id of Array.from(probeIds)) {
         try {
             // We fetch reviews first now, as we need them for the date filter
-            const odrsReviews: any[] = await invoke('get_app_reviews', { appId: id });
+            const odrsReviews = unwrap(await commands.getAppReviews(id));
 
             if (odrsReviews && odrsReviews.length > 0) {
                 // Filter ODRS reviews - Currency (365 days) AND Language (English)
@@ -121,7 +123,7 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
                 if (stars[rounded] !== undefined) stars[rounded]++;
             });
         }
-    } catch (e) { console.error("Supabase fetch failed", e); }
+    } catch (e) { getErrorService()?.reportWarning(`Supabase fetch failed: ${e}`); }
 
     // 3. Calculate Composite Stats - purely from the filtered lists now
     const monarchCount = supabaseReviews.length;
@@ -172,8 +174,8 @@ export async function getRatingsBatch(pkgNames: string[]): Promise<Map<string, {
     // 1. Fetch ODRS (All Time)
     let odrsResults: Record<string, any> = {};
     try {
-        odrsResults = await invoke<Record<string, any>>('get_app_ratings_batch', { appIds: probes });
-    } catch (e) { console.error("ODRS Batch failed", e); }
+        odrsResults = unwrap(await commands.getAppRatingsBatch(probes));
+    } catch (e) { getErrorService()?.reportWarning(`ODRS Batch failed: ${e}`); }
 
     // 2. Fetch Supabase (365 Days Filter)
     const cutoffDate = new Date();
@@ -195,7 +197,7 @@ export async function getRatingsBatch(pkgNames: string[]): Promise<Map<string, {
                 supabaseMap.set(r.package_name, current);
             });
         }
-    } catch (e) { console.error("Supabase Batch failed", e); }
+    } catch (e) { getErrorService()?.reportWarning(`Supabase Batch failed: ${e}`); }
 
     const output = new Map();
     pkgNames.forEach(n => {
@@ -253,13 +255,13 @@ export async function getCompositeRating(pkgName: string, appStreamId?: string):
     // We strictly use get_app_rating here for speed. We accept "All Time" stats for the summary to avoid downloading 1000 reviews JSON.
     for (const id of Array.from(probeIds)) {
         try {
-            const odrsRating: any = await invoke('get_app_rating', { appId: id });
+            const odrsRating = unwrap(await commands.getAppRating(id));
             if (odrsRating && odrsRating.total > 0) {
                 odrsCount = odrsRating.total;
                 odrsSum = (odrsRating.score || 0) / 20 * odrsCount;
                 break;
             }
-        } catch (e) { }
+        } catch (e) { /* ODRS probe - silent fallthrough */ }
     }
 
     // 2. Fetch Supabase (365 Days)
@@ -279,7 +281,7 @@ export async function getCompositeRating(pkgName: string, appStreamId?: string):
             sbCount = data.length;
             sbSum = data.reduce((acc, r) => acc + r.rating, 0);
         }
-    } catch (e) { /* ignore */ }
+    } catch (e) { /* Non-critical: silent for single rating fetch */ }
 
     const totalCount = odrsCount + sbCount;
     const totalSum = odrsSum + sbSum;

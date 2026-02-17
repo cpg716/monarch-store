@@ -1,10 +1,46 @@
 # Release Notes
 
-**Current version:** v0.4.0-alpha
+**Current version:** v0.4.6-alpha  
+**Last doc update:** 2026-02-14
 
 ---
 
 # Monarch Store Release Notes
+
+## Latest (v0.4.6-alpha) — The Iron Core Purge
+*   **Iron Core Purge (2026-02-14):** Fully offloaded metadata hydration (icons, descriptions, screenshots, ratings) to the Rust backend. The frontend is now a **Dumb View** that relies on fully-enriched ViewModels provided by the backend.
+*   **Initialization Fix:** Resolved the "Initializing system..." hang by releasing the metadata loader lock before starting the registry sync. This allows the UI to remain responsive and load Essentials/Trending data while background synchronization continues.
+*   **Type Safety:** Replaced manual TypeScript interfaces with `tauri-specta` generated types from `bindings.ts` across the entire application.
+*   **Logic Offloading:** Removed complex frontend logic for regex parsing (sizes, versions) and "icon guessing." Backend now provides pre-formatted and sanitized strings and base64 images.
+*   **Eliminated 400 Errors:** Fixed browser "400 Bad Request" errors for base64 icons by implementing backend-side sanitation and wrapping.
+*   **Performance:** Drastically reduced IPC overhead by eliminating per-card hydration hooks (`usePackageMetadata`, `useRatings`, etc.).
+
+## v0.4.5-alpha (2026-02-08) — Universal Data Engine & fixes
+*   **Version:** v0.4.5-alpha.
+*   **Universal Data Engine (2026-02-08):** Canonical merge key no longer uses a per-app alias list; multi-segment names use a generic **first-segment rule** (e.g. `heroic` and `heroic-games-launcher` → key `heroic`). One proper name per app via **preferred display name** map (Heroic Game Launcher, OBS Studio, Visual Studio Code) and fallback `to_pretty_name` after dedup. See `docs/UNIVERSAL_DATA_ENGINE.md`.
+*   **Fixes:** Essentials/Categories load race fixed (eviction protects newly upserted ids; CategoryView and TrendingSection retry on empty). Trending includes official repo packages (not AUR-only). Icon/base64 400 errors fixed in `resolveIconUrl`. Heroic (and similar) show as one card with one name everywhere.
+*   **Permissions (2026-02-08):** One-click ON uses **branded prompt** (app password dialog → `sudo -S`); one-click OFF uses **Polkit (pkexec)** so advanced users get the system auth dialog every time. All privileged commands pass `use_branded_auth` from `RepoManager::is_one_click_enabled()`. See `docs/RECENT_CHANGES.md` §8.
+*   **Distro detection (2026-02-08):** `ID=archlinux` treated as Arch; `ID_LIKE` parsed so Arch-based distros (e.g. ArcoLinux, Archcraft) get Arch-like capabilities. CachyOS, Manjaro, Garuda, EndeavourOS unchanged.
+*   **Chaotic-AUR & Onboarding (2026-02-08):** Onboarding Chaotic step shows "Already enabled" when native (Garuda/CachyOS) or when `chaotic_in_alpm`; Final Step modal and Settings Chaotic modal use clearer copy for new Linux users; Security step explains one prompt vs system dialog; Chaotic row uses capability-based visibility.
+*   **Middleware Refactoring (2026-02-11):** Aggregation logic moved from `search.rs` to dedicated `middleware/aggregation.rs` module for better maintainability and testability.
+*   Earlier cycle: Container Ready, Safe Guard, Liquid UI, Unified Pipeline, Operation Chaotic Good (see v0.4.0-alpha below).
+
+---
+
+## v0.4.0-alpha (2026-02-03): Container Ready, Safe Guard, Liquid UI, Unified Pipeline & Operation Chaotic Good
+
+*   **Container Ready audit**: Version and meta sweep (package.json, Cargo.toml, tauri.conf) aligned to v0.4.0-alpha; lockfiles verified.
+*   **Docker**: Added `ca-certificates` to the builder image for HTTPS (git clone, npm, rustup). Builder has libssl-dev, git, build-essential, libalpm (built from source).
+*   **GitHub Actions**: Release workflow uses dynamic release body: "Prepare release body" step extracts the changelog for the pushed tag from `RELEASE_NOTES.md` and passes it to the Tauri action; fallback used when no section matches.
+*   **Safe Guard (Install & Update)**: Helper respects host `IgnorePkg`/`IgnoreGroup` (question callback skips install for ignored packages). Update-and-install flow runs a full system upgrade **before** installing the target package. On repo install failure due to stale DB, the GUI emits `failed_update_required` and returns an error—no silent full upgrade; user must confirm.
+*   **Liquid UI**: Minimum window size 800×600; responsive grids (1–4 columns) on Browse, Search, Category, Trending; mobile bottom navigation; sidebar hidden/collapsed on small/medium; responsive package details (stacked header/actions on narrow viewports).
+*   **Unified Pipeline**: Search uses canonical merge keys for variant merging (`-git`, `-bin`, etc.); PackageCard shows best source badge and source count; PackageDetailsFresh uses `available_sources` for source selector and screenshot handling; friendly labels from `labels::get_friendly_label`.
+*   **One card per app**: Backend `deduplicate_by_canonical_key` and `canonical_id` on `Package`; frontend list keys use `canonical_id` so browse/trending/category show exactly one card per app (e.g. Discord). Details page always includes the card’s source in the variant dropdown and prefers it for initial selection; `isSameSource` fixes Flatpak vs AUR flip on open.
+*   **UI/UX (cards & dropdown)**: Version selector on PackageCard given spacing and ChevronDown with padding to avoid edge clipping. RepoSelector: AUR entries show `pkg_name` (e.g. "AUR (vlc-git)"); "Other repository" shows repo id in parentheses. Labels: "Custom Repository" → "Other repository"; Arch Official (core, extra, multilib) labeled "Arch Official" regardless of distro.
+*   **Operation Chaotic Good**: Chaotic-AUR safe toggle with read-only host policy—we do not edit `/etc/pacman.conf`. Backend: `check_chaotic_status`, `prepare_chaotic_components` (Helper installs keyring + mirrorlist); Settings SourcesTab shows Active/Inactive/Blocked and "Final Step" modal (copy pacman.conf snippet, Check Again). Onboarding wizard: Welcome → Source Manager (Flatpak, AUR, Chaotic) → Chaotic-AUR Setup (conditional) → Security & Privacy → Theme → Confirmation. Package cards/details: when the only source is Chaotic-AUR and it’s not enabled, show "Configure Source" (opens Settings). See `docs/RECENT_CHANGES.md`.
+*   **Docs**: README, RELEASE_NOTES, RELEASE_PUSH_STEPS, PREPARE_FOR_PUSH, GITHUB_ACTIONS_REVIEW, DEVELOPER, CONTRIBUTING, TESTING, ERROR_SERVICE, APTABASE, ARCHITECTURE, AGENTS, SECURITY, ROADMAP, RECENT_CHANGES, UNIFICATION_AND_DROPDOWN_REVIEW, DUPLICATE_CARDS_FIX_UPDATE, STATE_OF_THE_UNION, and other .md files updated for v0.4.0-alpha and recent fixes.
+
+---
 
 ## v0.4.0-alpha (Universal MonARCH)
 **"The Host-Adaptive Update"** — v0.4.0-alpha: The Universal Update. Removes the need for manual repo configuration; repositories are discovered from your system's `pacman.conf`.
@@ -19,23 +55,13 @@
 
 ## v0.3.5-alpha
 
-*   **The "Iron Core" Update**: Introduced `SafeUpdateTransaction` for atomic, robust package installation.
-rict "Atomic Update Protocol". We now check for locks and enforcement a full system upgrade (`-Syu`) for *every* sync transaction, ensuring zero "partial upgrade" breakages.
+*   **The "Iron Core" Update**: Introduced `SafeUpdateTransaction` for atomic, robust package installation. Strict "Atomic Update Protocol": we check for locks and enforce a full system upgrade (`-Syu`) for *every* sync transaction, ensuring zero "partial upgrade" breakages.
 - **Custom Title Bar & Permissions:** Integrated a premium client-side decoration (CSD) title bar. Fixed window control functionality (Minimize/Maximize/Close) and enabled backend permissions for the Tauri Store plugin.
 - **Wayland Ghost Protocol:** Fixed black flickering/artifacts on KDE Plasma (especially Nvidia) by intelligently detecting `WAYLAND_DISPLAY` and disabling transparency effects.
 - **The Chameleon (Native Themes):** Now uses XDG Portals (`ashpd`) to detect system Dark/Light mode correctly on all desktops (GNOME, KDE, Hyprland), ignoring legacy GTK theme signals.
 - **Native Dialogs:** Portal-based file pickers (`rfd`) are planned; dependency added. Theme detection uses XDG Portals (`ashpd`).
 
 ---
-
-# Release Notes v0.3.6-alpha (Reliability & Polish)
-
-## Latest (2026-02-01)
-- **Safe Update Transaction (Iron Core):** Implemented strict "Atomic Update Protocol". We now check for locks and enforcement a full system upgrade (`-Syu`) for *every* sync transaction, ensuring zero "partial upgrade" breakages.
-- **Custom Title Bar & Permissions:** Integrated a premium client-side decoration (CSD) title bar. Fixed window control functionality (Minimize/Maximize/Close) and enabled backend permissions for the Tauri Store plugin.
-- **Wayland Ghost Protocol:** Fixed black flickering/artifacts on KDE Plasma (especially Nvidia) by intelligently detecting `WAYLAND_DISPLAY` and disabling transparency effects.
-- **The Chameleon (Native Themes):** Now uses XDG Portals (`ashpd`) to detect system Dark/Light mode correctly on all desktops (GNOME, KDE, Hyprland), ignoring legacy GTK theme signals.
-- **Native Dialogs:** Portal-based file pickers (`rfd`) are planned; dependency added. Theme detection uses XDG Portals (`ashpd`).
 
 ---
 

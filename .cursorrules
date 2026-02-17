@@ -1,29 +1,101 @@
-# MonARCH Store - Cursor Rules
+# MonARCH Store (v0.4.6-alpha+) - Cursor Rules
+
+## 🧠 Architectural Invariants (THE IRON LAWS)
+
+1. **Read-Only Host Policy**
+   - NEVER write to `/etc/pacman.conf`. We no longer inject repositories.
+   - Repos are **discovered** from system pacman.conf (ALPM + `register_syncdbs_from_conf`). Repository toggles (Chaotic/Flatpak/AUR) are in Settings → Sources (`SourcesTab.tsx`), backed by `distro_context.rs` and `repo_manager.rs`.
+   - Garuda uses Chaotic-AUR by default; Manjaro must NOT allow enabling chaotic-aur (glibc mismatch). We are distro-aware; do not inject.
+
+2. **Dumb View Frontend (The Iron Core Purge)**
+   - The frontend is a **pure render layer**. It DOES NOT perform data hydration, manual icon resolution, or metadata parsing.
+   - All ViewModel enrichment (icons, descriptions, screenshots, ratings) MUST be handled by the Rust backend.
+   - Components MUST use the `Package` struct directly from `bindings.ts`. No local interfaces for package data.
+   - Manual `invoke` calls for metadata from components are FORBIDDEN.
+
+3. **Safe Transaction Protocol**
+   - NEVER use `pacman -Sy` (partial upgrade). ALWAYS use `pacman -Syu` or `pacman -S`.
+   - **Order of operations:** Official repo updates → Flatpak updates → AUR builds.
+
+4. **Native Builder Protocol**
+   - `makepkg` must NEVER run as root. Builds happen in `monarch-gui` (user), in `~/.cache/monarch/build` (or equivalent), not system folders.
+   - Built `.pkg.tar.zst` is copied to `/tmp/monarch-install/` before Helper `AlpmInstallFiles`.
+
+5. **Universal Data Model**
+   - Search results must be **deduplicated** by `canonical_merge_key` (first-segment rule for multi-segment names; no per-app alias list). One App = One Card, one proper name (e.g. "Heroic Game Launcher"). See `docs/UNIVERSAL_DATA_ENGINE.md`.
+   - Do not render duplicate cards for the same package identity. Use `canonical_id` for list keys and variant lookup.
+
+6. **Split-Brain / Lock Safety**
+   - `monarch-helper` is the **only** binary that may write to `/var/lib/pacman` and run ALPM transactions. The GUI never runs pacman/ALPM for install/update/remove/sync; it only invokes the Helper via `invoke_helper` (Polkit/pkexec). No `sudo` in the GUI for package operations.
+   - GUI uses ALPM only for **read-only** queries in `alpm_read.rs`; short-lived handles, no long-lived ALPM in Tauri state.
+
+---
 
 ## Project Architecture
-This is a Tauri v2 application with a split architecture:
-1. **Frontend:** React + TypeScript + Tailwind (Glassmorphism UI). State: Zustand in `src/store/`. Key dirs: `src/components/`, `src/pages/`, `src/hooks/`.
-2. **Backend (GUI):** `src-tauri/monarch-gui/`. Runs as USER. Handles Read-Only ALPM, Configuration, and IPC. Key: `commands/`, `helper_client.rs`, `alpm_read.rs`.
-3. **Backend (Helper):** `src-tauri/monarch-helper/`. Runs as ROOT (via Polkit). Handles Write ALPM (Install/Update/Remove). Key: `transactions.rs`, `main.rs`, `self_healer.rs`, `alpm_errors.rs`, `logger.rs`.
 
-## Critical Rules
-- **NEVER** suggest running `makepkg` or AUR builds in `monarch-helper` (Root). Builds MUST happen in `monarch-gui` (User).
-- **No Sudo in GUI:** The GUI must **NEVER** run `sudo` (or `Command::new("sudo")`) for system tasks. It has no TTY; use the Helper via `invoke_helper` with the appropriate `HelperCommand` (e.g. `RemoveLock`, `ClearCache`, `ForceRefreshDb`). See `.cursor/CONTEXT.md` — Critical Architecture Update (Jan 31, 2026).
-- **IPC Protocol:** The GUI invokes the Helper with the command JSON as **argv** (e.g. `pkexec /path/to/monarch-helper` with command file or stdin). The Helper replies via **stdout** JSON lines (progress/events). Stdin is only used for sudo password when the GUI spawns sudo for the **invocation** (e.g. `sudo -S` to run the helper); the GUI must not run sudo for the **operation** itself (lock rm, cache clean, etc.).
-- **ALPM Safety:** In `monarch-helper`, check for `db.lck` before sysupgrade (see `main.rs` Sysupgrade branch). Use `alpm::TransFlag` (e.g. `ALL_DEPS`, `DOWNLOAD_ONLY`). Use the question callback to auto-answer (NOCONFIRM behavior).
-- **Package Management:** Never run `pacman -Sy` alone; use a single transaction (e.g. `-Syu`). AUR: build in GUI, copy built `.pkg.tar.zst` to `/tmp/monarch-install/` before calling Helper `AlpmInstallFiles`.
+- **Frontend:** React 19 + TypeScript + Tailwind CSS 4 (Glassmorphism UI). State: Zustand in `src/store/`. Key dirs: `src/components/`, `src/pages/`, `src/hooks/`.
+- **Backend (GUI):** `src-tauri/monarch-gui/`. Runs as USER. Read-only ALPM, config, AUR builds, IPC. Key: `commands/`, `helper_client.rs`, `alpm_read.rs`.
+- **Backend (Helper):** `src-tauri/monarch-helper/`. Runs as ROOT (Polkit). Write ALPM only. Key: `transactions.rs`, `main.rs`, `self_healer.rs`, `alpm_errors.rs`, `logger.rs`.
+- **IPC:** GUI invokes Helper with command JSON (e.g. pkexec + argv). Helper replies via stdout JSON. Stdin only for password when GUI spawns the invocation (e.g. `sudo -S`); GUI must not run sudo for the **operation** itself.
 
-## Coding Style
-- **Rust:** Prefer `anyhow` or `thiserror` for error handling. Use `serde` for all IPC structs. In helper, use `logger::trace`/`info` for diagnostics (log file: `/var/log/monarch-helper.log` or `/tmp/monarch-helper.log`).
-- **React:** Functional components, `lucide-react` icons, `clsx` + `tailwind-merge` for class names. Tauri: `invoke()` from `@tauri-apps/api/core`.
-- **Tauri:** Use `tauri::command` for frontend-to-gui communication.
+---
+
+## File & Module Sovereignty
+
+- **No duplicate names:** Do not create multiple `utils.rs` or `models.rs` in different directories.
+- **Global vs local:** `monarch-gui/src/utils.rs` = shared truth (canonical_merge_key, deduplication, helper paths). `monarch-gui/src/commands/cmd_helpers.rs` = UI glue (get_package_icon, clear_cache, launch_app, build_pacman_cmd). Prefer `crate::utils` for identity/merge; `crate::commands::cmd_helpers` for command helpers.
+
+---
+
+## The Unification Law (Package Identity)
+
+- **One card, one details page:** Every entry point (Search, Categories, Trending, Essentials) MUST show exactly one card per app, with all sources (Official, CachyOS, Chaotic, Flatpak, AUR) in `available_sources`. One details page per app; routing uses `canonical_id` (frontend: `getPackageListKey`). Categories must not "separate" Flatpak vs repo into different cards.
+- **Canonical keys:** All packages MUST be keyed with `utils::canonical_merge_key` (first-segment rule when name has multiple segments; app_id via known map + first-segment). Same key ⇒ one card with multiple sources and one display name. See `docs/UNIVERSAL_DATA_ENGINE.md`.
+- **Chain:** Search → State → Details. If `canonical_id` is lost, it is a critical bug.
+- **Merge:** In `merge_search_results`, group by canonical key, append sources to `available_sources`, overwrite ID-style names (e.g. `com.discordapp.Discord`) with friendly names when merged entry has one.
+- **Details:** Request variants by `pkg.canonical_id || pkg.name` so `get_package_variants` returns ALL variants. RepoSelector shows when `variants.length > 1` or `pkg.available_sources?.length > 1`.
+
+---
+
+## 🎨 UI/UX Standards ("Liquid UI")
+
+1. **Responsiveness first**
+   - Never use fixed column counts (e.g. `grid-cols-4`). Use breakpoints: `grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4`.
+2. **Stacked details**
+   - Detail pages use `flex-col lg:flex-row`. On mobile/laptop, Icon/Actions stack **above** Description.
+3. **Source visibility**
+   - Every package card shows a color-coded badge (e.g. Official, Flatpak, AUR). Details page MUST include a **Source Selector** dropdown (RepoSelector).
+4. **Theme & loading**
+   - Use semantic Tailwind (e.g. `text-slate-900 dark:text-white/90`). Use `AnimatePresence` and skeleton loaders for async data.
+
+---
+
+## Tech Stack
+
+- **Backend:** Rust (Tauri v2). Use `libalpm` (via `alpm` crate) and `git2`; avoid shell scripts for core logic.
+- **Frontend:** React + TypeScript + Tailwind CSS 4. No Redux; use React Context or local state (Zustand in `src/store/`). Icons: `lucide-react`. Class names: `clsx` + `tailwind-merge`. Tauri: `invoke()` from `@tauri-apps/api/core`, `tauri::command` for frontend→GUI.
+
+---
+
+## ⚠️ Forbidden Patterns
+
+- Do not suggest `.sh` wrapper scripts for basic logic; move it to Rust.
+- Do not use `reqwest` for AUR; use the `raur` crate.
+- Do not allow `chaotic-aur` to be enabled when host is Manjaro (`distro_context.rs` ChaoticSupport::Blocked).
+- Do not run `pacman -Sy` alone. Do not run makepkg in monarch-helper (root). Do not run sudo in the GUI for package operations.
+
+---
 
 ## Context Awareness
-- **Updates:** `monarch-gui/src/commands/update.rs` AND `monarch-helper/src/transactions.rs` (and Sysupgrade/lock check in `main.rs`).
-- **Search:** `monarch-gui/src/commands/search.rs` and `monarch-gui/src/alpm_read.rs`.
+
+- **Updates:** `monarch-gui/src/commands/update.rs`, `monarch-helper/src/transactions.rs`, Sysupgrade/lock check in `main.rs`.
+- **Search:** `monarch-gui/src/commands/search.rs`, `alpm_read.rs`. Chaotic-AUR included in search when repo enabled; repos discovered from pacman.conf.
 - **Install/Uninstall:** `monarch-gui/src/commands/package.rs`, `helper_client.rs`, `monarch-helper/src/transactions.rs`.
-- **Install cancel:** `repair.rs` `cancel_install` (creates `/var/tmp/monarch-cancel`, helper exits, then RemoveLock). Helper: PID file + watcher for cancel file. InstallMonitor: Cancel button + close warning. **Startup unlock:** `unlock_pacman_if_stale` runs at app startup (App.tsx) before health/sync; clears stale db.lck via Helper RemoveLock when safe.
-- **Errors:** `monarch-helper/src/alpm_errors.rs` (classify) + `src/utils/friendlyError.ts` (frontend). Self-heal: `monarch-helper/src/self_healer.rs`.
+- **Install cancel:** `repair.rs` `cancel_install`; Helper PID file + cancel file watcher. InstallMonitor: Cancel button + close warning. **Startup unlock:** `unlock_pacman_if_stale` at app startup (App.tsx) before health/sync.
+- **Errors:** `monarch-helper/src/alpm_errors.rs`, `src/utils/friendlyError.ts`. Self-heal: `self_healer.rs`.
+
+---
 
 ## Build
-- Full app: `npm run tauri dev` or `npm run tauri build`. Rust only: `cd src-tauri && cargo check`. See `AGENTS.md` for more.
+
+- **Primary:** `npm run tauri dev` (full app with hot reload). Rust only: `cd src-tauri && cargo check`. See `AGENTS.md` for release, mold, and troubleshooting.

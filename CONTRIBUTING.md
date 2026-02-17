@@ -1,7 +1,7 @@
 # Contributing to MonARCH Store 🦋
 
-**Last updated:** 2026-02-02 (v0.4.0-alpha).
-Project architecture features (**Iron Core**, **The Chameleon**, **Mission Control**, **Silent Guard**) are documented across the repository. Contributors should prioritize the [**Developer Guide**](docs/DEVELOPER.md) and [**Architecture**](ARCHITECTURE.md) for deep dives.
+**Last updated:** 2026-02-14 (v0.4.6-alpha).
+Project architecture features (**Iron Core Purge**, **The Chameleon**, **Mission Control**, **Silent Guard**, **Safe Guard**, **Liquid UI**, **Unified Pipeline**, **Operation Chaotic Good**) are documented across the repository. Contributors should prioritize the [**Developer Guide**](docs/DEVELOPER.md) and [**Architecture**](ARCHITECTURE.md) for deep dives. For a concise summary of recent changes (one card per app, details dropdown, Chaotic-AUR safe toggle, onboarding, labels), see [**Recent Changes**](docs/RECENT_CHANGES.md).
 
 First off, thanks for taking the time to contribute! 🎉
 
