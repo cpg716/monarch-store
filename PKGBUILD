@@ -14,11 +14,11 @@ optdepends=('rate-mirrors: Test Mirrors with latency (Settings → Repositories)
             'reflector: alternative for Test Mirrors / mirror ranking')
 makedepends=('cargo' 'nodejs' 'npm')
 # For -git: SKIP. After pushing tag v${pkgver}, run: ./scripts/release-finalize-pkgbuild.sh
-source=("git+https://github.com/cpg716/monarch-store.git")
-sha256sums=('SKIP')
+source=("https://github.com/cpg716/monarch-store/archive/refs/tags/v0.4.6_alpha.tar.gz")
+sha256sums=('19c7d5b9d6ef141fb204a19fdcf5b2f0aa7084c85c7a5683ebf598504381e691')
 
 prepare() {
-  cd "$pkgname"
+  cd "monarch-store-0.4.6_alpha"
   # Contain npm cache in $srcdir (Arch: no $HOME pollution)
   export npm_config_cache="$srcdir/.npm"
   # Reproducible install when package-lock.json exists
@@ -26,7 +26,7 @@ prepare() {
 }
 
 build() {
-  cd "$pkgname"
+  cd "monarch-store-0.4.6_alpha"
   # Contain Cargo home in $srcdir (Arch: no $HOME pollution)
   export CARGO_HOME="$srcdir/.cargo"
   export npm_config_cache="$srcdir/.npm"
@@ -38,7 +38,7 @@ build() {
 }
 
 package() {
-  cd "$pkgname"
+  cd "monarch-store-0.4.6_alpha"
 
   # 1. Install Binary (workspace build: binary is under monarch-gui or workspace target)
   _bin=src-tauri/target/release/monarch-store
