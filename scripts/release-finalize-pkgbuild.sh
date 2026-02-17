@@ -4,10 +4,16 @@
 set -e
 cd "$(dirname "$0")/.."
 pkgname=monarch-store
-pkgver=0.3.5_alpha
+# 1. Get version from PKGBUILD if not provided
+pkgver=${1:-$(grep "^pkgver=" PKGBUILD | cut -d= -f2)}
+if [ -z "$pkgver" ]; then
+    echo "Error: Could not determine pkgver from PKGBUILD and no argument provided."
+    exit 1
+fi
+echo "Using version: $pkgver"
 
-# 1. Switch PKGBUILD to release tarball and correct cd paths (use script vars so extracted dir name is correct)
-sed -i "s|^source=(\"git+https://github.com/cpg716/monarch-store.git\")|source=(\"https://github.com/cpg716/monarch-store/archive/refs/tags/v${pkgver}.tar.gz\")|" PKGBUILD
+# 1. Switch PKGBUILD to release tarball and correct cd paths
+sed -i "s|^source=(.*github.com/cpg716/monarch-store.*)|source=(\"https://github.com/cpg716/monarch-store/archive/refs/tags/v${pkgver}.tar.gz\")|" PKGBUILD
 sed -i 's|^sha256sums=.*|sha256sums=('\''SKIP'\'')|' PKGBUILD
 # Replace cd "$pkgname" / cd "$pkgname-$pkgver" / cd "monarch-store-*" with literal dir so tarball dir matches (avoids empty $pkgver in any build context; idempotent for re-runs)
 sed -i "s|cd \"\\\$pkgname\"|cd \"$pkgname-$pkgver\"|g" PKGBUILD
