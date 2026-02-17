@@ -62,7 +62,7 @@ RUN mkdir -p /usr/lib/pkgconfig && \
     echo "Cflags: -I\${includedir}" >> /usr/lib/pkgconfig/libalpm.pc
 
 # 6. Set Environment Variables
-ENV PKG_CONFIG_PATH="/usr/lib/pkgconfig"
+ENV PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
 ENV PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
 ENV PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
 

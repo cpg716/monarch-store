@@ -35,7 +35,11 @@ jobs:
         run: rustup default stable 
 
       - name: install system dependencies
-        run: apt-get update && apt-get install -y xdg-utils 
+        run: |
+          apt-get update
+          apt-get install -y xdg-utils librsvg2-dev libwebkit2gtk-4.1-dev
+          # Ensure pkg-config can find both our custom libalpm and system libs
+          echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
 
       - name: install frontend dependencies
         run: npm install
