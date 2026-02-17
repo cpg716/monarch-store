@@ -33,10 +33,11 @@ Instead of managing a private database of enabled/disabled repos, MonARCH now us
 *   **Distro detection:** We treat `ID=archlinux` as Arch and parse `ID_LIKE`: if it contains `arch` (e.g. ArcoLinux, Archcraft), the distro gets Arch-like capabilities. See `distro_context.rs`.
 *   **Result**: If you enable a repo in `/etc/pacman.conf` manually, MonARCH sees it. If you use our toggle, we write a drop-in file to `/etc/pacman.d/monarch/`.
 
-### Chaotic-AUR Safe Toggle (Operation Chaotic Good)
-We follow a **read-only host policy**: we do **not** programmatically edit `/etc/pacman.conf`. For Chaotic-AUR:
-*   **Check status**: `check_chaotic_status()` returns compatibility (blocked on Manjaro) and whether Chaotic-AUR is present in ALPM syncdbs.
-*   **Prepare components**: `prepare_chaotic_components()` invokes the Helper to install the Chaotic keyring and mirrorlist (`pacman -U --noconfirm`). The user must add the repo block to `/etc/pacman.conf` manually; Settings and Onboarding show a "Final Step" modal with the snippet and "Copy to Clipboard" / "Check Again".
+### Chaotic-AUR Setup (Interactive Terminal Helper)
+We follow a **safe host policy**: instead of silently modifying system files from the GUI, we provide an interactive terminal helper for sensitive operations. For Chaotic-AUR:
+*   **Terminal Setup**: `open_chaotic_terminal()` launches an auto-detected terminal window (Konsole, GNOME Terminal, Alacritty, etc.) running a self-contained bash script.
+*   **Automated Configuration**: The script handles GPG key reception (`3056513887B78AEB`), keyring installation, and **appending the repository block to `/etc/pacman.conf`** after user confirmation.
+*   **Verification**: A "Final Step" modal in the GUI allows users to "Check Connection" to verify the repository is active in ALPM after the terminal script finishes.
 *   **Traffic light UX**: Settings → Sources shows Chaotic-AUR as Active / Inactive / Blocked. Package cards and details show "Configure Source" when the only source is Chaotic-AUR and it is not enabled.
 
 ### CachyOS: Best repo for the user’s CPU

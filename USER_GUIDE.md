@@ -1,6 +1,6 @@
 # MonARCH Store — User Guide 🚀
 
-**Current version:** v0.4.5-alpha · **Last updated:** 2026-02-08
+**Current version:** v0.4.6-alpha · **Last updated:** 2026-02-14
 
 Welcome to MonARCH Store, the host-adaptive software manager for Arch Linux and its derivatives. This guide will help you understand how to use MonARCH and how it works under the hood.
 
@@ -20,7 +20,7 @@ It provides a unified interface for:
 ## 2. Getting Started
 
 ### 🧭 Onboarding (first run)
-On first launch, a short wizard guides you: **Welcome** (your distro and philosophy), **Source Manager** (Flatpak, AUR, Chaotic-AUR toggles—Chaotic is not available on some distros, e.g. Manjaro), **Chaotic-AUR Setup** (if supported—on Garuda/CachyOS it may show “Already enabled”; otherwise install keys and mirrors, then add the repo to pacman.conf), **Security & Privacy** (one prompt per session vs system dialog every time, and telemetry), **Theme** (Light/Dark, accent), and **Confirmation**. You can change these later in Settings.
+On first launch, a short wizard guides you: **Welcome** (your distro and philosophy), **Source Manager** (Flatpak, AUR, Chaotic-AUR toggles—Chaotic is not available on some distros, e.g. Manjaro), **Chaotic-AUR Setup** (if supported—on Garuda/CachyOS it may show “Already enabled”; otherwise MonARCH launches an interactive terminal to help you install keys and configure your repository automatically), **Security & Privacy** (one prompt per session vs system dialog every time, and telemetry), **Theme** (Light/Dark, accent), and **Confirmation**. You can change these later in Settings.
 
 ### 🛸 The Dashboard
 When you launch MonARCH, the Dashboard gives you a bird's-eye view of your system:
@@ -68,7 +68,7 @@ Mission Control is where you fine-tune your MonARCH experience.
 ### 🦎 Sources
 Enable or disable repositories. MonARCH automatically detects CachyOS, Garuda, or EndeavourOS specific repos.
 
-**Chaotic-AUR:** MonARCH shows Chaotic-AUR as **Active** (in pacman.conf and in use), **Inactive** (not in pacman.conf), or **Blocked** (e.g. on Manjaro). To enable Chaotic-AUR: turn the toggle on, click **Install Keys & Mirrors** (MonARCH installs the keyring and mirrorlist), then add the repo block to `/etc/pacman.conf` as shown in the "Final Step" modal. The modal explains: open the file in a text editor (e.g. `sudo nano /etc/pacman.conf`), add the two lines at the end, save, then click **Check Again**. MonARCH never edits pacman.conf for you—you add the repo manually.
+**Chaotic-AUR:** MonARCH shows Chaotic-AUR as **Active** (in pacman.conf and in use), **Inactive** (not in pacman.conf), or **Blocked** (e.g. on Manjaro). To enable Chaotic-AUR: turn the toggle on, which launches an **Interactive Terminal Setup**. Follow the prompts in the terminal to install keys, mirrors, and configure `pacman.conf` automatically. Once the terminal says "Success," return to MonARCH and click **Check Connection**. MonARCH uses this terminal helper to ensure you can see exactly what system changes are being made.
 
 ### 🛠️ AUR Builder
 Settings for how your machine builds AUR packages. You can clean build directories automatically to save space or enable verbose logging if a build fails.
@@ -84,8 +84,8 @@ If something feels wrong (e.g., "Database locked" or GPG errors), use the **Adva
 ## 6. How it Works (For the curious)
 
 MonARCH is built with a **Highly-Integrated Backend** and a **Dumb View Frontend**:
-1.  **The Brain (Backend)**: The Rust backend handles all the heavy lifting—parallel searches, metadata hydration (icons, descriptions), and security checks. It acts as the single source of truth for all application data.
-2.  **The View (Frontend)**: The beautiful interface you see is a "Dumb View." It doesn't guess metadata or manage complex state; it simply renders the enriched data provided by the backend via a type-safe contract (`bindings.ts`).
+1.  **The Brain (Backend)**: The Rust backend handles all the heavy lifting—parallel searches, metadata hydration (icons, descriptions, screenshots), and security checks. It acts as the single source of truth (SSOT) for all application data, offloading complex logic from the interface.
+2.  **The View (Frontend)**: The beautiful interface you see is a "Dumb View." It doesn't guess metadata or manage complex state; it simply renders the enriched ViewModels provided by the backend via a type-safe contract (`bindings.ts`). This ensures perfect consistency across the entire app.
 3.  **The Helper (Root)**: A privileged tool that handles system modifications (ALPM) separately from the user interface, ensuring maximum security and stability.
 
 This architecture ensures that your experience is fast, unified, and inherently stable.

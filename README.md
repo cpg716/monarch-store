@@ -20,24 +20,31 @@ A premium, universal software center built with Tauri and React. MonARCH **respe
 
 ![MonARCH Store Dashboard](screenshots/home.png)
 
-## ✨ Key Features (v0.4.0)
+## ✨ Key Features (v0.4.6)
 
-### 🦎 Host-Adaptive Architecture (v0.4.5-alpha)
+### 🦎 Host-Adaptive Architecture (v0.4.6-alpha)
 MonARCH no longer "injects" its own opinions into your system. **No manual repo configuration required** — we discover repositories from your system.
 *   **Respects `pacman.conf`**: We typically only show repositories you have explicitly enabled on your host system.
 *   **Manjaro Guard**: Automatically prevents enabling incompatible repositories (like `chaotic-aur`) on Manjaro systems to ensure stability.
 *   **Discovery Mode**: Automatically detects CachyOS, Garuda, or EndeavourOS specific repositories and displays them correctly.
 
+### 🛡️ Iron Core Purge (v0.4.6-alpha)
+A hardened Single Source of Truth implementation that offloads logic to the backend.
+*   **Dumb View Frontend**: The UI only renders data; all complex metadata hydration and normalization happens in the Rust backend for maximum performance.
+*   **Zero-Blink Registry**: SQLite-backed registry handles thousands of packages with stable references, preventing flickering during background syncs.
+*   **Typed Bindings**: Type-safe contract between Rust and TypeScript via `tauri-specta`, eliminating interface drift.
+
 ### 📦 Unified Search & Aggregation
 Stop searching three different websites. MonARCH combines them all:
 *   **One Search Bar**: Queries **Official Repos**, **AUR**, and **Flathub** simultaneously.
 *   **Source Priority**: Intelligently ranks results (Official > Flatpak > AUR).
-*   **Smart Merging**: Duplicate apps are merged into a single card with a "Source" selector; variant names (e.g. `-git`, `-bin`) are normalized for consistent grouping.
+*   **Smart Merging**: Duplicate apps are merged into a single card with a "Source" selector using a generic first-segment canonical key (e.g., `heroic` merges with `heroic-games-launcher`).
+*   **One Proper Name**: Apps use consistent, human-friendly display names (e.g., "Discord" instead of "com.discordapp.Discord").
 
 ### 🛠️ Native AUR Builder
 A robust, safe implementation of the Arch User Repository.
 *   **Built from Source**: Clearly identifies AUR packages that require local compilation.
-*   **Native Cloning**: Uses `libgit2` for fast, reliable cloning of AUR packages.
+*   **Native Cloning**: Uses `libgit2` (native) for fast, reliable cloning of AUR packages.
 *   **User-Level Builds**: Runs `makepkg` as your user (never root) for security.
 *   **Live Logs**: Streams real-time build logs to the UI so you can see exactly what's happening.
 
