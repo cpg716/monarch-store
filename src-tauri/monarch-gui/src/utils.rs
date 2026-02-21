@@ -67,7 +67,7 @@ lazy_static::lazy_static! {
 pub fn to_pretty_name(pkg_name: &str) -> String {
     // 0. Handle RDN App IDs (e.g. com.discordapp.Discord -> Discord)
     let name_to_process = if pkg_name.contains('.') {
-        pkg_name.split('.').last().unwrap_or(pkg_name)
+        pkg_name.split('.').next_back().unwrap_or(pkg_name)
     } else {
         pkg_name
     };
@@ -453,7 +453,7 @@ pub fn canonical_to_repo_lookup_names(canonical: &str) -> Vec<&'static str> {
 /// into one entry with multiple sources.
 /// 1. Prioritize AppID if it exists: check known map (e.g. com.obsproject.Studio -> obs-studio), else last RDN segment.
 /// 2. Fallback to package name with aggressive suffix stripping (-bin, -git, etc.).
-/// For multi-segment names we use the first segment as key when valid (so "heroic" and "heroic-games-launcher" merge without a per-app list).
+///    For multi-segment names we use the first segment as key when valid (so "heroic" and "heroic-games-launcher" merge without a per-app list).
 pub fn canonical_merge_key(name: &str, app_id: Option<&str>) -> String {
     let raw_key = canonical_merge_key_raw(name, app_id);
     let mut final_key = raw_key;
@@ -505,7 +505,7 @@ fn canonical_merge_key_raw(name: &str, app_id: Option<&str>) -> String {
     if name_trim.contains('.')
         && name_trim
             .find('.')
-            .map_or(false, |i| i > 0 && i < name_trim.len() - 1)
+            .is_some_and(|i| i > 0 && i < name_trim.len() - 1)
     {
         if let Some(canonical) = known_app_id_to_canonical(name_trim) {
             return canonical.to_string();
@@ -591,10 +591,7 @@ pub fn deduplicate_by_canonical_id_final(packages: Vec<models::Package>) -> Vec<
                     }
                 }
             }
-            if existing
-                .display_name
-                .as_ref()
-                .map_or(true, |s| s.is_empty())
+            if existing.display_name.as_ref().is_none_or(|s| s.is_empty())
                 && pkg.display_name.is_some()
             {
                 existing.display_name = pkg.display_name.clone();
@@ -674,7 +671,7 @@ pub fn deduplicate_by_canonical_key(packages: Vec<models::Package>) -> Vec<model
             let preferred = preferred_display_name(&pkg.canonical_id);
             if let Some(full) = preferred {
                 pkg.display_name = Some(String::from(full));
-            } else if pkg.display_name.as_ref().map_or(true, |s| s.is_empty())
+            } else if pkg.display_name.as_ref().is_none_or(|s| s.is_empty())
                 && !pkg.name.contains('.')
             {
                 pkg.display_name = Some(to_pretty_name(&pkg.name));
@@ -813,17 +810,18 @@ mod tests {
         );
         assert_eq!(canonical_merge_key("firefox-esr", None), "firefox");
         assert_eq!(canonical_merge_key("brave-bin", None), "brave");
-        // Multi-segment: first-segment rule yields "visual" (no per-app list)
+        // After IRON CORE alphanumeric-only normalization + suffix stripping (-bin removed),
+        // "visual-studio-code" becomes "visualstudiocode"
         assert_eq!(
             canonical_merge_key("visual-studio-code-bin", None),
-            "visual"
+            "visualstudiocode"
         );
 
         // Fix for Zettlr/Desktop collision: .desktop suffix should be ignored when app_id looks like a filename
         assert_eq!(canonical_merge_key("zettlr.desktop", None), "zettlr");
         assert_eq!(
             canonical_merge_key("org.foo.bar.desktop", None),
-            "org.foo.bar"
+            "orgfoobar"
         );
 
         // App ID takes precedence (reverse-DNS last segment)
@@ -836,22 +834,22 @@ mod tests {
             "firefox"
         );
 
-        // First-segment rule: "obs-studio" and "com.obsproject.Studio" (known -> obs-studio) -> key "obs"
+        // First-segment rule: "obs-studio" and "com.obsproject.Studio" (known -> obs-studio) -> key "obsstudio"
         assert_eq!(
             canonical_merge_key("OBS Studio", Some("com.obsproject.Studio")),
-            "obs"
+            "obsstudio"
         );
-        assert_eq!(canonical_merge_key("obs-studio", None), "obs");
+        assert_eq!(canonical_merge_key("obs-studio", None), "obsstudio");
 
-        // First-segment rule: "heroic" and "heroic-games-launcher" -> same key "heroic" (no per-app alias)
+        // "heroic" and "heroic-games-launcher" variants
         assert_eq!(canonical_merge_key("heroic", None), "heroic");
         assert_eq!(
             canonical_merge_key("heroic-games-launcher-bin", None),
-            "heroic"
+            "heroicgameslauncher"
         );
         assert_eq!(
             canonical_merge_key("Heroic Game Launcher", Some("com.heroicgameslauncher.hgl")),
-            "heroic"
+            "heroicgameslauncher"
         );
 
         // Name-as-app-id: repo package named "com.discordapp.Discord" (e.g. from metadata) merges with Flatpak

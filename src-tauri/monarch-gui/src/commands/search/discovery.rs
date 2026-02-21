@@ -341,8 +341,12 @@ pub async fn get_trending(
     }
 
     // Lightweight enrichment: fix missing icons/names via Flathub (capped at 48, no full pipeline re-run).
-    // available_sources are already populated by merge_search_results above.
     aggregation::enrich_packages_metadata(&mut packages, state_flathub.inner()).await;
+
+    // SSOT Pass 2: Final local enrichment (ensures variants match local AppStream IDs)
+    if let Ok(loader) = state_meta.loader.lock() {
+        aggregation::enrich_with_local_metadata(&mut packages, &loader);
+    }
 
     packages = utils::merge_and_deduplicate(Vec::new(), packages);
     utils::prepare_package_descriptions_for_ui(&mut packages);

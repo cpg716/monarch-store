@@ -3,10 +3,14 @@ use serde::Serialize;
 use specta::Type;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tauri::{AppHandle, Emitter, State};
 use tempfile;
 use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
 use tokio::sync::Mutex;
+
+/// Global PID of an active AUR build (makepkg) so abort_installation can kill it.
+static ACTIVE_AUR_BUILD_PID: AtomicU32 = AtomicU32::new(0);
 
 /// Zone 4: Copy built .pkg.tar.zst to shared temp so root helper can read them.
 const MONARCH_INSTALL_DIR: &str = "/tmp/monarch-install";
@@ -69,24 +73,51 @@ pub struct PendingUpdate {
 #[tauri::command]
 #[specta::specta]
 pub async fn abort_installation(app: AppHandle) -> Result<(), String> {
+    let mut aborted = false;
+
+    // 1. Kill active AUR build (makepkg) if running via PID tracker (Zone 1/2)
+    let aur_pid = ACTIVE_AUR_BUILD_PID.swap(0, Ordering::SeqCst);
+    if aur_pid > 0 {
+        let _ = app.emit("install-output", "--- Killing AUR build process ---");
+        // Send SIGTERM to the process group to kill makepkg and its children
+        let _ = tokio::process::Command::new("kill")
+            .args(["-TERM", &format!("-{}", aur_pid)])
+            .status()
+            .await;
+        aborted = true;
+    }
+
+    // 2. Kill any GUI-tracked child process (redundant but safe)
     let mut active = ACTIVE_INSTALL_PROCESS.lock().await;
     if let Some(mut child) = active.take() {
-        let _ = app.emit("install-output", "--- Installation Aborted by User ---");
+        let _ = app.emit("install-output", "--- Aborting local process ---");
         let _ = child.kill().await;
+        aborted = true;
+    }
+    drop(active);
+
+    // 3. Signal the Root Helper (ALPM/Repo/System transactions)
+    if helper_client::abort_helper().await.is_ok() {
+        aborted = true;
+    }
+
+    // 4. Signal and kill any active Flatpak process
+    if crate::flathub_api::abort_flatpak().await.is_ok() {
+        aborted = true;
+    }
+
+    // 4. Create the Cancel File (helper heartbeat fallback)
+    const CANCEL_FILE: &str = "/var/tmp/monarch-cancel";
+    let _ = std::fs::write(CANCEL_FILE, "1");
+
+    if aborted {
+        let _ = app.emit("install-output", "--- Installation Aborted by User ---");
         let _ = app.emit("install-complete", "failed");
         Ok(())
     } else {
-        // SECURITY: Do NOT use killall as fallback - it could kill unrelated pacman processes
-        // and potentially corrupt the package database. Instead, inform the user.
-        let _ = app.emit(
-            "install-output",
-            "Warning: No tracked installation process found. If an operation is stuck, please wait for it to complete or manually close any package manager windows.",
-        );
+        // Fallback: emit failure anyway to reset UI
         let _ = app.emit("install-complete", "failed");
-        Err(
-            "No active installation to abort. If pacman is locked, use the Repair tool to unlock."
-                .to_string(),
-        )
+        Ok(()) // Return Ok so UI logic doesn't show a second error popup
     }
 }
 
@@ -193,9 +224,6 @@ pub async fn install_package_core(
             enabled_repos.push(sys.to_string());
         }
     }
-
-    // Acquire global lock
-    let _guard = crate::utils::PRIVILEGED_LOCK.lock().await;
 
     let mut saw_unknown_variant = false;
     let mut saw_corrupt_db = false;
@@ -316,7 +344,9 @@ pub async fn install_package_core(
 
             let mut saw_download_error = false;
             while let Some(msg) = rx.recv().await {
-                let _ = app.emit("install-output", &msg.message);
+                if !msg.is_structured {
+                    let _ = app.emit("install-output", &msg.message);
+                }
                 install_log.push(msg.message.clone());
                 if install_log.len() > LOG_CAP {
                     install_log.remove(0);
@@ -842,6 +872,11 @@ async fn build_aur_package_single(
 
     let mut child = makepkg.spawn().map_err(|e| e.to_string())?;
 
+    // Track PID so abort_installation can kill AUR builds
+    if let Some(pid) = child.id() {
+        ACTIVE_AUR_BUILD_PID.store(pid, Ordering::SeqCst);
+    }
+
     if let Some(pwd) = password {
         if let Some(mut stdin) = child.stdin.take() {
             let _ =
@@ -1114,6 +1149,7 @@ async fn build_aur_package_single(
                     last
                 }
             };
+            ACTIVE_AUR_BUILD_PID.store(0, Ordering::SeqCst);
             return Err(err_summary);
         }
     }
@@ -1132,8 +1168,10 @@ async fn build_aur_package_single(
         }
     }
     if artifacts.is_empty() {
+        ACTIVE_AUR_BUILD_PID.store(0, Ordering::SeqCst);
         return Err(format!("Could not find built package in {:?}", pkg_dir));
     }
+    ACTIVE_AUR_BUILD_PID.store(0, Ordering::SeqCst);
     Ok(artifacts)
 }
 
@@ -1625,9 +1663,8 @@ const DEFAULT_ESSENTIALS: &[&str] = &[
 const ESSENTIALS_MAX: usize = 40;
 
 /// URL for essentials list (updated over time without app release). Cache TTL 7 days.
-// TODO: Revert to real URL once PR is merged
-const ESSENTIALS_JSON_URL: &str = "http://localhost:9999/force_fallback";
-// "https://raw.githubusercontent.com/cpg716/monarch-store/main/docs/essentials.json";
+const ESSENTIALS_JSON_URL: &str =
+    "https://raw.githubusercontent.com/cpg716/monarch-store/main/docs/essentials.json";
 const ESSENTIALS_CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
 /// Cap for combined essentials ∪ featured list (homepage discovery pool).
 const COMBINED_ESSENTIALS_MAX: usize = 120;
@@ -1892,25 +1929,37 @@ pub async fn clean_package_cache(
 #[specta::specta]
 pub async fn check_services_restart() -> Result<Vec<String>, String> {
     log::info!("Checking for services that require restart...");
-    // Attempt use needrestart if available
-    let output = std::process::Command::new("needrestart")
+    // Attempt use needrestart if available, wrapped in a strict 10-second timeout
+    let timeout_duration = std::time::Duration::from_secs(10);
+
+    let process = tokio::process::Command::new("needrestart")
         .arg("-b") // Batch mode
         .output();
 
-    if let Ok(o) = output {
-        let stdout = String::from_utf8_lossy(&o.stdout);
-        // Parse needrestart output
-        // It usually shows NEEDRESTART-SVC: service_name
-        let mut services = Vec::new();
-        for line in stdout.lines() {
-            if line.starts_with("NEEDRESTART-SVC:") {
-                services.push(line.replace("NEEDRESTART-SVC:", "").trim().to_string());
+    match tokio::time::timeout(timeout_duration, process).await {
+        Ok(Ok(o)) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            // Parse needrestart output
+            // It usually shows NEEDRESTART-SVC: service_name
+            let mut services = Vec::new();
+            for line in stdout.lines() {
+                if line.starts_with("NEEDRESTART-SVC:") {
+                    services.push(line.replace("NEEDRESTART-SVC:", "").trim().to_string());
+                }
+            }
+            return Ok(services);
+        }
+        Ok(Err(e)) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("needrestart failed to execute: {}", e);
             }
         }
-        return Ok(services);
+        Err(_) => {
+            log::warn!("needrestart timed out after 10 seconds. Skipping service scan.");
+        }
     }
 
-    // Fallback or just return empty if not installed
+    // Fallback or just return empty if not installed/timed out
     Ok(Vec::new())
 }
 

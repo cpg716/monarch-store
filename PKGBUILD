@@ -1,7 +1,7 @@
 # Maintainer: cpg716 (developer and creator; built with the help of AI coding tools)
 # https://github.com/cpg716/monarch-store
 pkgname=monarch-store
-pkgver=0.4.6_alpha
+pkgver=0.4.7_alpha
 pkgrel=1
 # pkgdesc kept under 80 chars for terminal clarity
 pkgdesc="Distro-aware software store for Arch, Manjaro, CachyOS (Tauri)"
@@ -14,11 +14,11 @@ optdepends=('rate-mirrors: Test Mirrors with latency (Settings → Repositories)
             'reflector: alternative for Test Mirrors / mirror ranking')
 makedepends=('cargo' 'nodejs' 'npm')
 # For -git: SKIP. After pushing tag v${pkgver}, run: ./scripts/release-finalize-pkgbuild.sh
-source=("https://github.com/cpg716/monarch-store/archive/refs/tags/v0.4.6_alpha.tar.gz")
-sha256sums=('19c7d5b9d6ef141fb204a19fdcf5b2f0aa7084c85c7a5683ebf598504381e691')
+source=("https://github.com/cpg716/monarch-store/archive/refs/tags/v0.4.7_alpha.tar.gz")
+sha256sums=('SKIP')
 
 prepare() {
-  cd "monarch-store-0.4.6_alpha"
+  cd "monarch-store-0.4.7_alpha"
   # Contain npm cache in $srcdir (Arch: no $HOME pollution)
   export npm_config_cache="$srcdir/.npm"
   # Reproducible install when package-lock.json exists

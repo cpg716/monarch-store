@@ -1,0 +1,30 @@
+    Checking tauri-plugin-aptabase v1.0.0 (/home/chris/Downloads/monarch-store/src-tauri/monarch-gui/plugins/tauri-plugin-aptabase)
+error: `to_string` applied to a type that implements `Display` in `debug!` args
+   --> monarch-gui/plugins/tauri-plugin-aptabase/src/dispatcher.rs:118:60
+    |
+118 | ... {}", err.to_string());
+    |             ^^^^^^^^^^^^ help: remove this
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#to_string_in_format_args
+    = note: `-D clippy::to-string-in-format-args` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::to_string_in_format_args)]`
+
+error: current MSRV (Minimum Supported Rust Version) is `1.70.0` but this item is stable since `1.81.0`
+  --> monarch-gui/plugins/tauri-plugin-aptabase/src/lib.rs:31:34
+   |
+31 | ...lient, &PanicHookInfo<'_>, String)...
+   |            ^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#incompatible_msrv
+   = note: `-D clippy::incompatible-msrv` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::incompatible_msrv)]`
+
+error: current MSRV (Minimum Supported Rust Version) is `1.70.0` but this item is stable since `1.81.0`
+  --> monarch-gui/plugins/tauri-plugin-aptabase/src/lib.rs:33:29
+   |
+33 | ...ge(info: &PanicHookInfo) -> String {
+   |              ^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#incompatible_msrv
+
+error: could not compile `tauri-plugin-aptabase` (lib) due to 3 previous errors

@@ -1,7 +1,7 @@
 # Security Policy
 
-**Current Version:** v0.4.6-alpha  
-**Last updated:** 2026-02-14
+**Current Version:** v0.4.7-alpha  
+**Last updated:** 2026-02-21
 
 ## Supported Versions
 

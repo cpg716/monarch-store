@@ -1,8 +1,33 @@
 use crate::models::{PackageSource, UpdateItem};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as TokioMutex;
+
+pub static ACTIVE_FLATPAK_CHILD: Lazy<Arc<TokioMutex<Option<tokio::process::Child>>>> =
+    Lazy::new(|| Arc::new(TokioMutex::new(None)));
+
+/// Abort the active Flatpak command if one is running.
+pub async fn abort_flatpak() -> Result<(), String> {
+    let mut guard = ACTIVE_FLATPAK_CHILD.lock().await;
+    if let Some(mut child) = guard.take() {
+        match child.kill().await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::InvalidInput {
+                    // Already exited
+                    Ok(())
+                } else {
+                    Err(format!("Failed to kill flatpak process: {}", e))
+                }
+            }
+        }
+    } else {
+        Ok(())
+    }
+}
 
 /// Fetch available Flatpak updates by parsing `flatpak remote-ls --updates`
 pub async fn get_updates() -> Result<Vec<UpdateItem>, String> {
@@ -129,7 +154,7 @@ pub async fn get_installed_flatpaks_detailed() -> Result<Vec<InstalledFlatpak>, 
         .args([
             "list",
             "--app",
-            "--columns=application,name,version,summary,origin",
+            "--columns=application,name,version,description,origin",
         ])
         .output()
         .await
@@ -634,13 +659,18 @@ impl FlathubApiClient {
         let url = format!("https://flathub.org/api/v2/appstream/{}", app_id);
 
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
+            .timeout(std::time::Duration::from_secs(5))
             .build()
             .ok()?;
 
         let response = client.get(&url).send().await.ok()?;
 
         if !response.status().is_success() {
+            log::warn!(
+                "[FLATHUB-API] Failed to fetch metadata for {}: HTTP {}",
+                app_id,
+                response.status()
+            );
             if let Ok(mut cache) = self.cache.lock() {
                 cache.insert(app_id.to_string(), None);
             }
@@ -648,6 +678,10 @@ impl FlathubApiClient {
         }
 
         let mut metadata: FlathubMetadata = response.json().await.ok()?;
+        log::info!(
+            "[FLATHUB-API] Successfully fetched metadata for app_id: {}",
+            app_id
+        );
 
         // Ensure ID is populated (API usually returns it in body, but if not, inject it)
         if metadata.id.is_none() {
@@ -857,7 +891,7 @@ async fn run_flatpak_command(
     let _ = app.emit("build://log", run_msg.clone());
     let _ = app.emit("install-output", run_msg);
 
-    let mut child = command.spawn().map_err(|e| {
+    let child = command.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             FLATPAK_NOT_INSTALLED_MSG.to_string()
         } else {
@@ -865,52 +899,110 @@ async fn run_flatpak_command(
         }
     })?;
 
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    // ✅ Store child in global static for abortion tracking
+    {
+        let mut guard = ACTIVE_FLATPAK_CHILD.lock().await;
+        *guard = Some(child);
+    }
 
-    let app_c1 = app.clone();
-    let app_c2 = app.clone();
-    let prefix_c1 = log_prefix.to_string();
-    let prefix_c2 = log_prefix.to_string();
+    // Wait and clear child handle
+    let (status, h1_res, h2_res, stderr_lines) = match ACTIVE_FLATPAK_CHILD.lock().await.take() {
+        Some(mut child) => {
+            let stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
 
-    let mut reader_out = tokio::io::BufReader::new(stdout);
-    let mut reader_err = tokio::io::BufReader::new(stderr);
+            let app_c1 = app.clone();
+            let app_c2 = app.clone();
+            let prefix_c1 = log_prefix.to_string();
+            let prefix_c2 = log_prefix.to_string();
 
-    let h1 = tokio::spawn(async move {
-        let mut line = String::new();
-        while let Ok(n) = reader_out.read_line(&mut line).await {
-            if n == 0 {
-                break;
-            }
-            let msg = format!("{} {}", prefix_c1, line.trim());
-            let _ = app_c1.emit("build://log", msg.clone());
-            let _ = app_c1.emit("install-output", msg);
-            line.clear();
+            // Regex for extracting progress percentage from Flatpak output
+            let progress_re = regex::Regex::new(r"(\d{1,3})%").ok();
+
+            let mut reader_out = tokio::io::BufReader::new(stdout);
+            let mut reader_err = tokio::io::BufReader::new(stderr);
+
+            let progress_re_c1 = progress_re.clone();
+            let h1 = tokio::spawn(async move {
+                let mut line = String::new();
+                while let Ok(n) = reader_out.read_line(&mut line).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let trimmed = line.trim().to_string();
+                    let msg = format!("{} {}", prefix_c1, trimmed);
+                    let _ = app_c1.emit("build://log", msg.clone());
+                    let _ = app_c1.emit("install-output", msg);
+
+                    if let Some(ref re) = progress_re_c1 {
+                        if let Some(caps) = re.captures(&trimmed) {
+                            if let Ok(pct) = caps[1].parse::<u32>() {
+                                if pct <= 100 {
+                                    let _ = app_c1.emit("flatpak-progress", pct);
+                                }
+                            }
+                        }
+                    }
+                    line.clear();
+                }
+            });
+
+            let stderr_lines = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+            let stderr_lines_c = stderr_lines.clone();
+            let progress_re_c2 = progress_re;
+
+            let h2 = tokio::spawn(async move {
+                let mut line = String::new();
+                while let Ok(n) = reader_err.read_line(&mut line).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let trimmed = line.trim().to_string();
+                    let msg = format!("{} ERR: {}", prefix_c2, trimmed);
+                    let _ = app_c2.emit("build://log", msg.clone());
+                    let _ = app_c2.emit("install-output", msg);
+
+                    if let Some(ref re) = progress_re_c2 {
+                        if let Some(caps) = re.captures(&trimmed) {
+                            if let Ok(pct) = caps[1].parse::<u32>() {
+                                if pct <= 100 {
+                                    let _ = app_c2.emit("flatpak-progress", pct);
+                                }
+                            }
+                        }
+                    }
+
+                    stderr_lines_c.lock().await.push(trimmed);
+                    line.clear();
+                }
+            });
+
+            let status = child.wait().await;
+            let res = tokio::join!(h1, h2);
+            (status, res.0, res.1, stderr_lines)
         }
-    });
+        None => return Err("Flatpak process lost during initialization".to_string()),
+    };
 
-    let h2 = tokio::spawn(async move {
-        let mut line = String::new();
-        while let Ok(n) = reader_err.read_line(&mut line).await {
-            if n == 0 {
-                break;
-            }
-            let msg = format!("{} ERR: {}", prefix_c2, line.trim());
-            let _ = app_c2.emit("build://log", msg.clone());
-            let _ = app_c2.emit("install-output", msg);
-            line.clear();
-        }
-    });
-
-    let status = child.wait().await.map_err(|e| e.to_string())?;
-    let _ = tokio::join!(h1, h2);
+    let status = status.map_err(|e| e.to_string())?;
+    let _ = h1_res.map_err(|e| e.to_string());
+    let _ = h2_res.map_err(|e| e.to_string());
 
     if status.success() {
+        let _ = app.emit("flatpak-progress", 100u32);
         let msg = format!("{} Success.", log_prefix);
         let _ = app.emit("build://log", msg.clone());
         let _ = app.emit("install-output", msg);
         Ok(())
     } else {
+        // Classify Flatpak errors from collected stderr
+        let combined_stderr = stderr_lines.lock().await.join("\n");
+        if let Some(classified) =
+            crate::error_classifier::ClassifiedError::from_output(&combined_stderr)
+        {
+            let _ = app.emit("install-error-classified", &classified);
+        }
+
         let msg = format!("{} Failed with code: {:?}", log_prefix, status.code());
         let _ = app.emit("build://log", msg.clone());
         let _ = app.emit("install-output", msg.clone());

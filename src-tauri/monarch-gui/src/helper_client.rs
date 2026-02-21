@@ -9,6 +9,10 @@ use tokio::sync::Mutex;
 
 static LAST_HELPER_INVOKE: Lazy<Mutex<Option<Instant>>> = Lazy::new(|| Mutex::new(None));
 
+/// Track the active root helper process so it can be aborted (e.g. SIGTERM or SIGKILL).
+pub static ACTIVE_HELPER_CHILD: Lazy<Mutex<Option<tokio::process::Child>>> =
+    Lazy::new(|| Mutex::new(None));
+
 #[cfg(test)]
 mod tests {
     use super::HelperCommand;
@@ -121,6 +125,8 @@ pub enum HelperCommand {
 pub struct ProgressMessage {
     pub progress: u8,
     pub message: String,
+    #[serde(default)]
+    pub is_structured: bool,
 }
 
 /// Temp file prefix for helper command (helper deletes after reading).
@@ -302,6 +308,18 @@ pub async fn invoke_helper(
             )
         })?;
 
+    // §Heartbeat: Tell the GUI we've successfully spawned the process (Polkit/Sudo succeeded)
+    let _ = app.emit("helper-output", "[Helper]: Spawning authorized process...");
+
+    // ✅ Store child in global static for abortion tracking
+    {
+        let mut guard = ACTIVE_HELPER_CHILD.lock().await;
+        *guard = None; // Clear any stale reference (though there shouldn't be one due to privileged lock)
+    }
+
+    // We don't store the child directly in the guard yet because we need to take streams.
+    // We'll store it after taking streams.
+
     let (tx, rx) = tokio::sync::mpsc::channel(100);
 
     // Command is always delivered via file (argv[1]). Stdin is only used for sudo password when provided.
@@ -342,10 +360,12 @@ pub async fn invoke_helper(
                         let msg = ProgressMessage {
                             progress: event.percent.unwrap_or(0),
                             message: event.message,
+                            is_structured: true,
                         };
                         let _ = tx_stdout.send(msg).await;
-                    } else if let Ok(msg) = serde_json::from_str::<ProgressMessage>(&line) {
+                    } else if let Ok(mut msg) = serde_json::from_str::<ProgressMessage>(&line) {
                         // Legacy ProgressMessage format
+                        msg.is_structured = false;
                         let _ = tx_stdout.send(msg).await;
                     }
                 }
@@ -365,19 +385,62 @@ pub async fn invoke_helper(
         });
     }
 
+    // ✅ Now that streams are taken, store the child handle for abortion tracking
+    {
+        let mut guard = ACTIVE_HELPER_CHILD.lock().await;
+        *guard = Some(child);
+    }
+
     tokio::spawn(async move {
-        let status = child.wait().await;
-        if let Ok(s) = status {
-            if !s.success() {
-                let _ = tx
-                    .send(ProgressMessage {
-                        progress: 0,
-                        message: format!("Error: Helper process exited with status {}", s),
-                    })
-                    .await;
+        let mut guard = ACTIVE_HELPER_CHILD.lock().await;
+        if let Some(mut child) = guard.take() {
+            let status = child.wait().await;
+            if let Ok(s) = status {
+                if !s.success() {
+                    let _ = tx
+                        .send(ProgressMessage {
+                            progress: 0,
+                            message: format!("Error: Helper process exited with status {}", s),
+                            is_structured: false,
+                        })
+                        .await;
+                }
             }
         }
     });
 
     Ok(rx)
+}
+
+/// Forcefully abort the active root helper process.
+pub async fn abort_helper() -> Result<(), String> {
+    let mut guard = ACTIVE_HELPER_CHILD.lock().await;
+    if let Some(mut child) = guard.take() {
+        // Send SIGTERM first for graceful exit
+        #[cfg(unix)]
+        {
+            if let Some(pid) = child.id() {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+            }
+        }
+
+        // Give it a tiny bit of time, then kill if still running
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        match child.kill().await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::InvalidInput {
+                    // Already exited
+                    Ok(())
+                } else {
+                    Err(format!("Failed to kill helper process: {}", e))
+                }
+            }
+        }
+    } else {
+        Ok(())
+    }
 }

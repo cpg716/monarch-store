@@ -1,7 +1,7 @@
 # Testing Guide for MonARCH Store
 
-**Current Version:** v0.4.6-alpha  
-**Last updated:** 2026-02-14
+**Current version: v0.4.7-alpha
+Last doc update: 2026-02-21
 
 ## ⚠️ Important: What Tests Actually Prove
 

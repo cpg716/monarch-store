@@ -1,0 +1,2324 @@
+//! Search, Essentials, Trending, and Categories — **one universal output**.
+//!
+//! All four entry points MUST produce the same Package shape: one card per app, `canonical_id`,
+//! `available_sources` (Official, CachyOS, Chaotic, Flatpak, AUR). Details and RepoSelector use
+//! that same data. Two implementation paths exist that both satisfy this:
+//!
+//! 1. **Seed list → full merge**: `fetch_and_merge_packages_by_names_impl` takes `(name, app_id)` seeds,
+//!    fetches from repo + Chaotic + Flatpak + AUR, and returns Package with full `available_sources`.
+//!    Used by: **Essentials** (get_packages_by_names), **Categories** (get_category_packages_paginated),
+//!    and **Trending** (augmentation step so trending cards get same shape).
+//!
+//! 2. **Raw results → merge**: `merge_search_results` + dedupe take per-source search hits and group
+//!    by `canonical_merge_key`, building `available_sources`. Used by: **Search** (search_packages),
+//!    and **Trending** (initial merge before augmentation). Same output contract, different input path.
+
+use crate::{
+    aur_api, chaotic_api, discovery_manager, metadata, middleware::aggregation, models,
+    repo_manager::RepoManager, utils,
+};
+
+use moka::future::Cache;
+use once_cell::sync::Lazy;
+use serde::Serialize;
+use specta::Type;
+use std::collections::HashMap;
+use tauri::State;
+
+// Cache for Trending results (key: (include_flatpak, include_aur, include_chaotic))
+// TTL: 15 minutes
+static TRENDING_CACHE: Lazy<Cache<(bool, bool, bool), Vec<models::Package>>> = Lazy::new(|| {
+    Cache::builder()
+        .time_to_live(std::time::Duration::from_secs(60 * 15))
+        .build()
+});
+
+// Cache for Category Paginated results (key: composite string of params)
+// TTL: 6 hours — category contents change slowly; longer TTL avoids refetch when revisiting.
+static CATEGORY_CACHE: Lazy<Cache<String, Vec<models::Package>>> = Lazy::new(|| {
+    Cache::builder()
+        .time_to_live(std::time::Duration::from_secs(6 * 60 * 60))
+        .build()
+});
+
+/// Clear in-memory search/trending/category caches AND their disk counterparts.
+/// Called from Settings "Clear cache" so users see pipeline fixes without restarting the app.
+pub fn clear_search_and_list_caches() {
+    TRENDING_CACHE.invalidate_all();
+    CATEGORY_CACHE.invalidate_all();
+    // Delete disk caches so next startup is also fresh
+    if let Some(dir) = dirs::cache_dir().map(|d| d.join("monarch-store")) {
+        // Remove all category disk caches
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if (name_str.starts_with("trending_cache_")
+                    || name_str.starts_with("category_")
+                    || name_str.starts_with("essentials_"))
+                    && name_str.ends_with(".json")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let _ = std::fs::remove_file(dir.join("essentials_packages_cache.json"));
+    }
+}
+
+/// Open Core & Proprietary Fork siblings: proprietary/paid builds vs open-source base or community fork.
+/// When the user searches for any of the terms, all packages in the group get a relevance boost
+/// so both show at the top (e.g. Chrome + Chromium, VS Code + VSCodium, Plex + Kodi).
+/// Model: Google Chrome (Proprietary) vs Chromium (Open Source); wrappers/builds (VS Code → VSCodium).
+const SIBLING_GROUPS: &[(&[&str], &[&str])] = &[
+    // (package names / display variants in group, search terms that trigger boost)
+    // --- Web Browsers (Chromium-based: proprietary on open Chromium) ---
+    (
+        &["google-chrome", "chromium", "google chrome"],
+        &["chrome", "chromium"],
+    ),
+    (
+        &[
+            "microsoft-edge",
+            "microsoft-edge-dev",
+            "edge-bin",
+            "microsoft edge",
+        ],
+        &["edge", "chromium"],
+    ),
+    (
+        &["vivaldi", "vivaldi-bin", "vivaldi-stable"],
+        &["vivaldi", "chromium"],
+    ),
+    (
+        &["opera", "opera-ffmpeg-codecs", "opera-developer"],
+        &["opera", "chromium"],
+    ),
+    (
+        &["brave", "brave-bin", "brave-browser"],
+        &["brave", "chromium"],
+    ),
+    (
+        &["yandex-browser", "yandex-browser-beta", "chromium"],
+        &["yandex", "chromium"],
+    ),
+    (
+        &[
+            "firefox",
+            "librewolf",
+            "firefox-esr",
+            "firefox-developer-edition",
+        ],
+        &["firefox", "librewolf"],
+    ),
+    (
+        &["tor-browser", "tor-browser-launcher"],
+        &["tor", "tor browser"],
+    ),
+    // --- Development & IDEs (Open Core: Pro/Ultimate vs Community/Open build) ---
+    (
+        &[
+            "code",
+            "visual-studio-code-bin",
+            "vscodium",
+            "vscodium-bin",
+            "visual studio code",
+        ],
+        &["code", "vscode", "vscodium", "visual studio code"],
+    ),
+    (
+        &[
+            "pycharm-professional",
+            "pycharm-community-edition",
+            "pycharm",
+        ],
+        &["pycharm", "py charm"],
+    ),
+    (
+        &[
+            "intellij-idea-ultimate-edition",
+            "intellij-idea-community-edition",
+            "intellij",
+        ],
+        &["intellij", "idea", "jetbrains"],
+    ),
+    (
+        &["android-studio", "android-sdk", "android-tools"],
+        &["android studio", "android sdk"],
+    ),
+    (
+        &[
+            "jdk",
+            "jdk-openjdk",
+            "jdk8-openjdk",
+            "jdk11-openjdk",
+            "jdk17-openjdk",
+            "openjdk",
+        ],
+        &["jdk", "openjdk", "java"],
+    ),
+    (
+        &["qt6-base", "qt5-base", "qt-creator", "qt6-creator"],
+        &["qt", "qt creator"],
+    ),
+    (
+        &[
+            "sublime-text",
+            "sublime-text-4",
+            "sublime-merge",
+            "atom",
+            "pulsar-editor-bin",
+            "pulsar",
+            "lime",
+        ],
+        &["sublime", "atom", "pulsar", "lime", "sublime text"],
+    ),
+    (&["cursor", "cursor-bin", "cursor-appimage"], &["cursor"]),
+    // --- DevOps & Infrastructure (Open Core: EE vs CE, proprietary vs engine/OSS) ---
+    (&["gitlab", "gitlab-ce", "gitlab-ee"], &["gitlab"]),
+    (
+        &["docker", "docker-desktop", "podman", "docker-engine"],
+        &["docker", "podman", "container"],
+    ),
+    (&["nginx", "nginx-mainline", "nginx-plus"], &["nginx"]),
+    (
+        &["redis", "redis-server", "valkey", "valkey-bin"],
+        &["redis", "valkey"],
+    ),
+    (
+        &["elasticsearch", "opensearch", "opensearch-dashboards"],
+        &["elasticsearch", "opensearch", "elastic search"],
+    ),
+    (
+        &["terraform", "opentofu", "tofu", "terraform-bin"],
+        &["terraform", "opentofu", "tofu"],
+    ),
+    (
+        &["mysql", "mariadb", "mysql57", "mysql80"],
+        &["mysql", "mariadb"],
+    ),
+    (&["influxdb", "influxdb2", "influxdb-bin"], &["influxdb"]),
+    (&["grafana", "grafana-bin"], &["grafana"]),
+    (&["sonarqube", "sonar-scanner"], &["sonarqube", "sonar"]),
+    (
+        &["ansible", "ansible-core", "ansible-automation-platform"],
+        &["ansible"],
+    ),
+    (
+        &["puppet", "puppet-agent", "puppet-enterprise"],
+        &["puppet"],
+    ),
+    (&["chef", "chef-workstation", "chef-infra"], &["chef"]),
+    (&["metasploit", "metasploit-framework"], &["metasploit"]),
+    // --- Communication & Collaboration (Open Core / proprietary server vs OSS client) ---
+    (
+        &["mattermost", "mattermost-desktop", "mattermost-server"],
+        &["mattermost"],
+    ),
+    (
+        &["rocket-chat", "rocket.chat", "rocketchat"],
+        &["rocket", "rocket.chat"],
+    ),
+    (&["zulip", "zulip-desktop", "zulip-server"], &["zulip"]),
+    (&["telegram-desktop", "telegram"], &["telegram"]),
+    (
+        &[
+            "discord",
+            "discord-canary",
+            "discord-ptb",
+            "webcord",
+            "webcord-bin",
+            "discord_arch_electron",
+        ],
+        &["discord", "webcord"],
+    ),
+    (
+        &["slack", "slack-desktop", "mattermost"],
+        &["slack", "mattermost"],
+    ),
+    (
+        &["element-desktop", "element-web", "riot-desktop"],
+        &["element", "matrix", "riot"],
+    ),
+    (&["signal-desktop", "signal-desktop-beta"], &["signal"]),
+    (&["zoom", "zoom-wayland"], &["zoom"]),
+    (&["teams", "teams-for-linux"], &["teams", "microsoft teams"]),
+    (
+        &["thunderbird", "betterbird"],
+        &["thunderbird", "betterbird", "mail"],
+    ),
+    // --- Media & Streaming (Proprietary fork vs open source: Plex/Kodi, Emby/Jellyfin) ---
+    (&["plex", "plex-media-server", "plexamp"], &["plex"]),
+    (&["kodi", "kodi-git", "xbmc"], &["kodi", "xbmc", "plex"]),
+    (&["emby", "emby-server", "emby-server-bin"], &["emby"]),
+    (
+        &["jellyfin", "jellyfin-server", "jellyfin-media-player"],
+        &["jellyfin", "emby"],
+    ),
+    (
+        &[
+            "spotify",
+            "spotify-adblock",
+            "spotifywm",
+            "spotify-launcher",
+        ],
+        &["spotify"],
+    ),
+    (
+        &["vlc", "mpv", "mpv-mpris"],
+        &["vlc", "mpv", "video player", "media player"],
+    ),
+    (&["obs-studio", "obs-studio-git"], &["obs", "streaming"]),
+    (
+        &["davinci-resolve", "davinci-resolve-studio"],
+        &["davinci", "resolve"],
+    ),
+    (&["lightworks", "lightworks-bin"], &["lightworks"]),
+    (
+        &["kdenlive", "kdenlive-git", "shotcut"],
+        &["kdenlive", "shotcut", "video editor"],
+    ),
+    (
+        &["audacity", "tenacity", "audacity-git"],
+        &["audacity", "tenacity", "audio editor"],
+    ),
+    (
+        &["handbrake", "handbrake-cli"],
+        &["handbrake", "video encoder"],
+    ),
+    (
+        &["gimp", "gimp-git", "krita"],
+        &["gimp", "krita", "image editor"],
+    ),
+    (&["inkscape", "inkscape-git"], &["inkscape", "vector"]),
+    (&["blender", "blender-docs"], &["blender", "3d"]),
+    (
+        &["ardour", "reaper", "reaper-bin"],
+        &["ardour", "reaper", "daw", "audio"],
+    ),
+    // --- Productivity & Office (Open Core: Enterprise vs Community/Desktop) ---
+    (
+        &[
+            "onlyoffice",
+            "onlyoffice-bin",
+            "onlyoffice-desktopeditors",
+            "onlyoffice-documentserver",
+        ],
+        &["onlyoffice", "only office"],
+    ),
+    (
+        &[
+            "libreoffice-fresh",
+            "libreoffice-still",
+            "libreoffice",
+            "openoffice",
+            "openoffice-bin",
+        ],
+        &["libreoffice", "openoffice", "libre office"],
+    ),
+    (&["wps-office", "wps-office-bin"], &["wps", "wps office"]),
+    (&["zimbra", "zimbra-desktop"], &["zimbra"]),
+    (
+        &["odoo", "odoo-community", "odoo-enterprise"],
+        &["odoo", "erp"],
+    ),
+    (&["magento", "magento-open-source"], &["magento"]),
+    (&["sugarcrm", "suitecrm"], &["sugarcrm", "suitecrm", "crm"]),
+    (
+        &["bitwarden", "bitwarden-cli", "vaultwarden"],
+        &["bitwarden", "vaultwarden", "password"],
+    ),
+    (
+        &["standard-notes", "standard-notes-bin"],
+        &["standard notes", "standardnotes"],
+    ),
+    (
+        &["evince", "okular", "atril", "xreader"],
+        &["pdf", "evince", "okular", "document viewer", "pdf viewer"],
+    ),
+    (&["zotero", "zotero-bin"], &["zotero", "reference"]),
+    (
+        &["notion", "notion-app", "obsidian", "obsidian-bin"],
+        &["notion", "obsidian", "notes"],
+    ),
+    // --- Security & Virtualization (Open Core / base vs proprietary extension) ---
+    (
+        &[
+            "virtualbox",
+            "virtualbox-host-dkms",
+            "virtualbox-ext-oracle",
+            "virt-manager",
+        ],
+        &["virtualbox", "virtual machine", "virt"],
+    ),
+    (
+        &["pfsense", "opnsense", "opnsense-update"],
+        &["pfsense", "opnsense", "firewall"],
+    ),
+    (&["vmware-workstation", "vmware-player"], &["vmware"]),
+    (
+        &["teamviewer", "anydesk", "rustdesk", "rustdesk-bin"],
+        &["teamviewer", "anydesk", "rustdesk", "remote"],
+    ),
+    (
+        &["veracrypt", "truecrypt", "cryptsetup"],
+        &["veracrypt", "truecrypt", "encryption"],
+    ),
+    (
+        &["keepassxc", "keepass", "keepassxc-git"],
+        &["keepass", "keepassxc", "password"],
+    ),
+    // --- Gaming / launchers ---
+    (
+        &["steam", "steam-native-runtime", "steam-manjaro"],
+        &["steam"],
+    ),
+    (&["lutris", "lutris-ge"], &["lutris", "gaming"]),
+    (
+        &["heroic", "heroic-games-launcher-bin"],
+        &["heroic", "epic", "games launcher"],
+    ),
+    (
+        &[
+            "minecraft",
+            "minecraft-launcher",
+            "prism-launcher",
+            "poly mc",
+        ],
+        &["minecraft", "prism", "polymc"],
+    ),
+    // --- Other (dev tools, git clients, file transfer) ---
+    (
+        &["gitkraken", "gitg", "sourcetree", "git-cola", "lazygit"],
+        &["gitkraken", "git gui", "sourcetree", "lazygit"],
+    ),
+    (
+        &["postman", "postman-bin", "insomnia"],
+        &["postman", "insomnia", "api"],
+    ),
+    (
+        &["qbittorrent", "transmission-gtk", "deluge", "transmission"],
+        &["qbittorrent", "transmission", "deluge", "torrent"],
+    ),
+    (&["filezilla", "filezilla-gtk3"], &["filezilla", "ftp"]),
+];
+
+const SIBLING_BOOST_SCORE: u32 = 85;
+
+#[derive(Serialize, Clone, Debug, Type)]
+pub struct PaginatedResponse {
+    pub packages: Vec<models::Package>,
+    pub total: u32,
+    pub page: u32,
+    pub has_more: bool,
+}
+
+#[derive(serde::Deserialize, specta::Type, Debug, Clone)]
+pub struct SearchOptions {
+    pub flatpak_enabled: Option<bool>,
+    pub aur_enabled: Option<bool>,
+    pub chaotic_enabled: Option<bool>,
+    pub for_installed_lookup: Option<bool>,
+}
+
+#[derive(serde::Deserialize, specta::Type, Debug, Clone)]
+pub struct CategoryQuery {
+    pub category: String,
+    pub repo_filter: Option<Vec<String>>,
+    pub sort_by: Option<String>,
+    pub page: u32,
+    pub limit: u32,
+    pub options: Option<SearchOptions>,
+}
+
+use crate::flathub_api::{FlathubApiClient, SearchResult};
+use crate::models::Package;
+
+/// Picks the highest-priority source from available_sources.
+/// Order: Repo (Arch Official / Distro) first, then Chaotic, then Flatpak, then AUR.
+/// So Arch Official always wins over Flatpak when both are present.
+
+/// Merges Official, AUR, and Flatpak into a single keyed map, then returns a deduplicated list.
+/// Every package is keyed by canonical_merge_key. Merge strategy: append source to available_sources;
+/// if new has friendly name (no dots) and existing has ID name (e.g. com.discordapp.Discord), overwrite name/display_name.
+/// Primary source is set to the best available (Official/Repo first, then Flatpak, then AUR).
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+#[specta::specta]
+pub async fn search_packages(
+    state_repo: State<'_, RepoManager>,
+    state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    state_flathub: State<'_, FlathubApiClient>,
+    state_metadata: State<'_, metadata::MetadataState>,
+    state_registry: State<'_, crate::registry::RegistryState>,
+    state_distro: State<'_, crate::distro_context::DistroContext>,
+    state_discovery: State<'_, discovery_manager::DiscoveryManager>,
+    query: String,
+    options: Option<SearchOptions>,
+) -> Result<Vec<Package>, String> {
+    if query.len() < 2 {
+        return Ok(Vec::new());
+    }
+
+    let flatpak_enabled = options.as_ref().and_then(|o| o.flatpak_enabled);
+    let aur_enabled = options.as_ref().and_then(|o| o.aur_enabled);
+    let chaotic_enabled = options.as_ref().and_then(|o| o.chaotic_enabled);
+    let for_installed_lookup = options.as_ref().and_then(|o| o.for_installed_lookup);
+
+    let installed_lookup = for_installed_lookup == Some(true);
+    let include_flatpak = installed_lookup || flatpak_enabled.unwrap_or(true);
+    let include_aur =
+        installed_lookup || aur_enabled.unwrap_or(state_repo.inner().is_aur_enabled().await);
+    let include_chaotic = installed_lookup
+        || chaotic_enabled.unwrap_or(state_repo.inner().is_repo_enabled("chaotic-aur").await);
+
+    let query_lower = query.to_lowercase();
+    let repo_manager = state_repo.inner();
+    let flathub = state_flathub.inner();
+
+    // Expansion terms (e.g. "heroic" -> "heroic-games-launcher") so CachyOS, Chaotic-AUR, and AUR all show in one card
+    let expansion_terms: Vec<String> = utils::aur_search_expansion_terms(&query)
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let aur_terms: Vec<String> = std::iter::once(query.clone())
+        .chain(expansion_terms.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    // Repo/CachyOS search: include expansion terms so "heroic" also matches "heroic-games-launcher" in cache
+    let repo_query = if expansion_terms.is_empty() {
+        query.clone()
+    } else {
+        format!("{} {}", query.trim(), expansion_terms.join(" "))
+    };
+
+    // 1. Parallel Search: Registry (SQL) + AUR + Flatpak + Chaotic-AUR
+    // "Iron Core" Strategy: Prefer SQL search on persisted Registry.
+    // If Registry returns nothing (e.g. first run), fallback to Legacy Regex search on RepoManager cache.
+    let distro = state_distro.inner();
+    let chaotic_allowed = distro.is_chaotic_compatible();
+
+    let (registry_res, legacy_res, aur_res, flatpak_res, chaotic, installed_flatpaks) = tokio::join!(
+        // Primary: SQL Search
+        async { state_registry.manager.search_packages_sql(&query, 50) },
+        // Fallback: Legacy Regex (fetched concurrently but used only if Registry empty or insufficient)
+        repo_manager.get_packages_matching(&repo_query, state_distro.inner()),
+        async {
+            if include_aur && !aur_terms.is_empty() {
+                let mut seen = std::collections::HashSet::new();
+                let mut merged: Vec<models::Package> = Vec::new();
+                for term in &aur_terms {
+                    match crate::aur_api::search_aur(term).await {
+                        Ok(pkgs) => {
+                            for p in pkgs {
+                                if seen.insert(p.name.clone()) {
+                                    merged.push(p);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("[SEARCH] AUR Search failed for term '{}': {}", term, e);
+                        }
+                    }
+                }
+                Ok::<Vec<models::Package>, String>(merged)
+            } else {
+                Ok::<Vec<models::Package>, String>(Vec::new())
+            }
+        },
+        async {
+            // Flatpak: only when enabled in Settings (or installed lookup)
+            if include_flatpak {
+                flathub.search_flathub(&query).await
+            } else {
+                None
+            }
+        },
+        async {
+            // Chaotic: only when enabled in Settings AND distro allows it (blocked on Manjaro)
+            let actually_chaotic_enabled = chaotic_allowed && include_chaotic;
+            if !actually_chaotic_enabled {
+                return Vec::new();
+            }
+            match state_chaotic.inner().fetch_packages().await {
+                Ok(arc) => {
+                    let query_parts: Vec<&str> = query_lower.split_whitespace().collect();
+                    let expansion_lower: Vec<String> =
+                        expansion_terms.iter().map(|t| t.to_lowercase()).collect();
+                    arc.iter()
+                        .filter(|p| {
+                            let name_lower = p.pkgname.to_lowercase();
+                            let name_ok = name_lower.contains(&query_lower)
+                                || query_parts.iter().all(|q| name_lower.contains(q))
+                                || expansion_lower.iter().any(|t| name_lower.contains(t));
+                            let desc_ok = p
+                                .metadata
+                                .as_ref()
+                                .and_then(|m| m.desc.as_deref())
+                                .map(|d| d.to_lowercase().contains(&query_lower))
+                                .unwrap_or(false);
+                            name_ok || desc_ok
+                        })
+                        .map(|p| {
+                            let version = p.version.clone().unwrap_or_default();
+                            let mut pkg = Package {
+                                name: p.pkgname.clone(),
+                                display_name: Some(utils::to_pretty_name(&p.pkgname)),
+                                description: p
+                                    .metadata
+                                    .as_ref()
+                                    .and_then(|m| m.desc.clone())
+                                    .unwrap_or_default(),
+                                version: version.clone(),
+                                source: models::PackageSource::chaotic(&p.pkgname),
+                                maintainer: Some("Chaotic-AUR Team".to_string()),
+                                license: p
+                                    .metadata
+                                    .as_ref()
+                                    .and_then(|m| m.license.clone())
+                                    .map(|l| vec![l]),
+                                url: p.metadata.as_ref().and_then(|m| m.url.clone()),
+                                installed: crate::alpm_read::is_package_installed(&p.pkgname),
+                                ..Default::default()
+                            };
+                            if let Ok(guard) = state_metadata.loader.lock() {
+                                pkg.app_id = guard.find_app_id(&p.pkgname);
+                                pkg.icon = guard.find_icon_heuristic(&p.pkgname);
+                            }
+                            pkg
+                        })
+                        .collect()
+                }
+                Err(e) => {
+                    log::warn!("Chaotic-AUR search failed: {}", e);
+                    Vec::new()
+                }
+            }
+        },
+        async {
+            if include_flatpak {
+                crate::flathub_api::get_installed_flatpak_app_ids()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            }
+        }
+    );
+
+    // 2. Merge Logic (canonical_merge_key preserved for deduplication)
+    let distro_id_str = match &state_distro.id {
+        crate::distro_context::DistroId::Manjaro => "manjaro",
+        crate::distro_context::DistroId::Garuda => "garuda",
+        crate::distro_context::DistroId::CachyOS => "cachyos",
+        crate::distro_context::DistroId::EndeavourOS => "endeavouros",
+        crate::distro_context::DistroId::Arch => "arch",
+        crate::distro_context::DistroId::Unknown(s) => s.as_str(),
+    };
+
+    // Determine primary result set: SQL vs Legacy
+    let mut official: Vec<Package> = if let Ok(sql_pkgs) = registry_res {
+        if !sql_pkgs.is_empty() {
+            log::info!(
+                "[SEARCH] Using Registry SQL results ({} items)",
+                sql_pkgs.len()
+            );
+            sql_pkgs
+        } else {
+            // Registry Empty -> Fallback to Regex
+            log::warn!("[SEARCH] Registry MISS - Falling back to Legacy Regex Search");
+            legacy_res.unwrap_or_default()
+        }
+    } else {
+        log::error!("[SEARCH] Registry SQL Error - Falling back to Legacy Regex Search");
+        legacy_res.unwrap_or_default()
+    }
+    .into_iter()
+    .map(|mut p| {
+        if p.source.id == "local" {
+            p.source.label = "Installed (Local)".to_string();
+        } else {
+            p.source.label =
+                crate::labels::get_friendly_label(&p.source.id, distro_id_str).to_string();
+        }
+        p
+    })
+    .collect();
+
+    let mut aur: Vec<Package> = aur_res.unwrap_or_default();
+    let flatpak_raw: Vec<SearchResult> = flatpak_res.unwrap_or_default();
+
+    // v0.2.41: Enrich search results with real Flatpak versions
+    let mut flatpak = Vec::new();
+    if !flatpak_raw.is_empty() {
+        let app_ids: Vec<String> = flatpak_raw.iter().map(|h| h.app_id.clone()).collect();
+        let versions = flathub
+            .get_remote_versions_batch(&app_ids)
+            .await
+            .unwrap_or_default();
+        for hit in flatpak_raw {
+            let v = versions.get(&hit.app_id).cloned();
+            flatpak.push((hit, v));
+        }
+    }
+
+    official.extend(chaotic);
+
+    // IRON CORE (SSOT): "Every Inch" Enforcement
+    // We must ensure that even raw Search results respect the Registry's authoritative identity (Name, Icon).
+    // Collect all candidate keys from the 3 vectors.
+    let mut candidate_keys = std::collections::HashSet::new();
+    for p in &official {
+        candidate_keys.insert(utils::canonical_merge_key(&p.name, p.app_id.as_deref()));
+    }
+    for p in &aur {
+        candidate_keys.insert(utils::canonical_merge_key(&p.name, p.app_id.as_deref()));
+    }
+    for (hit, _) in &flatpak {
+        // Flatpak hit.app_id is the ID.
+        candidate_keys.insert(hit.app_id.to_lowercase());
+        candidate_keys.insert(utils::canonical_merge_key(&hit.name, Some(&hit.app_id)));
+    }
+
+    let candidate_vec: Vec<String> = candidate_keys.into_iter().collect();
+    let registry_pkgs_map = if !candidate_vec.is_empty() {
+        if let Ok(pkgs) = state_registry.get_packages_by_canonical_ids(&candidate_vec) {
+            pkgs.into_iter()
+                .map(|p| (p.canonical_id.clone(), p))
+                .collect::<std::collections::HashMap<_, _>>()
+        } else {
+            std::collections::HashMap::new()
+        }
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    if !registry_pkgs_map.is_empty() {
+        log::debug!(
+            "[SEARCH] Iron Core applying overrides to {} items",
+            registry_pkgs_map.len()
+        );
+
+        // Overwrite Official/Chaotic
+        for p in &mut official {
+            let key = utils::canonical_merge_key(&p.name, p.app_id.as_deref());
+            if let Some(reg) = registry_pkgs_map.get(&key) {
+                if let Some(dn) = &reg.display_name {
+                    if !dn.is_empty() {
+                        p.display_name = Some(dn.clone());
+                    }
+                }
+                let reg_is_rich = reg
+                    .icon
+                    .as_deref()
+                    .map(|i| i.starts_with("http") || i.starts_with("data:"))
+                    .unwrap_or(false);
+                if reg_is_rich || p.icon.is_none() {
+                    p.icon = reg.icon.clone();
+                }
+                if let Some(id) = &reg.app_id {
+                    p.app_id = Some(id.clone());
+                }
+            }
+        }
+
+        // Overwrite AUR
+        for p in &mut aur {
+            let key = utils::canonical_merge_key(&p.name, p.app_id.as_deref());
+            if let Some(reg) = registry_pkgs_map.get(&key) {
+                if let Some(dn) = &reg.display_name {
+                    if !dn.is_empty() {
+                        p.display_name = Some(dn.clone());
+                    }
+                }
+                let reg_is_rich = reg
+                    .icon
+                    .as_deref()
+                    .map(|i| i.starts_with("http") || i.starts_with("data:"))
+                    .unwrap_or(false);
+                if reg_is_rich || p.icon.is_none() {
+                    p.icon = reg.icon.clone();
+                }
+                if let Some(id) = &reg.app_id {
+                    p.app_id = Some(id.clone());
+                }
+            }
+        }
+
+        // Overwrite Flatpak
+        for (hit, _) in &mut flatpak {
+            let id_key = hit.app_id.to_lowercase();
+            let name_key = utils::canonical_merge_key(&hit.name, Some(&hit.app_id));
+            let reg_entry = registry_pkgs_map
+                .get(&id_key)
+                .or_else(|| registry_pkgs_map.get(&name_key));
+
+            if let Some(reg) = reg_entry {
+                if let Some(dn) = &reg.display_name {
+                    if !dn.is_empty() {
+                        hit.name = dn.clone();
+                    }
+                }
+                // FIXED: Check !is_empty() because reg.description is String, not Option<String>
+                if !reg.description.is_empty() {
+                    hit.summary = Some(reg.description.clone());
+                }
+                let reg_is_rich = reg
+                    .icon
+                    .as_deref()
+                    .map(|i| i.starts_with("http") || i.starts_with("data:"))
+                    .unwrap_or(false);
+                if reg_is_rich || hit.icon.is_none() {
+                    hit.icon = reg.icon.clone();
+                }
+            }
+        }
+    }
+
+    // 2. Pre-Merge Normalization: Sync IDs with local Metadata before grouping
+    // 2. Pre-Merge Normalization: Sync IDs with local Metadata before grouping (Unified ViewModel)
+    {
+        if let Ok(loader) = state_metadata.loader.lock() {
+            use crate::middleware::aggregation::enrich_with_local_metadata;
+            enrich_with_local_metadata(&mut official, &loader);
+            enrich_with_local_metadata(&mut aur, &loader);
+        }
+    }
+
+    // 3. First-Pass Deduplication & Source Merging
+    let mut results = aggregation::merge_search_results(
+        official,
+        aur,
+        flatpak,
+        &state_registry.manager,
+        &installed_flatpaks,
+    );
+
+    // 4. One card per app: dedupe by canonical key and set canonical_id on every package (so frontend list key is unique)
+    results = utils::deduplicate_by_canonical_key(results);
+
+    // 5. Global Metadata Enrichment: Fix icons/names via Flathub API Fallback
+    aggregation::enrich_packages_metadata(&mut results, state_flathub.inner()).await;
+
+    // 6. Final Deduplication Merge: Group entries that were renamed/re-identified to the same App
+    results = aggregation::deduplicate_and_merge_packages(results);
+
+    // 7. Relevance Ranking (UI Priority)
+    let popular_names: Vec<String> = state_discovery.inner().popular_aur_names().await;
+    let popular_apps: Vec<&str> = popular_names.iter().map(|s| s.as_str()).collect();
+
+    let metadata_loader = state_metadata
+        .loader
+        .lock()
+        .expect("MetadataState lock poisoned");
+    results.sort_by(|a, b| {
+        let score_a = calculate_relevance(a, &query_lower, &metadata_loader, &popular_apps);
+        let score_b = calculate_relevance(b, &query_lower, &metadata_loader, &popular_apps);
+        score_b
+            .cmp(&score_a)
+            .then_with(|| a.name.len().cmp(&b.name.len()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    // Payload diet: strip HTML and truncate descriptions before sending to UI (max 200 chars)
+    utils::prepare_package_descriptions_for_ui(&mut results);
+
+    // Final guarantee: one package per app. Dedupe by normalized canonical_id so Discord never appears twice.
+    results = utils::deduplicate_by_canonical_id_final(results);
+
+    // Enable with: RUST_LOG=debug when running the app. Use RUST_LOG=monarch_store_lib=debug to hide glycin/other deps.
+    log::debug!(
+        "[CARD/DETAILS] search_packages returning {} packages (query={})",
+        results.len(),
+        query
+    );
+    for (i, p) in results.iter().take(3).enumerate() {
+        log::debug!(
+            "[CARD/DETAILS]   [{}] name={} canonical_id={} sources={} icon={} primary={}",
+            i,
+            p.name,
+            p.canonical_id,
+            p.available_sources.as_ref().map(|s| s.len()).unwrap_or(0),
+            p.icon.is_some(),
+            p.source.id
+        );
+    }
+
+    // PERSIST TO REGISTRY: Seed the persistent index with these search results.
+    let _ = state_registry.manager.bulk_upsert_packages(&results);
+
+    Ok(results)
+}
+
+fn calculate_relevance(
+    pkg: &Package,
+    query: &str,
+    metadata: &metadata::AppStreamLoader,
+    popular_apps: &[&str],
+) -> u32 {
+    let pkg_name_lower = pkg.name.to_lowercase();
+    let display_name_lower = pkg.display_name.as_ref().map(|s| s.to_lowercase());
+    let friendly_name = metadata
+        .get_friendly_name(&pkg.name)
+        .map(|s| s.to_lowercase());
+
+    let matches_query = pkg_name_lower.contains(query)
+        || display_name_lower.as_deref().unwrap_or("").contains(query)
+        || friendly_name.as_deref().unwrap_or("").contains(query)
+        || pkg
+            .keywords
+            .as_ref()
+            .map(|k| k.iter().any(|w| w.to_lowercase().contains(query)))
+            .unwrap_or(false);
+
+    let is_popular = popular_apps.contains(&pkg_name_lower.as_str());
+
+    let mut score = 0u32;
+
+    // 1. Exact Name Match (Score 100)
+    if pkg_name_lower == query {
+        score = 100;
+    }
+    // 2. Exact Friendly Name Match (Score 100)
+    else if let Some(friendly) = &friendly_name {
+        if friendly == query {
+            score = 100;
+        } else if friendly.contains(query) && query.len() >= 3 {
+            // 3. Partial Friendly Match (Score 80)
+            score = 80;
+        }
+    }
+
+    // 4. Exact App ID Match (Score 90)
+    if score == 0 {
+        if let Some(app_id) = &pkg.app_id {
+            if app_id.to_lowercase() == query {
+                score = 90;
+            }
+        }
+    }
+
+    // 5. Starts with Query (Score 50)
+    if score == 0 && pkg_name_lower.starts_with(query) {
+        score = 50;
+    }
+
+    // 6. Contains Query (Score 20)
+    if score == 0 && matches_query {
+        score = 20;
+    }
+
+    // 7. Popularity Bonus: +10 when in popular list and matches query
+    if is_popular && matches_query && score > 0 {
+        score = (score + 10).min(100);
+    }
+
+    // 8. Sibling boost: when query matches a proprietary/open pair (e.g. chrome/chromium),
+    //    boost both so they show at top regardless of exact name match
+    let display_lower = display_name_lower.as_deref().unwrap_or("");
+    for (names, terms) in SIBLING_GROUPS {
+        let in_group = names
+            .iter()
+            .any(|n| *n == pkg_name_lower || *n == display_lower);
+        let query_matches = terms
+            .iter()
+            .any(|t| query == *t || query.contains(t) || t.contains(query));
+        if in_group && query_matches {
+            score = score.max(SIBLING_BOOST_SCORE);
+        }
+    }
+
+    /* ----------------------------------------------------------------
+       NEW: Word Match Boosting (Solves "google-chrome" vs "chrome")
+       If the query appears as a distinct word in the name (split by -._),
+       it's a much stronger match than a generic "contains" or even "starts with" on a long string.
+    ---------------------------------------------------------------- */
+    let delimiters = ['-', '_', '.', ' '];
+
+    // Helper: Exact word match?
+    let has_word = |text: &str| text.split(&delimiters[..]).any(|word| word == query);
+
+    if score < 90 {
+        if has_word(&pkg_name_lower) {
+            // "google-chrome" contains word "chrome" -> Boost over "chrome-gnome-shell" (starts with)?
+            // "chrome-gnome-shell" starts with "chrome" -> 50.
+            // "google-chrome" word match "chrome" -> 60.
+            score = score.max(60);
+        }
+
+        if has_word(display_lower) {
+            // "Google Chrome" contains word "Chrome"
+            score = score.max(55);
+        }
+    }
+
+    /* ----------------------------------------------------------------
+       NEW: Fallback Display Name Match
+       If friendly_name was missing, but display_name is present (e.g. from AUR search),
+       use it for strict matching.
+    ---------------------------------------------------------------- */
+    if score < 100 && !friendly_name.is_some() {
+        if display_lower == query {
+            score = 95; // Almost perfect
+        } else if display_lower.starts_with(query) {
+            score = score.max(50);
+        }
+    }
+
+    score
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn search_aur(query: String) -> Result<Vec<models::Package>, String> {
+    aur_api::search_aur(&query).await
+}
+
+/// Cache for large get_packages_by_names results (e.g. Essentials). TTL 7 days.
+const PACKAGES_CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+/// Bump to invalidate old caches (one-card-per-app, variants, etc.). Users not seeing fixes should restart the app.
+const PACKAGES_CACHE_VERSION: u32 = 5;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PackagesListCache {
+    #[serde(default)]
+    version: u32,
+    names_sorted: Vec<String>,
+    packages: Vec<models::Package>,
+    fetched_at: u64,
+}
+
+fn packages_list_cache_path() -> Option<std::path::PathBuf> {
+    dirs::cache_dir().map(|d| {
+        d.join("monarch-store")
+            .join("essentials_packages_cache.json")
+    })
+}
+
+/// If names.len() >= 30, try to return cached packages (same set, fresh). Still runs installed pass.
+fn try_get_packages_from_cache(names: &[String]) -> Option<Vec<models::Package>> {
+    if names.len() < 30 {
+        return None;
+    }
+    let path = packages_list_cache_path()?;
+    let data = std::fs::read_to_string(&path).ok()?;
+    let cache: PackagesListCache = serde_json::from_str(&data).ok()?;
+    let mut sorted_names = names.to_vec();
+    sorted_names.sort();
+    if cache.version != PACKAGES_CACHE_VERSION || cache.names_sorted != sorted_names {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if now.saturating_sub(cache.fetched_at) >= PACKAGES_CACHE_TTL_SECS {
+        return None;
+    }
+    log::info!(
+        "[DISK CACHE] Loaded essentials from disk ({} packages)",
+        cache.packages.len()
+    );
+    Some(cache.packages)
+}
+
+fn write_packages_cache(names: &[String], packages: &[models::Package]) {
+    if names.len() < 30 {
+        return;
+    }
+    let path = match packages_list_cache_path() {
+        Some(p) => p,
+        None => return,
+    };
+    let mut sorted_names = names.to_vec();
+    sorted_names.sort();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let cache = PackagesListCache {
+        version: PACKAGES_CACHE_VERSION,
+        names_sorted: sorted_names,
+        packages: packages.to_vec(),
+        fetched_at: now,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(&cache) {
+        log::info!(
+            "[DISK CACHE] Writing essentials to disk ({} packages)",
+            cache.packages.len()
+        );
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+// ─── Disk cache helpers for Trending ───────────────────────────────────────
+const TRENDING_DISK_TTL_SECS: u64 = 15 * 60; // 15 minutes, matches moka TTL
+
+fn trending_cache_path(include_flatpak: bool) -> Option<std::path::PathBuf> {
+    dirs::cache_dir().map(|d| {
+        d.join("monarch-store")
+            .join(format!("trending_cache_v7_{}.json", include_flatpak))
+    })
+}
+
+fn try_read_trending_disk(include_flatpak: bool) -> Option<Vec<models::Package>> {
+    let path = trending_cache_path(include_flatpak)?;
+    let data = std::fs::read_to_string(&path).ok()?;
+    let cache: PackagesListCache = serde_json::from_str(&data).ok()?;
+    if cache.version != PACKAGES_CACHE_VERSION {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if now.saturating_sub(cache.fetched_at) >= TRENDING_DISK_TTL_SECS {
+        return None;
+    }
+    log::info!(
+        "[DISK CACHE] Loaded trending (flatpak={}) from disk ({} packages)",
+        include_flatpak,
+        cache.packages.len()
+    );
+    Some(cache.packages)
+}
+
+fn write_trending_disk(include_flatpak: bool, packages: &[models::Package]) {
+    let path = match trending_cache_path(include_flatpak) {
+        Some(p) => p,
+        None => return,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let cache = PackagesListCache {
+        version: PACKAGES_CACHE_VERSION,
+        names_sorted: Vec::new(), // not used for trending
+        packages: packages.to_vec(),
+        fetched_at: now,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(&cache) {
+        log::info!(
+            "[DISK CACHE] Writing trending (flatpak={}) to disk ({} packages)",
+            include_flatpak,
+            cache.packages.len()
+        );
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+// ─── Disk cache helpers for Categories ─────────────────────────────────────
+const CATEGORY_DISK_TTL_SECS: u64 = 6 * 60 * 60; // 6 hours, matches moka TTL
+
+fn category_cache_path(cache_key: &str) -> Option<std::path::PathBuf> {
+    // Sanitize key for filesystem: replace non-alphanumeric with '_'
+    let safe_key: String = cache_key
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    dirs::cache_dir().map(|d| {
+        d.join("monarch-store")
+            .join(format!("category_{}.json", safe_key))
+    })
+}
+
+fn try_read_category_disk(cache_key: &str) -> Option<Vec<models::Package>> {
+    let path = category_cache_path(cache_key)?;
+    let data = std::fs::read_to_string(&path).ok()?;
+    let cache: PackagesListCache = serde_json::from_str(&data).ok()?;
+    if cache.version != PACKAGES_CACHE_VERSION {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if now.saturating_sub(cache.fetched_at) >= CATEGORY_DISK_TTL_SECS {
+        return None;
+    }
+    log::info!(
+        "[DISK CACHE] Loaded category '{}' from disk ({} packages)",
+        cache_key,
+        cache.packages.len()
+    );
+    Some(cache.packages)
+}
+
+fn write_category_disk(cache_key: &str, packages: &[models::Package]) {
+    let path = match category_cache_path(cache_key) {
+        Some(p) => p,
+        None => return,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let cache = PackagesListCache {
+        version: PACKAGES_CACHE_VERSION,
+        names_sorted: Vec::new(), // not used for categories
+        packages: packages.to_vec(),
+        fetched_at: now,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(&cache) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+/// Shared implementation: fetch repo + chaotic + AUR + Flatpak and merge by canonical_merge_key.
+/// Respects settings: include_flatpak false = no Flathub query; Chaotic only when enabled and distro-compatible.
+/// Used by get_packages_by_names and by get_category_packages_paginated so cards show identical available_sources.
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_packages_by_names(
+    state_meta: State<'_, metadata::MetadataState>,
+    state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    state_repo: State<'_, RepoManager>,
+    state_flathub: State<'_, crate::flathub_api::FlathubApiClient>,
+    state_registry: State<'_, crate::registry::RegistryState>,
+    names: Vec<String>,
+    options: Option<SearchOptions>,
+    cache_context: Option<String>,
+) -> Result<Vec<models::Package>, String> {
+    state_meta.inner().wait_until_ready().await;
+
+    let flatpak_enabled = options.as_ref().and_then(|o| o.flatpak_enabled);
+    let aur_enabled = options.as_ref().and_then(|o| o.aur_enabled);
+    let chaotic_enabled = options.as_ref().and_then(|o| o.chaotic_enabled);
+    let for_installed_lookup = options.as_ref().and_then(|o| o.for_installed_lookup);
+
+    let installed_lookup = for_installed_lookup == Some(true);
+    let include_flatpak = installed_lookup || flatpak_enabled.unwrap_or(true);
+    let include_aur =
+        installed_lookup || aur_enabled.unwrap_or(state_repo.inner().is_aur_enabled().await);
+    let include_chaotic = installed_lookup
+        || chaotic_enabled.unwrap_or(state_repo.inner().is_repo_enabled("chaotic-aur").await);
+    let use_essentials_cache = cache_context.as_deref() == Some("essentials");
+
+    if use_essentials_cache {
+        if let Some(mut cached) = try_get_packages_from_cache(&names) {
+            let mut to_check = std::collections::HashSet::new();
+            for p in &cached {
+                to_check.insert(p.name.clone());
+                if let Some(base) = p.name.strip_suffix("-bin") {
+                    to_check.insert(base.to_string());
+                }
+            }
+            let names_to_check: Vec<String> = to_check.into_iter().collect();
+            let installed_set = tokio::task::spawn_blocking(move || {
+                let mut set = std::collections::HashSet::new();
+                for name in names_to_check {
+                    if crate::alpm_read::is_package_installed(&name) {
+                        set.insert(name);
+                    }
+                }
+                set
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            for pkg in &mut cached {
+                let base = pkg.name.strip_suffix("-bin").unwrap_or(&pkg.name);
+                pkg.installed = installed_set.contains(&pkg.name) || installed_set.contains(base);
+            }
+            log::debug!(
+            "[CARD/DETAILS] get_packages_by_names returning {} packages (FROM CACHE) names_len={}",
+            cached.len(),
+            names.len()
+        );
+            for (i, p) in cached.iter().take(2).enumerate() {
+                log::debug!(
+                    "[CARD/DETAILS]   cached[{}] name={} sources={} icon={}",
+                    i,
+                    p.name,
+                    p.available_sources.as_ref().map(|s| s.len()).unwrap_or(0),
+                    p.icon.is_some()
+                );
+            }
+            return Ok(cached);
+        }
+    }
+
+    let packages = aggregation::fetch_and_merge_packages_by_names_impl(
+        state_meta.inner(),
+        state_chaotic.inner(),
+        state_repo.inner(),
+        state_flathub.inner(),
+        &state_registry.inner().manager,
+        names.iter().map(|n| (n.clone(), None)).collect(),
+        include_flatpak,
+        include_aur,
+        include_chaotic,
+        installed_lookup,
+    )
+    .await?;
+
+    if use_essentials_cache {
+        write_packages_cache(&names, &packages);
+    }
+    log::debug!(
+        "[CARD/DETAILS] get_packages_by_names returning {} packages (FETCHED) names_len={}",
+        packages.len(),
+        names.len()
+    );
+    for (i, p) in packages.iter().take(2).enumerate() {
+        log::debug!(
+            "[CARD/DETAILS]   fetched[{}] name={} canonical_id={} sources={} icon={}",
+            i,
+            p.name,
+            p.canonical_id,
+            p.available_sources.as_ref().map(|s| s.len()).unwrap_or(0),
+            p.icon.is_some()
+        );
+    }
+    Ok(packages)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_chaotic_package_info(
+    state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    name: String,
+) -> Result<Option<chaotic_api::ChaoticPackage>, String> {
+    Ok(state_chaotic.inner().find_package(&name).await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_chaotic_packages_batch(
+    state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    names: Vec<String>,
+) -> Result<HashMap<String, chaotic_api::ChaoticPackage>, String> {
+    state_chaotic.inner().get_packages_by_names(&names).await
+}
+
+/// When cache is empty, run discovery fetch in this command (up to this duration) so we don't rely on background spawn.
+const TRENDING_REFRESH_TIMEOUT_MS: u64 = 18_000;
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_trending(
+    state_meta: State<'_, metadata::MetadataState>,
+    state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    state_repo: State<'_, RepoManager>,
+    state_flathub: State<'_, crate::flathub_api::FlathubApiClient>,
+    state_discovery: State<'_, discovery_manager::DiscoveryManager>,
+    state_registry: State<'_, crate::registry::RegistryState>,
+    options: Option<SearchOptions>,
+) -> Result<Vec<models::Package>, String> {
+    state_meta.inner().wait_until_ready().await;
+
+    let flatpak_enabled = options.as_ref().and_then(|o| o.flatpak_enabled);
+    let aur_enabled = options.as_ref().and_then(|o| o.aur_enabled);
+    let chaotic_enabled = options.as_ref().and_then(|o| o.chaotic_enabled);
+
+    let include_flatpak = flatpak_enabled.unwrap_or(true);
+    let include_aur = aur_enabled.unwrap_or(state_repo.inner().is_aur_enabled().await);
+    let include_chaotic =
+        chaotic_enabled.unwrap_or(state_repo.inner().is_repo_enabled("chaotic-aur").await);
+    let cache_key = (include_flatpak, include_aur, include_chaotic);
+
+    state_meta.inner().wait_until_ready().await;
+    if let Some(cached) = TRENDING_CACHE.get(&cache_key).await {
+        return Ok(cached);
+    }
+
+    // Moka miss — try disk cache (warm start after restart)
+    if let Some(disk_cached) = try_read_trending_disk(include_flatpak) {
+        TRENDING_CACHE.insert(cache_key, disk_cached.clone()).await;
+        return Ok(disk_cached);
+    }
+
+    // Official/repo packages from AppStream (so trending is not AUR-only when discovery cache is empty or Flathub fails).
+    let official_packages: Vec<models::Package> = if let Ok(loader) = state_meta.loader.lock() {
+        let mut apps = Vec::new();
+        for cat in ["network", "office", "audiovideo", "graphics", "utility"] {
+            apps.extend(loader.get_apps_by_category(cat));
+        }
+        apps.truncate(25);
+        apps.into_iter()
+            .map(|app| models::Package {
+                name: app.pkg_name.clone().unwrap_or_else(|| app.app_id.clone()),
+                display_name: Some(app.name),
+                description: app.summary.unwrap_or_default(),
+                version: app.version.unwrap_or_else(|| "latest".to_string()),
+                source: models::PackageSource::new("repo", "core", "latest", "Arch Official"),
+                maintainer: app.maintainer.clone(),
+                license: app.license.clone().map(|l| vec![l]),
+                url: None,
+                last_modified: app.last_updated.map(|t| t as i64),
+                first_submitted: None,
+                out_of_date: None,
+                keywords: None,
+                num_votes: None,
+                icon: app.icon_url.clone(),
+                screenshots: if app.screenshots.is_empty() {
+                    None
+                } else {
+                    Some(app.screenshots)
+                },
+                provides: None,
+                app_id: Some(app.app_id),
+                is_optimized: None,
+                depends: None,
+                make_depends: None,
+                is_featured: None,
+                installed: false,
+                alternatives: None,
+                ..Default::default()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Dynamic discovery: top AUR by popularity; Flathub trending only when Flatpak enabled (respects on/off).
+    let mut aur_packages = if include_aur {
+        state_discovery.inner().get_aur_popular().await
+    } else {
+        Vec::new()
+    };
+    let mut flathub_search_results = if include_flatpak {
+        state_discovery
+            .inner()
+            .get_flathub_popular_search_results()
+            .await
+    } else {
+        Vec::new()
+    };
+
+    let installed_flatpaks = if include_flatpak {
+        crate::flathub_api::get_installed_flatpak_app_ids()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<std::collections::HashSet<String>>()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    // v0.2.41: Enrich Trending with real Flatpak versions
+    let mut flathub_hits = Vec::new();
+    if !flathub_search_results.is_empty() {
+        let app_ids: Vec<String> = flathub_search_results
+            .iter()
+            .map(|h| h.app_id.clone())
+            .collect();
+        let versions = state_flathub
+            .get_remote_versions_batch(&app_ids)
+            .await
+            .unwrap_or_default();
+        for hit in flathub_search_results {
+            let v = versions.get(&hit.app_id).cloned();
+            flathub_hits.push((hit, v));
+        }
+    }
+
+    // Merge: official (repo) first, then AUR, then Flathub — so trending shows a mix, not only AUR.
+    let mut packages = aggregation::merge_search_results(
+        official_packages.clone(),
+        aur_packages.clone(),
+        flathub_hits,
+        &state_registry.manager,
+        &installed_flatpaks,
+    );
+    packages = utils::deduplicate_by_canonical_key(packages);
+    aggregation::enrich_packages_ratings(&mut packages).await;
+
+    // If cache was empty, run the fetch in this task (with timeout) so we don't depend on background spawn.
+    if packages.is_empty() {
+        let timeout = std::time::Duration::from_millis(TRENDING_REFRESH_TIMEOUT_MS);
+        let _ = tokio::time::timeout(
+            timeout,
+            state_discovery
+                .inner()
+                .refresh_now_if_empty_or_stale(state_meta.inner()),
+        )
+        .await;
+        aur_packages = if include_aur {
+            state_discovery.inner().get_aur_popular().await
+        } else {
+            Vec::new()
+        };
+        flathub_search_results = if include_flatpak {
+            state_discovery
+                .inner()
+                .get_flathub_popular_search_results()
+                .await
+        } else {
+            Vec::new()
+        };
+        // v0.2.41: Enrich refreshed Trending with real Flatpak versions
+        let mut flathub_hits = Vec::new();
+        if !flathub_search_results.is_empty() {
+            let app_ids: Vec<String> = flathub_search_results
+                .iter()
+                .map(|h| h.app_id.clone())
+                .collect();
+            let versions = state_flathub
+                .get_remote_versions_batch(&app_ids)
+                .await
+                .unwrap_or_default();
+            for hit in flathub_search_results {
+                let v = versions.get(&hit.app_id).cloned();
+                flathub_hits.push((hit, v));
+            }
+        }
+
+        packages = aggregation::merge_search_results(
+            official_packages,
+            aur_packages,
+            flathub_hits,
+            &state_registry.manager,
+            &installed_flatpaks,
+        );
+        packages = utils::deduplicate_by_canonical_key(packages);
+        aggregation::enrich_packages_ratings(&mut packages).await;
+    }
+
+    // CachyOS Spotlight: only if CachyOS repos enabled (host-adaptive, no repo injection).
+    if state_repo.inner().is_repo_enabled("cachyos").await {
+        let cachy_names = [
+            "linux-cachyos",
+            "cachyos-settings",
+            "cachyos-browser",
+            "cachyos-fish-config",
+        ];
+        for name in &cachy_names {
+            if packages.iter().any(|p| p.name == *name) {
+                continue;
+            }
+            let mut found = false;
+            if let Ok(loader) = state_meta.loader.lock() {
+                if let Some(app) = loader.find_package(name) {
+                    packages.push(models::Package {
+                        name: app.pkg_name.clone().unwrap_or_else(|| app.app_id.clone()),
+                        display_name: Some(app.name),
+                        description: app.summary.unwrap_or_default(),
+                        version: app.version.unwrap_or_else(|| "optimized".to_string()),
+                        source: models::PackageSource::cachyos(name),
+                        maintainer: Some("CachyOS Team".to_string()),
+                        license: None,
+                        url: None,
+                        last_modified: None,
+                        first_submitted: None,
+                        out_of_date: None,
+                        keywords: None,
+                        num_votes: None,
+                        icon: app.icon_url,
+                        screenshots: None,
+                        provides: None,
+                        app_id: Some(app.app_id.clone()),
+                        is_optimized: Some(true),
+                        depends: None,
+                        make_depends: None,
+                        is_featured: Some(true),
+                        installed: false,
+                        alternatives: None,
+                        ..Default::default()
+                    });
+                    found = true;
+                }
+            }
+            if !found {
+                packages.push(models::Package {
+                    name: (*name).to_string(),
+                    display_name: Some(utils::to_pretty_name(name)),
+                    description: "High-performance CachyOS component".to_string(),
+                    version: "latest".to_string(),
+                    source: models::PackageSource::new(
+                        "repo",
+                        "cachyos",
+                        "optimized",
+                        "CachyOS (Optimized)",
+                    ),
+                    maintainer: Some("CachyOS Team".to_string()),
+                    license: None,
+                    url: None,
+                    last_modified: None,
+                    first_submitted: None,
+                    out_of_date: None,
+                    keywords: None,
+                    num_votes: None,
+                    icon: None,
+                    screenshots: None,
+                    provides: None,
+                    app_id: None,
+                    is_optimized: Some(true),
+                    depends: None,
+                    make_depends: None,
+                    is_featured: Some(true),
+                    installed: false,
+                    alternatives: None,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    // Chaotic Heat: when repo enabled and distro allows (blocked on Manjaro).
+    if crate::distro_context::DistroContext::new().is_chaotic_compatible()
+        && state_repo.inner().is_repo_enabled("chaotic-aur").await
+    {
+        if let Ok(trending_list) = state_chaotic.inner().fetch_trending().await {
+            let dynamic_names: Vec<String> = trending_list
+                .iter()
+                .map(|t| t.pkgbase_pkgname.clone())
+                .collect();
+            let chaotic_pkgs = state_chaotic
+                .inner()
+                .get_packages_batch(dynamic_names.clone())
+                .await;
+            for name in dynamic_names {
+                if let Some(p) = chaotic_pkgs.get(&name) {
+                    if packages.iter().any(|pkg| pkg.name == name) {
+                        continue;
+                    }
+                    let mut pkg = models::Package {
+                        name: name.clone(),
+                        display_name: Some(utils::to_pretty_name(&name)),
+                        description: p
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.desc.clone())
+                            .unwrap_or_default(),
+                        version: p.version.clone().unwrap_or_default(),
+                        source: models::PackageSource::new(
+                            "repo",
+                            "chaotic-aur",
+                            &p.version.clone().unwrap_or_default(),
+                            "Chaotic-AUR (Pre-built)",
+                        ),
+                        maintainer: Some("Chaotic-AUR Team".to_string()),
+                        license: p
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.license.clone())
+                            .map(|l| vec![l]),
+                        url: p.metadata.as_ref().and_then(|m| m.url.clone()),
+                        last_modified: None,
+                        first_submitted: None,
+                        out_of_date: None,
+                        keywords: None,
+                        num_votes: None,
+                        icon: None,
+                        screenshots: None,
+                        provides: None,
+                        app_id: None,
+                        is_optimized: None,
+                        depends: None,
+                        make_depends: None,
+                        is_featured: None,
+                        installed: crate::alpm_read::is_package_installed(&name),
+                        alternatives: None,
+                        ..Default::default()
+                    };
+                    if let Ok(loader) = state_meta.loader.lock() {
+                        pkg.icon = loader.find_icon_heuristic(&name);
+                        pkg.app_id = loader.find_app_id(&name);
+                    }
+                    packages.push(pkg);
+                }
+            }
+        }
+    }
+
+    // Lightweight enrichment: fix missing icons/names via Flathub (capped at 48, no full pipeline re-run).
+    // available_sources are already populated by merge_search_results above.
+    aggregation::enrich_packages_metadata(&mut packages, state_flathub.inner()).await;
+
+    packages = utils::merge_and_deduplicate(Vec::new(), packages);
+    utils::prepare_package_descriptions_for_ui(&mut packages);
+    log::debug!(
+        "[CARD/DETAILS] get_trending returning {} packages",
+        packages.len()
+    );
+    for (i, p) in packages.iter().take(2).enumerate() {
+        log::debug!(
+            "[CARD/DETAILS]   trending[{}] name={} canonical_id={} sources={} icon={}",
+            i,
+            p.name,
+            p.canonical_id,
+            p.available_sources.as_ref().map(|s| s.len()).unwrap_or(0),
+            p.icon.is_some()
+        );
+    }
+
+    // FINAL FALLBACK: If we still have NO packages (Discovery failed, local AppStream empty),
+    // we inject a set of "Hardcoded Essentials" to ensure the Trending section is never empty.
+    if packages.is_empty() {
+        log::warn!("[TRENDING] All discovery methods failed. Injecting fallback from existing Featured list.");
+        let mut fallback_names = discovery_manager::get_all_featured_names();
+        fallback_names.truncate(20);
+
+        let items: Vec<(String, Option<String>)> = fallback_names
+            .into_iter()
+            .map(|n| (n.to_string(), None))
+            .collect();
+
+        if let Ok(fallback_pkgs) =
+            crate::middleware::aggregation::fetch_and_merge_packages_by_names_impl(
+                &state_meta,
+                &state_chaotic,
+                &state_repo,
+                &state_flathub,
+                &state_registry.manager,
+                items,
+                include_flatpak,
+                include_aur,
+                include_chaotic,
+                false,
+            )
+            .await
+        {
+            packages = fallback_pkgs;
+        }
+    }
+
+    TRENDING_CACHE.insert(cache_key, packages.clone()).await;
+    write_trending_disk(include_flatpak, &packages);
+
+    // PERSIST TO REGISTRY: Seed the persistent index with these trending apps.
+    let _ = state_registry.manager.bulk_upsert_packages(&packages);
+
+    Ok(packages)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_package_variants(
+    state_meta: State<'_, metadata::MetadataState>,
+    state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    state_flathub: State<'_, crate::flathub_api::FlathubApiClient>,
+    state_repo: State<'_, RepoManager>,
+    pkg_name: String,
+    options: Option<SearchOptions>,
+) -> Result<Vec<models::PackageVariant>, String> {
+    let flatpak_enabled = options.as_ref().and_then(|o| o.flatpak_enabled);
+    let aur_enabled = options.as_ref().and_then(|o| o.aur_enabled);
+    let chaotic_enabled = options.as_ref().and_then(|o| o.chaotic_enabled);
+    let for_installed_lookup = options.as_ref().and_then(|o| o.for_installed_lookup);
+
+    log::debug!(
+        "[CARD/DETAILS] get_package_variants called pkg_name={} options={:?}",
+        pkg_name,
+        options
+    );
+    let installed_lookup = for_installed_lookup == Some(true);
+    let include_flatpak = installed_lookup || flatpak_enabled.unwrap_or(true);
+    let include_aur =
+        installed_lookup || aur_enabled.unwrap_or(state_repo.inner().is_aur_enabled().await);
+    let include_chaotic = installed_lookup
+        || chaotic_enabled.unwrap_or(state_repo.inner().is_repo_enabled("chaotic-aur").await);
+    let pkg_lower = pkg_name.trim().to_lowercase();
+    let base_name = utils::strip_package_suffix(&pkg_lower);
+    let canonical_base: String = if pkg_lower.contains('.') {
+        pkg_lower
+            .split('.')
+            .next_back()
+            .map(|s| s.trim().to_lowercase())
+            .unwrap_or_else(|| base_name.to_string())
+    } else {
+        base_name.to_string()
+    };
+    let mapped_id = crate::flathub_api::get_flathub_app_id(&canonical_base);
+    let app_id = state_meta
+        .loader
+        .lock()
+        .ok()
+        .and_then(|loader| loader.find_app_id(&pkg_name));
+
+    let mut combined_packages = Vec::new();
+
+    let mut search_names: Vec<String> = vec![
+        pkg_lower.clone(),
+        base_name.to_string(),
+        canonical_base.clone(),
+    ];
+    for repo_name in utils::canonical_to_repo_lookup_names(&canonical_base) {
+        search_names.push(repo_name.to_string());
+    }
+    search_names.sort();
+    search_names.dedup();
+
+    // Repo Search: use empty list to search ALL syncdbs (core, extra, community, multilib + monarch)
+    // so we show Official + Chaotic + AUR variants in one listing.
+    let search_names_clone = search_names.clone();
+    let repo_pkgs = tokio::task::spawn_blocking(move || {
+        crate::alpm_read::get_packages_batch(&search_names_clone, &[])
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    combined_packages.extend(repo_pkgs);
+
+    // Chaotic Search: only when repo enabled and distro allows (blocked on Manjaro).
+    if crate::distro_context::DistroContext::new().is_chaotic_compatible() && include_chaotic {
+        if let Ok(chaotic_arc) = state_chaotic.inner().fetch_packages().await {
+            let matches: Vec<models::Package> = chaotic_arc
+                .iter()
+                .filter(|p| {
+                    let p_lower = p.pkgname.to_lowercase();
+                    p_lower == pkg_lower
+                        || p_lower == base_name
+                        || utils::strip_package_suffix(&p_lower) == base_name
+                })
+                .map(|p| models::Package {
+                    name: p.pkgname.clone(),
+                    display_name: Some(utils::to_pretty_name(&p.pkgname)),
+                    description: p
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.desc.clone())
+                        .unwrap_or_default(),
+                    version: p.version.clone().unwrap_or_default(),
+                    source: models::PackageSource::new(
+                        "repo",
+                        "chaotic-aur",
+                        &p.version.clone().unwrap_or_default(),
+                        "Chaotic-AUR (Pre-built)",
+                    ),
+                    maintainer: Some("Chaotic-AUR Team".to_string()),
+                    license: p
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.license.clone())
+                        .map(|l| vec![l]),
+                    url: p.metadata.as_ref().and_then(|m| m.url.clone()),
+                    last_modified: None,
+                    first_submitted: None,
+                    out_of_date: None,
+                    keywords: None,
+                    num_votes: None,
+                    icon: None,
+                    screenshots: None,
+                    provides: None,
+                    app_id: None,
+                    is_optimized: None,
+                    depends: None,
+                    make_depends: None,
+                    is_featured: None,
+                    installed: crate::alpm_read::is_package_installed(&p.pkgname),
+                    ..Default::default()
+                })
+                .collect();
+            combined_packages.extend(matches);
+        }
+    }
+
+    // AUR Search — use canonical_base so app_id "com.discordapp.Discord" still finds "discord"
+    if include_aur {
+        if let Ok(aur_results) = aur_api::search_aur(&canonical_base).await {
+            for p in aur_results {
+                if utils::canonical_merge_key(&p.name, p.app_id.as_deref()) == canonical_base
+                    || p.name.to_lowercase() == pkg_lower
+                    || utils::strip_package_suffix(&p.name.to_lowercase()) == canonical_base
+                {
+                    combined_packages.push(p);
+                }
+            }
+        }
+        if canonical_base != base_name && base_name != pkg_lower {
+            if let Ok(aur_results) = aur_api::search_aur(base_name).await {
+                for p in aur_results {
+                    if utils::canonical_merge_key(&p.name, p.app_id.as_deref()) == canonical_base
+                        && !combined_packages.iter().any(|c| c.name == p.name)
+                    {
+                        combined_packages.push(p);
+                    }
+                }
+            }
+        }
+    }
+
+    // Flatpak variants: only when enabled in Settings (or installed lookup); skip when off
+    if include_flatpak {
+        if let Some(flatpak_results) = state_flathub.inner().search_flathub(&canonical_base).await {
+            for hit in flatpak_results {
+                let hit_canonical = utils::canonical_merge_key(&hit.app_id, Some(&hit.app_id));
+                if hit_canonical == canonical_base || hit.app_id.eq_ignore_ascii_case(&pkg_name) {
+                    combined_packages.push(models::Package {
+                        name: hit.app_id.clone(),
+                        display_name: Some(hit.name),
+                        source: models::PackageSource::new(
+                            "flatpak",
+                            "flathub",
+                            "latest",
+                            "Flatpak (Sandboxed)",
+                        ),
+                        app_id: Some(hit.app_id),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        if pkg_lower.contains('.') {
+            if let Some(flatpak_results) = state_flathub.inner().search_flathub(&pkg_lower).await {
+                for hit in flatpak_results {
+                    if hit.app_id.eq_ignore_ascii_case(&pkg_name)
+                        && !combined_packages.iter().any(|c| c.name == hit.app_id)
+                    {
+                        combined_packages.push(models::Package {
+                            name: hit.app_id.clone(),
+                            display_name: Some(hit.name),
+                            source: models::PackageSource::new(
+                                "flatpak",
+                                "flathub",
+                                "latest",
+                                "Flatpak (Sandboxed)",
+                            ),
+                            app_id: Some(hit.app_id),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Filter by App ID if we have one, otherwise by Normalized Name
+    let mut final_variants: Vec<models::PackageVariant> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for p in combined_packages {
+        let p_source = p.source.clone();
+        let p_lower = p.name.to_lowercase();
+        let p_app_id = state_meta
+            .loader
+            .lock()
+            .ok()
+            .and_then(|loader| loader.find_app_id(&p.name));
+
+        let matches_app_id = app_id.is_some() && p_app_id == app_id;
+
+        let is_flatpak_match = p.source.source_type == "flatpak"
+            && (p
+                .name
+                .to_lowercase()
+                .ends_with(&format!(".{}", canonical_base))
+                || p.name.to_lowercase().ends_with(&format!(".{}", base_name))
+                || mapped_id
+                    .as_deref()
+                    .map(|id| id.eq_ignore_ascii_case(&p.name))
+                    .unwrap_or(false));
+
+        let p_canonical = utils::canonical_merge_key(&p.name, p.app_id.as_deref());
+        let matches_name = p_lower == pkg_lower
+            || p_lower == base_name
+            || p_lower == canonical_base
+            || p_canonical == canonical_base
+            || utils::strip_package_suffix(&p_lower) == base_name
+            || utils::strip_package_suffix(&p_lower) == canonical_base
+            || is_flatpak_match;
+
+        if matches_app_id || matches_name {
+            // Skip repo variants with no useful name (we normalized empty/unknown to "other") so the UI never shows a generic "Other Repository" option
+            if p_source.source_type == "repo"
+                && (p_source.id.is_empty()
+                    || p_source.id.eq_ignore_ascii_case("other")
+                    || p_source.id.eq_ignore_ascii_case("unknown"))
+            {
+                continue;
+            }
+            let key = format!("{:?}-{}", p_source, p.name);
+            if !seen.contains(&key) {
+                final_variants.push(models::PackageVariant {
+                    source: p_source.clone(),
+                    version: p.version.clone(),
+                    repo_name: if p_source.id == "chaotic-aur" {
+                        Some("chaotic-aur".to_string())
+                    } else {
+                        None
+                    },
+                    pkg_name: Some(p.name.clone()),
+                });
+                seen.insert(key.clone());
+
+                // Offer Flatpak Beta as a second variant when we have a stable Flatpak option
+                if p_source.source_type == "flatpak" && p_source.id == "flathub" {
+                    let beta_source = models::PackageSource::new(
+                        "flatpak",
+                        "flathub-beta",
+                        &p.version,
+                        "Flatpak (Beta)",
+                    );
+                    let beta_key = format!("{:?}-{}", beta_source, p.name);
+                    if !seen.contains(&beta_key) {
+                        final_variants.push(models::PackageVariant {
+                            source: beta_source,
+                            version: p.version.clone(),
+                            repo_name: None,
+                            pkg_name: Some(p.name.clone()),
+                        });
+                        seen.insert(beta_key);
+                    }
+                }
+            }
+        }
+    }
+
+    log::debug!(
+        "[CARD/DETAILS] get_package_variants returning {} variants for pkg_name={}",
+        final_variants.len(),
+        pkg_name
+    );
+    for (i, v) in final_variants.iter().take(5).enumerate() {
+        let sid = format!("{:?}", v.source);
+        log::debug!(
+            "[CARD/DETAILS]   variant[{}] {} pkg_name={:?}",
+            i,
+            sid,
+            v.pkg_name
+        );
+    }
+
+    Ok(final_variants)
+}
+
+#[specta::specta]
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn get_category_packages_paginated(
+    state_meta: State<'_, metadata::MetadataState>,
+    state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
+    state_repo: State<'_, RepoManager>,
+    state_flathub: State<'_, FlathubApiClient>,
+    state_registry: State<'_, crate::registry::RegistryState>,
+    query: CategoryQuery,
+) -> Result<PaginatedResponse, String> {
+    // Cache version: bump to invalidate when pipeline changes (one-card-per-app, variants). Restart app to see fixes.
+    const CATEGORY_CACHE_VERSION: &str = "v7"; // Bumping to clear any potentially stale v6 data
+    let cache_key = format!(
+        "cat:{}:{}:{}:{:?}:{}",
+        query.category,
+        query
+            .repo_filter
+            .as_ref()
+            .map(|v| v.join(","))
+            .unwrap_or_default(),
+        query.sort_by.as_deref().unwrap_or("default"),
+        query
+            .options
+            .as_ref()
+            .and_then(|o| o.flatpak_enabled)
+            .unwrap_or(true),
+        CATEGORY_CACHE_VERSION
+    );
+
+    state_meta.inner().wait_until_ready().await;
+    let packages = if let Some(cached) = CATEGORY_CACHE.get(&cache_key).await {
+        cached
+    } else if let Some(disk_cached) = try_read_category_disk(&cache_key) {
+        // Moka miss — warm start from disk
+        CATEGORY_CACHE
+            .insert(cache_key.clone(), disk_cached.clone())
+            .await;
+        disk_cached
+    } else {
+        // ONE CARD PER APP: Collect unique (name, app_id) seeds by canonical key, then fetch unified packages once.
+        // Same pipeline as search/Essentials — one card with Official, CachyOS, Flatpak, AUR (available_sources).
+        // Category used to build its own list from AppStream + Chaotic then augment; that path could show duplicate
+        // cards and missed repo expansion (e.g. discord_arch_electron). Now it always goes through fetch_and_merge.
+        let mut seeds: std::collections::HashMap<String, (String, Option<String>)> =
+            std::collections::HashMap::new();
+
+        // 1. Registry (AppStream/SQLite) — one seed per canonical key; prefer friendly name.
+        if let Ok(pkgs) = state_registry
+            .manager
+            .get_packages_by_category(&query.category, 100, 0)
+        {
+            log::info!(
+                "[CATEGORY] Found {} packages in Registry for '{}'",
+                pkgs.len(),
+                query.category
+            );
+            for pkg in pkgs {
+                let name = pkg.name.clone();
+                let app_id = pkg.app_id.clone();
+                let key = pkg.canonical_id.clone();
+                seeds.insert(key, (name, app_id));
+            }
+        } else {
+            log::warn!("[CATEGORY] Registry lookup failed for '{}'", query.category);
+        }
+
+        // 2. Chaotic — add seeds not already present; same canonical key = one app.
+        let chaotic_ok = crate::distro_context::DistroContext::new().is_chaotic_compatible();
+        let c_matches = if chaotic_ok && state_repo.inner().is_repo_enabled("chaotic-aur").await {
+            state_chaotic
+                .inner()
+                .get_packages_by_category(&query.category)
+                .await
+        } else {
+            Vec::new()
+        };
+        for p in c_matches {
+            let app_id = if let Ok(loader) = state_meta.loader.lock() {
+                loader.find_app_id(&p.pkgname)
+            } else {
+                None
+            };
+            let key = utils::canonical_merge_key(&p.pkgname, app_id.as_deref());
+            if !seeds.contains_key(&key) {
+                seeds.insert(key, (p.pkgname.clone(), app_id));
+            }
+        }
+
+        // Always seed featured names first so they are guaranteed to be in the first batch
+        let featured_names = discovery_manager::get_featured_names_for_category(&query.category);
+        let mut final_seeds: Vec<(String, Option<String>)> = Vec::new();
+        let mut seen_keys = std::collections::HashSet::new();
+
+        const CATEGORY_SEEDS_CAP: usize = 72; // Increased to ensure enough room for featured + expansion
+
+        // 1. Prioritize Featured Seeds
+        for name in &featured_names {
+            let app_id = if let Ok(loader) = state_meta.loader.lock() {
+                loader.find_app_id(name)
+            } else {
+                None
+            };
+            let key = utils::canonical_merge_key(name, app_id.as_deref());
+            if !seen_keys.contains(&key) {
+                final_seeds.push((name.clone(), app_id));
+                seen_keys.insert(key);
+            }
+        }
+
+        // 2. Fill remainder with Alpha-sorted category apps (Deterministic)
+        let mut other_seeds: Vec<(String, Option<String>)> = seeds
+            .into_iter()
+            .filter(|(k, _)| !seen_keys.contains(k))
+            .map(|(_, val)| val)
+            .collect();
+        other_seeds.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+        let needed = CATEGORY_SEEDS_CAP.saturating_sub(final_seeds.len());
+        final_seeds.extend(other_seeds.into_iter().take(needed));
+
+        let unique_items = final_seeds;
+
+        // 3. REGISTRY EXPANSION:
+        // Before fetching, ask the Registry "What are the repo package names for these seeds?"
+        // This ensures that if the category seed is "gimp", we know to look for "gimp-2.10" or "org.gimp.GIMP".
+        // The `fetch_and_merge` function does a similar check, but we want to ensure our *input list* is as rich as possible
+        // so we don't rely solely on the aggregation layer's internal expansion for the initial fetch targets.
+        // Actually, `fetch_and_merge_packages_by_names_impl` DOES do this internally now (as of my previous fix),
+        // BUT passing the correct names *into* it is safer.
+        // Wait, `fetch_and_merge` takes (String, Option<String>).
+        // Let's trust `fetch_and_merge` since I updated it to do exactly this check at the very top.
+        //
+        // HOWEVER, the user is complaining it's NOT working.
+        // Let's look at `aggregation.rs` again.
+        // `fetch_and_merge_packages_by_names_impl` takes `items: Vec<(String, Option<String>)>`.
+        // It extracts `names` and calls `state_registry.get_repo_names_for_canonical_ids(&names)`.
+        // So it SHOULD work.
+        //
+        // BUT, maybe the "names" validation in `fetch_and_merge` is strict?
+        // Let's verify `fetch_and_merge` implementation in `aggregation.rs`.
+        //
+        // IF I am to be robust, I should do the expansion HERE as well, just to be double sure.
+
+        // Let's do it:
+        let seed_names: Vec<String> = unique_items.iter().map(|(n, _)| n.clone()).collect();
+        let registry_map = state_registry
+            .get_repo_names_for_canonical_ids(&seed_names)
+            .unwrap_or_default();
+
+        let mut expanded_items = unique_items.clone();
+        for (name, _) in &unique_items {
+            if let Some(repo_names) = registry_map.get(name) {
+                for rn in repo_names {
+                    // check if we already have it
+                    if !expanded_items.iter().any(|(existing, _)| existing == rn) {
+                        expanded_items.push((rn.clone(), None));
+                    }
+                }
+            }
+        }
+
+        // 4. Fetch unified packages (one card per app, full available_sources: Official, CachyOS, Flatpak, AUR).
+        let options = query.options.as_ref();
+        let flatpak_enabled = options.and_then(|o| o.flatpak_enabled);
+        let aur_enabled = options.and_then(|o| o.aur_enabled);
+        let chaotic_enabled = options.and_then(|o| o.chaotic_enabled);
+
+        let include_flatpak = flatpak_enabled.unwrap_or(true);
+        let include_aur = aur_enabled.unwrap_or(state_repo.inner().is_aur_enabled().await);
+        let include_chaotic =
+            chaotic_enabled.unwrap_or(state_repo.inner().is_repo_enabled("chaotic-aur").await);
+
+        let mut packages = aggregation::fetch_and_merge_packages_by_names_impl(
+            state_meta.inner(),
+            state_chaotic.inner(),
+            state_repo.inner(),
+            state_flathub.inner(),
+            &state_registry.inner().manager, // Correct: Pass &RegistryManager, not &RegistryState
+            expanded_items,                  // Use EXPANDED items
+            include_flatpak,
+            include_aur,
+            include_chaotic,
+            false, // installed_lookup
+        )
+        .await
+        .unwrap_or_default();
+
+        // 4. Repo filter: show only packages that have at least one source in the selected filter.
+        if let Some(repos) = &query.repo_filter {
+            let has_all = repos.iter().any(|r| r.to_lowercase() == "all");
+            if !has_all && !repos.is_empty() {
+                let initial_count = packages.len();
+                let allowed: std::collections::HashSet<String> =
+                    repos.iter().map(|s| s.to_lowercase()).collect();
+
+                packages.retain(|p| {
+                    let sources = p.available_sources.as_deref().unwrap_or(&[]);
+                    let p_has_allowed = sources.iter().any(|s| {
+                        let id = s.id.to_lowercase();
+                        let st = s.source_type.to_lowercase();
+                        let src = match st.as_str() {
+                            "repo" => {
+                                if id.contains("chaotic") {
+                                    "chaotic-aur"
+                                } else if id.contains("cachyos") {
+                                    "cachyos"
+                                } else {
+                                    "official"
+                                }
+                            }
+                            "flatpak" => "flatpak",
+                            "aur" => "aur",
+                            _ => "other",
+                        };
+                        allowed.contains(src)
+                            || (src == "chaotic-aur"
+                                && (allowed.contains("chaotic") || allowed.contains("chaotic-aur")))
+                            || (src == "official" && allowed.contains("repo")) // Support generic "repo" chip
+                    });
+                    p_has_allowed
+                });
+
+                log::info!(
+                    "[CATEGORY] Filter applied: {:?}. Reduced result from {} to {} apps.",
+                    allowed,
+                    initial_count,
+                    packages.len()
+                );
+            }
+        }
+
+        // 5. Stable Featured-First Sort OR Strict Sort
+        let is_strict_sort = query.sort_by.as_deref().unwrap_or("") == "newest"
+            || query.sort_by.as_deref().unwrap_or("") == "updated";
+
+        if is_strict_sort {
+            packages.sort_by(|a, b| {
+                b.last_modified
+                    .unwrap_or(0)
+                    .cmp(&a.last_modified.unwrap_or(0))
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+        } else if !featured_names.is_empty() {
+            let featured_map: std::collections::HashMap<String, usize> = featured_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| (name.to_lowercase(), i))
+                .collect();
+
+            // Mark them as featured in the objects
+            for pkg in packages.iter_mut() {
+                if featured_map.contains_key(&pkg.name.to_lowercase()) {
+                    pkg.is_featured = Some(true);
+                }
+            }
+
+            packages.sort_by(|a, b| {
+                let a_key = a.name.to_lowercase();
+                let b_key = b.name.to_lowercase();
+
+                let a_rank = featured_map.get(&a_key).unwrap_or(&9999);
+                let b_rank = featured_map.get(&b_key).unwrap_or(&9999);
+
+                a_rank
+                    .cmp(b_rank)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+        } else {
+            // Default deterministic alpha sort
+            packages.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        }
+
+        // last_modified is already set by fetch_and_merge_packages_by_names_impl (ALPM pass).
+        // No redundant ALPM re-read needed.
+
+        utils::prepare_package_descriptions_for_ui(&mut packages);
+        CATEGORY_CACHE
+            .insert(cache_key.clone(), packages.clone())
+            .await;
+        write_category_disk(&cache_key, &packages);
+        packages
+    };
+
+    let total = packages.len();
+    // Frontend sends 1-based page index
+    let page_idx = (if query.page > 0 { query.page - 1 } else { 0 }) as usize;
+    let limit = query.limit as usize;
+    let start: usize = page_idx * limit;
+    let end: usize = (start + limit).min(total);
+    let has_more = end < total;
+
+    let page_items = if start < total {
+        packages[start..end].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    log::debug!(
+        "[CARD/DETAILS] get_category_packages_paginated category={} page={} total={} returning {} items",
+        query.category,
+        query.page,
+        total,
+        page_items.len()
+    );
+    for (i, p) in page_items.iter().take(2).enumerate() {
+        log::debug!(
+            "[CARD/DETAILS]   category_item[{}] name={} canonical_id={} sources={} icon={}",
+            i,
+            p.name,
+            p.canonical_id,
+            p.available_sources.as_ref().map(|s| s.len()).unwrap_or(0),
+            p.icon.is_some()
+        );
+    }
+
+    Ok(PaginatedResponse {
+        packages: page_items,
+        total: total as u32,
+        page: query.page,
+        has_more,
+    })
+}

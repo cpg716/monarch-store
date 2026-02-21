@@ -54,12 +54,14 @@ pub enum RecoveryAction {
     CleanCache,
     /// Retry the operation
     Retry,
+    /// Reinstall a corrupted Flatpak (--reinstall)
+    FlatpakReinstall,
     /// Show manual resolution steps
     ShowManualSteps(String),
 }
 
 impl ClassifiedError {
-    /// Analyze pacman output and classify the error
+    /// Analyze pacman/flatpak output and classify the error
     pub fn from_output(output: &str) -> Option<Self> {
         let output_lower = output.to_lowercase();
 
@@ -97,7 +99,74 @@ impl ClassifiedError {
             });
         }
 
-        // Package Not Found
+        // --- Flatpak-specific errors ---
+
+        // Flatpak: ref not found / wrong architecture
+        if output_lower.contains("error: nothing provides")
+            || (output_lower.contains("flatpak")
+                && output_lower.contains("ref")
+                && output_lower.contains("not found"))
+            || output_lower.contains("no remote refs found")
+            || output_lower.contains("wrong architecture")
+        {
+            return Some(Self {
+                kind: PacmanErrorKind::PackageNotFound,
+                title: "Flatpak App Not Found".to_string(),
+                description: "The Flatpak app could not be found on the remote. It may have been removed, renamed, or is not available for your architecture.".to_string(),
+                recovery_action: Some(RecoveryAction::ForceRefreshDb),
+                raw_message: output.to_string(),
+            });
+        }
+
+        // Flatpak: similar ref exists (corrupted/partial install)
+        if output_lower.contains("similar ref")
+            || output_lower.contains("already installed")
+            || (output_lower.contains("flatpak") && output_lower.contains("is corrupt"))
+        {
+            return Some(Self {
+                kind: PacmanErrorKind::CorruptedPackage,
+                title: "Flatpak Installation Corrupted".to_string(),
+                description: "The Flatpak app appears to be partially installed or corrupted. A reinstall may fix this.".to_string(),
+                recovery_action: Some(RecoveryAction::FlatpakReinstall),
+                raw_message: output.to_string(),
+            });
+        }
+
+        // Flatpak: connection / network failures
+        if output_lower.contains("connection refused")
+            || output_lower.contains("could not connect")
+            || (output_lower.contains("flatpak") && output_lower.contains("can't load uri"))
+            || output_lower.contains("server returned status")
+        {
+            return Some(Self {
+                kind: PacmanErrorKind::MirrorFailure,
+                title: "Flatpak Download Failed".to_string(),
+                description:
+                    "Could not connect to the Flatpak remote. Check your internet connection."
+                        .to_string(),
+                recovery_action: Some(RecoveryAction::Retry),
+                raw_message: output.to_string(),
+            });
+        }
+
+        // Flatpak: repo not configured
+        if output_lower.contains("remote") && output_lower.contains("not found")
+            || (output_lower.contains("flatpak") && output_lower.contains("no remotes"))
+        {
+            return Some(Self {
+                kind: PacmanErrorKind::PackageNotFound,
+                title: "Flatpak Remote Not Configured".to_string(),
+                description: "No Flatpak remote (like Flathub) is configured. Enable Flatpak in Settings.".to_string(),
+                recovery_action: Some(RecoveryAction::ShowManualSteps(
+                    "Go to Settings → Flatpak and ensure Flathub is enabled, or run: flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo".to_string()
+                )),
+                raw_message: output.to_string(),
+            });
+        }
+
+        // --- End Flatpak-specific ---
+
+        // Package Not Found (pacman)
         if output_lower.contains("target not found")
             || output_lower.contains("no results found")
             || output_lower.contains("package not found")

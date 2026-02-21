@@ -14,6 +14,54 @@ use std::collections::HashMap;
 const ENRICH_CAP: usize = 48;
 const ENRICH_CHUNK: usize = 12;
 
+/// Shared registry backfill: upgrades a Package's icon, display_name, app_id, and description
+/// from a cached Registry entry. Centralises the logic previously duplicated in 5 + places.
+pub fn apply_registry_backfill(pkg: &mut Package, reg: &Package) {
+    // 1. Icon: Prefer rich (HTTP/Data) over local/none
+    let reg_is_rich = reg
+        .icon
+        .as_deref()
+        .map(|i| i.starts_with("http") || i.starts_with("data:"))
+        .unwrap_or(false);
+    let current_is_local = pkg
+        .icon
+        .as_deref()
+        .map(|s| !s.starts_with("http") && !s.starts_with("data:"))
+        .unwrap_or(true);
+
+    if reg_is_rich && (pkg.icon.is_none() || current_is_local) {
+        pkg.icon = reg.icon.clone();
+    } else if pkg.icon.is_none() && reg.icon.is_some() {
+        pkg.icon = reg.icon.clone();
+    }
+
+    // 2. Display Name: Prefer Title Case (registry) over lowercase/missing (current)
+    let cached_dn = reg.display_name.as_deref().unwrap_or("");
+    let current_dn = pkg.display_name.as_deref().unwrap_or("");
+    let cached_has_upper = cached_dn.chars().any(|c| c.is_uppercase());
+    let current_has_upper = current_dn.chars().any(|c| c.is_uppercase());
+
+    if !cached_dn.is_empty()
+        && (cached_has_upper && !current_has_upper || pkg.display_name.is_none())
+    {
+        pkg.display_name = reg.display_name.clone();
+    }
+
+    // 3. App ID: Trust registry if current is missing
+    if pkg.app_id.is_none() {
+        if let Some(id) = &reg.app_id {
+            pkg.app_id = Some(id.clone());
+        }
+    }
+
+    // 4. Description: Fallback to registry if current is empty/short
+    if pkg.description.is_empty() || pkg.description.len() < 10 {
+        if !reg.description.is_empty() {
+            pkg.description = reg.description.clone();
+        }
+    }
+}
+
 /// Shared pipeline step: Enrich packages using local AppStream metadata (AppInfo, Icons).
 /// Used by both search and aggregation to ensure "Iron Core" SSOT.
 pub fn enrich_with_local_metadata(packages: &mut [Package], loader: &metadata::AppStreamLoader) {
@@ -464,11 +512,15 @@ fn source_score(s: &PackageSource) -> i32 {
     match s.source_type.as_str() {
         "repo" => {
             let id = s.id.to_lowercase();
-            // Tier 1: Distro-Optimized Repos
-            if id.contains("cachyos") || id.contains("manjaro") || id.contains("garuda") {
+            // Tier 0: Chaotic-AUR (pre-built AUR — above raw AUR, below official)
+            if id.contains("chaotic") {
+                85
+            }
+            // Tier 1: Distro-Optimized Repos (CachyOS, Manjaro, Garuda)
+            else if id.contains("cachyos") || id.contains("manjaro") || id.contains("garuda") {
                 100
             }
-            // Tier 2: Official Repos
+            // Tier 2: Official Repos (core, extra, multilib)
             else {
                 90
             }
@@ -733,29 +785,7 @@ pub async fn fetch_and_merge_packages_by_names_impl(
         // IRON CORE ENFORCEMENT
         let key = utils::canonical_merge_key(&pkg.name, pkg.app_id.as_deref());
         if let Some(reg) = registry_pkgs_map.get(&key) {
-            // Name: Always prefer Registry if it has a display name
-            if let Some(dn) = &reg.display_name {
-                if !dn.is_empty() {
-                    pkg.display_name = Some(dn.clone());
-                }
-            }
-            // Icon: Prefer Registry if rich (HTTP/Data) or if local is missing
-            let reg_is_rich = reg
-                .icon
-                .as_deref()
-                .map(|i| i.starts_with("http") || i.starts_with("data:"))
-                .unwrap_or(false);
-            if reg_is_rich || pkg.icon.is_none() {
-                pkg.icon = reg.icon.clone();
-            }
-            // App ID: Trust Registry
-            if let Some(id) = &reg.app_id {
-                pkg.app_id = Some(id.clone());
-            }
-            // Description: trust registry if local is empty?
-            if pkg.description.is_empty() {
-                pkg.description = reg.description.clone();
-            }
+            apply_registry_backfill(&mut pkg, reg);
         }
 
         packages.push(pkg);
@@ -809,22 +839,7 @@ pub async fn fetch_and_merge_packages_by_names_impl(
         // IRON CORE ENFORCEMENT
         let key = utils::canonical_merge_key(&pkg.name, pkg.app_id.as_deref());
         if let Some(reg) = registry_pkgs_map.get(&key) {
-            if let Some(dn) = &reg.display_name {
-                if !dn.is_empty() {
-                    pkg.display_name = Some(dn.clone());
-                }
-            }
-            let reg_is_rich = reg
-                .icon
-                .as_deref()
-                .map(|i| i.starts_with("http") || i.starts_with("data:"))
-                .unwrap_or(false);
-            if reg_is_rich || pkg.icon.is_none() {
-                pkg.icon = reg.icon.clone();
-            }
-            if let Some(id) = &reg.app_id {
-                pkg.app_id = Some(id.clone());
-            }
+            apply_registry_backfill(&mut pkg, reg);
         }
 
         packages.push(pkg);
@@ -874,22 +889,7 @@ pub async fn fetch_and_merge_packages_by_names_impl(
             .map(|mut p| {
                 let key = utils::canonical_merge_key(&p.name, p.app_id.as_deref());
                 if let Some(reg) = registry_pkgs_map.get(&key) {
-                    if let Some(dn) = &reg.display_name {
-                        if !dn.is_empty() {
-                            p.display_name = Some(dn.clone());
-                        }
-                    }
-                    let reg_is_rich = reg
-                        .icon
-                        .as_deref()
-                        .map(|i| i.starts_with("http") || i.starts_with("data:"))
-                        .unwrap_or(false);
-                    if reg_is_rich || p.icon.is_none() {
-                        p.icon = reg.icon.clone();
-                    }
-                    if let Some(id) = &reg.app_id {
-                        p.app_id = Some(id.clone());
-                    }
+                    apply_registry_backfill(&mut p, reg);
                 }
                 p
             })
@@ -923,6 +923,11 @@ pub async fn fetch_and_merge_packages_by_names_impl(
 
     // 5. Final Deduplication Merge
     packages = deduplicate_and_merge_packages(packages);
+
+    // 5b. Final Local Enrichment (Ensures Flatpaks get enriched if they match local AppStream IDs)
+    if let Ok(loader) = state_meta.loader.lock() {
+        enrich_with_local_metadata(&mut packages, &loader);
+    }
 
     // 6. Enrich with ODRS Ratings
     enrich_packages_ratings(&mut packages).await;
@@ -1139,7 +1144,7 @@ pub fn deduplicate_and_merge_packages(packages: Vec<models::Package>) -> Vec<mod
             existing.installed_sources = Some(inst_sources);
 
             // Priority: Prefer the Installed instance as the base (preserves local data/paths)
-            // But MERGE the rich metadata (icons, display names) from the other if yours is generic.
+            // But MERGE the rich metadata (icons, display names, screenshots, long descriptions) from the other if yours is generic.
             if p.installed {
                 // p is installed (e.g. AUR). existing might be Flatpak with better metadata.
                 // Pull rich metadata from existing into p before p overwrites existing.
@@ -1166,6 +1171,31 @@ pub fn deduplicate_and_merge_packages(packages: Vec<models::Package>) -> Vec<mod
                     p.app_id = existing.app_id.clone();
                 }
 
+                // Screenshots: if p has none or empty, take existing
+                if p.screenshots.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                    && !existing
+                        .screenshots
+                        .as_ref()
+                        .map(|s| s.is_empty())
+                        .unwrap_or(true)
+                {
+                    p.screenshots = existing.screenshots.clone();
+                }
+
+                // Long Description: if p has none or empty, take existing
+                if p.long_description
+                    .as_ref()
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true)
+                    && !existing
+                        .long_description
+                        .as_ref()
+                        .map(|s| s.is_empty())
+                        .unwrap_or(true)
+                {
+                    p.long_description = existing.long_description.clone();
+                }
+
                 *existing = p;
             } else {
                 // p is not installed. Existing might be.
@@ -1180,6 +1210,32 @@ pub fn deduplicate_and_merge_packages(packages: Vec<models::Package>) -> Vec<mod
                     || (existing.description.len() < 20 && p.description.len() > 20)
                 {
                     existing.description = p.description.clone();
+                }
+
+                // Screenshots
+                if (existing
+                    .screenshots
+                    .as_ref()
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true))
+                    && !p.screenshots.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                {
+                    existing.screenshots = p.screenshots.clone();
+                }
+
+                // Long Description
+                if (existing
+                    .long_description
+                    .as_ref()
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true))
+                    && !p
+                        .long_description
+                        .as_ref()
+                        .map(|s| s.is_empty())
+                        .unwrap_or(true)
+                {
+                    existing.long_description = p.long_description.clone();
                 }
 
                 if (existing

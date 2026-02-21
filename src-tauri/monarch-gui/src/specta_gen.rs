@@ -107,6 +107,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::commands::package::fetch_pkgbuild,
         crate::commands::package::get_installed_packages,
         crate::commands::package::check_for_updates,
+        crate::commands::package::get_flatpak_permissions,
         // Update Commands
         crate::commands::update::get_system_update_command,
         crate::commands::update::perform_system_update,

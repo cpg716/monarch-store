@@ -736,7 +736,7 @@ function App() {
           mode={activeInstall.mode}
           onClose={() => setActiveInstall(null)}
           onSuccess={() => {
-            // Global refresh logic if needed
+            // Modal stays open so the user can click 'Launch' or 'Done'
           }}
         />
       )}

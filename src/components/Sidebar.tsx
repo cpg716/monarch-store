@@ -69,7 +69,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                             MonARCH
                             <span className="text-[10px] bg-accent/20 text-accent px-1.5 py-0.5 rounded font-black tracking-widest uppercase">PRO</span>
                         </span>
-                        <span className="text-[9px] font-bold text-app-muted uppercase tracking-widest truncate">Alpha Core v0.4.6</span>
+                        <span className="text-[9px] font-bold text-app-muted uppercase tracking-widest truncate">Alpha Core v0.4.7</span>
                     </motion.div>
                 )}
             </div>
@@ -114,14 +114,24 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                                 </motion.div>
                             )}
 
-                            {/* Badge */}
+                            {/* Badge with source breakdown tooltip */}
                             {tab.badge != null && tab.badge > 0 && (
-                                <div className={clsx(
-                                    "bg-red-500 text-white rounded-full flex items-center justify-center font-black",
-                                    isExpanded
-                                        ? "px-2 py-0.5 text-[10px] min-w-[20px]"
-                                        : "absolute top-2 right-2 w-4 h-4 text-[8px] border-2 border-app-sidebar"
-                                )}>
+                                <div
+                                    className={clsx(
+                                        "bg-red-500 text-white rounded-full flex items-center justify-center font-black",
+                                        isExpanded
+                                            ? "px-2 py-0.5 text-[10px] min-w-[20px]"
+                                            : "absolute top-2 right-2 w-4 h-4 text-[8px] border-2 border-app-sidebar"
+                                    )}
+                                    title={tab.id === 'updates' && pendingUpdates.total > 0
+                                        ? [
+                                            pendingUpdates.repo > 0 ? `${pendingUpdates.repo} Repo` : '',
+                                            pendingUpdates.aur > 0 ? `${pendingUpdates.aur} AUR` : '',
+                                            pendingUpdates.flatpak > 0 ? `${pendingUpdates.flatpak} Flatpak` : '',
+                                        ].filter(Boolean).join(' · ')
+                                        : undefined
+                                    }
+                                >
                                     {tab.badge}
                                 </div>
                             )}

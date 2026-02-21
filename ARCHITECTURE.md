@@ -1,7 +1,6 @@
-# 🏗️ MonARCH Store Architecture
-
-**Current Version:** v0.4.6-alpha  
-**Last updated:** 2026-02-14
+# MonARCH Store Architecture & Design
+**Current version:** v0.4.7-alpha  
+**Last updated:** 2026-02-21
 
 ## Core Philosophy: "Host-Adaptive & Dumb View"
 

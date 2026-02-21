@@ -93,9 +93,6 @@ async fn run_system_update_impl(
     include_flatpak: bool,
     parallel_downloads: Option<u32>,
 ) -> Result<String, String> {
-    // Acquire global lock to prevent concurrent pacman operations
-    let _guard = crate::utils::PRIVILEGED_LOCK.lock().await;
-
     // Phase 1: Sanity Check (Ping)
     let _ = app.emit("update-status", "Checking connectivity...");
 
@@ -165,7 +162,9 @@ async fn run_system_update_impl(
                         &format!("CRITICAL: System update failed: {}", msg.message),
                     );
                 } else {
-                    let _ = app.emit("install-output", &msg.message);
+                    if !msg.is_structured {
+                        let _ = app.emit("install-output", &msg.message);
+                    }
                 }
 
                 let phase = if msg.message.to_lowercase().contains("sync")
@@ -562,6 +561,54 @@ pub async fn apply_updates(
     }
     let one_click = state_repo.inner().is_one_click_enabled().await;
     log::info!("Applying {} updates...", targets.len());
+
+    // --- Transaction Manifest: emit summary for frontend hard-gate confirmation ---
+    {
+        let repo_items: Vec<&str> = targets
+            .iter()
+            .filter(|t| t.source.source_type == "repo")
+            .map(|t| t.name.as_str())
+            .collect();
+        let aur_items: Vec<&str> = targets
+            .iter()
+            .filter(|t| t.source.source_type == "aur")
+            .map(|t| t.name.as_str())
+            .collect();
+        let flatpak_items: Vec<&str> = targets
+            .iter()
+            .filter(|t| t.source.source_type == "flatpak")
+            .map(|t| t.name.as_str())
+            .collect();
+
+        #[derive(serde::Serialize, Clone)]
+        struct UpdateManifest {
+            total: usize,
+            repo_count: usize,
+            aur_count: usize,
+            flatpak_count: usize,
+            repo_packages: Vec<String>,
+            aur_packages: Vec<String>,
+            flatpak_packages: Vec<String>,
+        }
+
+        let manifest = UpdateManifest {
+            total: targets.len(),
+            repo_count: repo_items.len(),
+            aur_count: aur_items.len(),
+            flatpak_count: flatpak_items.len(),
+            repo_packages: repo_items.iter().map(|s| s.to_string()).collect(),
+            aur_packages: aur_items.iter().map(|s| s.to_string()).collect(),
+            flatpak_packages: flatpak_items.iter().map(|s| s.to_string()).collect(),
+        };
+
+        let _ = app.emit("update-manifest", &manifest);
+        log::info!(
+            "Manifest: {} repo, {} AUR, {} Flatpak",
+            manifest.repo_count,
+            manifest.aur_count,
+            manifest.flatpak_count
+        );
+    }
 
     // Phase 4: Safety Lock
     // If ANY official package is selected, we MUST do a full system upgrade.

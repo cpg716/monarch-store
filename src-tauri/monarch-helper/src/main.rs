@@ -373,6 +373,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // We keep the original stdout as 'ipc_pipe' for progress updates.
     let ipc_pipe = redirect_streams()?;
     progress::init(ipc_pipe);
+    emit_progress(0, "Initializing system engine...");
 
     if let Some(uid) = calling_uid() {
         logger::info(&format!("monarch-helper starting (invoker UID={})", uid));
@@ -411,12 +412,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Question::Corrupted(mut q) => q.set_remove(true),
     });
 
-    // Set log callback to suppress noise (set_log_cb(data, FnMut(LogLevel, &str, &mut T))
-    alpm.set_log_cb((), |level, msg, _: &mut ()| {
-        if level.bits() >= alpm::LogLevel::WARNING.bits() {
-            logger::warn(&format!("[ALPM {:?}] {}", level, msg));
-        }
+    alpm.set_question_cb((), |question, _: &mut ()| match question.question() {
+        alpm::Question::InstallIgnorepkg(mut q) => q.set_install(true),
+        alpm::Question::Replace(q) => q.set_replace(true),
+        alpm::Question::SelectProvider(mut q) => q.set_index(0),
+        alpm::Question::RemovePkgs(mut q) => q.set_skip(false),
+        alpm::Question::Conflict(mut q) => q.set_remove(false),
+        alpm::Question::Corrupted(mut q) => q.set_remove(true),
+        alpm::Question::ImportKey(mut q) => q.set_import(true),
     });
+
+    // BUGFIX: bypassing alpm-rs to handle NULL messages from libalpm directly.
+    unsafe extern "C" fn safe_log_cb(
+        _ctx: *mut std::ffi::c_void,
+        level: alpm_sys::alpm_loglevel_t,
+        fmt: *const std::ffi::c_char,
+        _args: *mut alpm_sys::__va_list_tag,
+    ) {
+        if fmt.is_null() {
+            return;
+        }
+        let level_rs = alpm::LogLevel::from_bits_truncate(level as u32);
+        if level_rs.bits() >= alpm::LogLevel::WARNING.bits() {
+            // We don't format the variadic args for now to keep it simple and safe.
+            // Just logging the format string is usually enough for fatal ALPM errors.
+            let msg_str = std::ffi::CStr::from_ptr(fmt)
+                .to_str()
+                .unwrap_or("unknown alpm message");
+            logger::warn(&format!("[ALPM {:?}] {}", level_rs, msg_str));
+        }
+    }
+
+    unsafe {
+        alpm_sys::alpm_option_set_logcb(
+            alpm.as_alpm_handle_t(),
+            Some(safe_log_cb),
+            std::ptr::null_mut(),
+        );
+    }
 
     // Improved Repository Registration: Use pacman-conf to get accurate DB locations and servers
     if let Err(e) = register_repositories(&mut alpm) {
@@ -1051,7 +1084,7 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             // 0b. Set Performance Options
             if let Some(count) = manifest.parallel_downloads {
                 if count > 0 {
-                    let _ = alpm.set_parallel_downloads(count);
+                    alpm.set_parallel_downloads(count);
                     logger::info(&format!("ParallelDownloads set to {} from manifest", count));
                 }
             }
@@ -1099,17 +1132,7 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 }
             }
 
-            // 3b. Remove Orphans
-            if manifest.remove_orphans {
-                let orphans = transactions::find_orphans(alpm);
-                if !orphans.is_empty() {
-                    emit_progress(30, &format!("Removing {} orphans...", orphans.len()));
-                    if let Err(e) = transactions::execute_alpm_uninstall(orphans, true, alpm) {
-                        emit_progress(0, &format!("Error removing orphans: {}", e));
-                        return;
-                    }
-                }
-            }
+            // Orphan cleanup moved to the end of the transaction
 
             // 4. Install Targets (Repo + Local)
             // Note: ALPM allows installing repo pkgs and local files in one transaction?
@@ -1157,6 +1180,44 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             } else {
                 emit_progress(100, "Batch Transaction Complete");
             }
+
+            // --- BACKGROUND TASKS: Run after 100% emission so the UI can wrap up ---
+
+            // Orphan cleanup (if requested)
+            if manifest.remove_orphans {
+                transactions::emit_progress_event(transactions::AlpmProgressEvent {
+                    event_type: "install-finalizing".to_string(),
+                    package: None,
+                    percent: Some(100),
+                    downloaded: None,
+                    total: None,
+                    message: "Running post-install housekeeping...".to_string(),
+                });
+
+                let orphans = transactions::find_orphans(alpm);
+                if !orphans.is_empty() {
+                    logger::info(&format!("Removing {} orphans...", orphans.len()));
+                    // Send a trace to the UI log but don't reset the progress bar
+                    transactions::emit_progress_event(transactions::AlpmProgressEvent {
+                        event_type: "log".to_string(),
+                        package: None,
+                        percent: None,
+                        downloaded: None,
+                        total: None,
+                        message: format!("Housekeeping: Removing {} orphans...", orphans.len()),
+                    });
+
+                    if let Err(e) = transactions::execute_alpm_uninstall(orphans, true, alpm) {
+                        logger::warn(&format!(
+                            "Error removing orphans during housekeeping: {}",
+                            e
+                        ));
+                    }
+                }
+
+                // Final completion signal after housekeeping
+                emit_progress(100, "Housekeeping Complete");
+            }
         }
     }
 }
@@ -1193,8 +1254,8 @@ fn remove_syncdbs_with_no_servers(alpm: &mut Alpm) {
 fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
 
-    // 1. Get list of repo names
-    let output = Command::new("pacman-conf").arg("--repo-list").output()?;
+    // 1. Get the entire pacman configuration in one pass
+    let output = Command::new("pacman-conf").output()?;
 
     if !output.status.success() {
         return Err(format!(
@@ -1204,112 +1265,110 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
         .into());
     }
 
-    let repo_list_str = String::from_utf8_lossy(&output.stdout);
-    let repo_names: Vec<&str> = repo_list_str
-        .lines()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let config_str = String::from_utf8_lossy(&output.stdout);
+    let mut current_repo: Option<String> = None;
+    let mut current_servers = Vec::new();
+    let mut current_siglevel = SigLevel::USE_DEFAULT;
+    let mut current_usage = alpm::Usage::ALL;
 
-    emit_progress(
-        5,
-        &format!("Detected {} system repositories.", repo_names.len()),
-    );
+    let mut repos = Vec::new();
 
-    for repo_name in repo_names {
-        logger::trace(&format!("Querying details for repo: {}", repo_name));
-        // 2. Get details for each repo
-        let details_out = Command::new("pacman-conf")
-            .arg("--repo")
-            .arg(repo_name)
-            .output()?;
-
-        if !details_out.status.success() {
-            logger::warn(&format!("Failed to get details for repo '{}'", repo_name));
+    for line in config_str.lines() {
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
 
-        let details_str = String::from_utf8_lossy(&details_out.stdout);
-        let mut servers = Vec::new();
-        let mut siglevel = SigLevel::USE_DEFAULT;
-        let mut usage = alpm::Usage::ALL;
+        if line.starts_with('[') && line.ends_with(']') {
+            // New section
+            let section_name = &line[1..line.len() - 1];
 
-        for line in details_str.lines() {
-            let line = line.trim();
-            if line.contains("Server = ") || line.contains("Server=") {
-                let val = if line.contains("Server = ") {
-                    line.split_once("Server = ").map(|x| x.1).unwrap_or("")
-                } else {
-                    line.split_once("Server=").map(|x| x.1).unwrap_or("")
+            // If we were parsing a repo, save it
+            if let Some(name) = current_repo.take() {
+                if name != "options" {
+                    repos.push((name, current_servers, current_siglevel, current_usage));
                 }
-                .trim();
+            }
 
-                let server = val.split('#').next().unwrap_or(val).trim();
-                if !server.is_empty() {
-                    servers.push(server.to_string());
-                }
-            } else if line.contains("SigLevel = ") || line.contains("SigLevel=") {
-                let val = if line.contains("SigLevel = ") {
-                    line.split_once("SigLevel = ").map(|x| x.1).unwrap_or("")
-                } else {
-                    line.split_once("SigLevel=").map(|x| x.1).unwrap_or("")
-                }
-                .trim();
-                let val_lower = val.to_lowercase();
-                if val_lower.contains("never") {
-                    siglevel = SigLevel::NONE;
-                } else if val_lower.contains("taroptional") || val_lower.contains("packageoptional")
-                {
-                    siglevel = SigLevel::PACKAGE_OPTIONAL;
-                } else if val_lower.contains("required") {
-                    siglevel = SigLevel::USE_DEFAULT;
-                }
-            } else if line.contains("Usage = ") || line.contains("Usage=") {
-                let val = if line.contains("Usage = ") {
-                    line.split_once("Usage = ").map(|x| x.1).unwrap_or("")
-                } else {
-                    line.split_once("Usage=").map(|x| x.1).unwrap_or("")
-                }
-                .trim();
+            // Reset for new repo
+            current_repo = Some(section_name.to_string());
+            current_servers = Vec::new();
+            current_siglevel = SigLevel::USE_DEFAULT;
+            current_usage = alpm::Usage::ALL;
+        } else if current_repo.is_some() {
+            // Options for current repo
+            if line.contains('=') {
+                let (key, val) = line.split_once('=').unwrap_or(("", ""));
+                let key = key.trim();
+                let val = val.trim();
 
-                if val.contains("Sync") {
-                    usage |= alpm::Usage::SYNC;
-                }
-                if val.contains("Search") {
-                    usage |= alpm::Usage::SEARCH;
-                }
-                if val.contains("Install") {
-                    usage |= alpm::Usage::INSTALL;
-                }
-                if val.contains("Upgrade") {
-                    usage |= alpm::Usage::UPGRADE;
-                }
-                if val.contains("All") {
-                    usage = alpm::Usage::ALL;
+                match key {
+                    "Server" => {
+                        let server = val.split('#').next().unwrap_or(val).trim();
+                        if !server.is_empty() {
+                            current_servers.push(server.to_string());
+                        }
+                    }
+                    "SigLevel" => {
+                        let val_lower = val.to_lowercase();
+                        if val_lower.contains("never") {
+                            current_siglevel = SigLevel::NONE;
+                        } else if val_lower.contains("taroptional")
+                            || val_lower.contains("packageoptional")
+                        {
+                            current_siglevel = SigLevel::PACKAGE_OPTIONAL;
+                        } else if val_lower.contains("required") {
+                            current_siglevel = SigLevel::USE_DEFAULT;
+                        }
+                    }
+                    "Usage" => {
+                        let mut usage = alpm::Usage::from_bits_truncate(0);
+                        if val.contains("Sync") {
+                            usage |= alpm::Usage::SYNC;
+                        }
+                        if val.contains("Search") {
+                            usage |= alpm::Usage::SEARCH;
+                        }
+                        if val.contains("Install") {
+                            usage |= alpm::Usage::INSTALL;
+                        }
+                        if val.contains("Upgrade") {
+                            usage |= alpm::Usage::UPGRADE;
+                        }
+                        if val.contains("All") || val.is_empty() {
+                            usage = alpm::Usage::ALL;
+                        }
+                        current_usage = usage;
+                    }
+                    _ => {}
                 }
             }
         }
+    }
+
+    // Final repo
+    if let Some(name) = current_repo {
+        if name != "options" {
+            repos.push((name, current_servers, current_siglevel, current_usage));
+        }
+    }
+
+    let repo_count = repos.len();
+    for (i, (name, servers, siglevel, usage)) in repos.into_iter().enumerate() {
+        // Pulse progress for the UI (5-10% range)
+        let pct = 5 + ((i as f32 / repo_count as f32) * 5.0) as u32;
+        emit_progress(pct, &format!("Readying repository: {}...", name));
 
         if !servers.is_empty() {
-            emit_progress(
-                5,
-                &format!(
-                    "Registering {} ({} mirrors found)...",
-                    repo_name,
-                    servers.len()
-                ),
-            );
-
             // Register or find existing
-            let already_exists = alpm.syncdbs().iter().any(|db| db.name() == repo_name);
+            let already_exists = alpm.syncdbs().iter().any(|db| db.name() == name);
             if !already_exists {
-                let _ = alpm.register_syncdb(repo_name.to_string(), siglevel)?;
+                let _ = alpm.register_syncdb(name.clone(), siglevel)?;
             }
 
-            // We still need to find it mutably after registration to add servers/usage
-            // because of borrow checker constraints in a loop.
+            // Set usage and servers
             for db in alpm.syncdbs_mut() {
-                if db.name() == repo_name {
+                if db.name() == name {
                     let _ = db.set_usage(usage);
                     for server in servers {
                         let _ = db.add_server(server);
@@ -1318,11 +1377,7 @@ fn register_repositories(alpm: &mut Alpm) -> Result<(), Box<dyn std::error::Erro
                 }
             }
         } else {
-            emit_progress(
-                5,
-                &format!("Warning: No mirrors found for repository '{}'.", repo_name),
-            );
-            logger::warn(&format!("No servers found for repo: {}", repo_name));
+            logger::warn(&format!("No servers found for repo: {}", name));
         }
     }
 

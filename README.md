@@ -3,8 +3,8 @@
 
 **Author:** [cpg716](https://github.com/cpg716) — developer and creator of MonARCH Store, with the help of AI coding tools.
 
-**Current Version:** v0.4.6-alpha  
-**Last updated:** 2026-02-14
+**Current Version:** v0.4.7-alpha  
+**Last updated:** 2026-02-21
 
 ## ⚠️ Alpha Disclaimer
 

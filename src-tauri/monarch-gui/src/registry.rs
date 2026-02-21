@@ -113,11 +113,17 @@ impl RegistryManager {
                 license TEXT,
                 url TEXT,
                 is_featured BOOLEAN,
-                last_updated INTEGER
+                last_updated INTEGER,
+                long_description TEXT,
+                screenshots TEXT
             )",
             [],
         )
         .expect("Failed to create packages table");
+
+        // Migrations: Add new columns if they don't exist
+        let _ = conn.execute("ALTER TABLE packages ADD COLUMN long_description TEXT", []);
+        let _ = conn.execute("ALTER TABLE packages ADD COLUMN screenshots TEXT", []);
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS package_sources (
@@ -209,12 +215,15 @@ impl RegistryManager {
                     "INSERT INTO packages (
                         canonical_id, name, display_name, description, version, 
                         app_id, icon, installed, last_modified, maintainer, 
-                        license, url, is_featured, last_updated
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                        license, url, is_featured, last_updated, long_description,
+                        screenshots
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                     ON CONFLICT(canonical_id) DO UPDATE SET
                         display_name = CASE WHEN excluded.display_name IS NOT NULL AND excluded.display_name != '' THEN excluded.display_name ELSE display_name END,
                         description = CASE WHEN excluded.description != '' THEN excluded.description ELSE description END,
                         icon = CASE WHEN excluded.icon IS NOT NULL AND excluded.icon != '' THEN excluded.icon ELSE icon END,
+                        long_description = CASE WHEN excluded.long_description IS NOT NULL AND excluded.long_description != '' THEN excluded.long_description ELSE long_description END,
+                        screenshots = CASE WHEN excluded.screenshots IS NOT NULL AND excluded.screenshots != '' THEN excluded.screenshots ELSE screenshots END,
                         last_updated = excluded.last_updated",
                 ).map_err(|e| e.to_string())?;
 
@@ -255,7 +264,11 @@ impl RegistryManager {
                             pkg.license.as_ref().map(|l| l.join(",")),
                             pkg.url,
                             pkg.is_featured,
-                            now
+                            now,
+                            pkg.long_description,
+                            pkg.screenshots
+                                .as_ref()
+                                .and_then(|s| serde_json::to_string(s).ok())
                         ])
                         .map_err(|e| e.to_string())?;
 
@@ -319,12 +332,15 @@ impl RegistryManager {
                     "INSERT INTO packages (
                         canonical_id, name, display_name, description, version, 
                         app_id, icon, installed, last_modified, maintainer, 
-                        license, url, is_featured, last_updated
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                        license, url, is_featured, last_updated, long_description,
+                        screenshots
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                     ON CONFLICT(canonical_id) DO UPDATE SET
                         display_name = CASE WHEN excluded.display_name IS NOT NULL AND excluded.display_name != '' THEN excluded.display_name ELSE display_name END,
                         description = CASE WHEN excluded.description != '' THEN excluded.description ELSE description END,
                         icon = CASE WHEN excluded.icon IS NOT NULL AND excluded.icon != '' THEN excluded.icon ELSE icon END,
+                        long_description = CASE WHEN excluded.long_description IS NOT NULL AND excluded.long_description != '' THEN excluded.long_description ELSE long_description END,
+                        screenshots = CASE WHEN excluded.screenshots IS NOT NULL AND excluded.screenshots != '' THEN excluded.screenshots ELSE screenshots END,
                         last_updated = excluded.last_updated",
                 ).map_err(|e| e.to_string())?;
 
@@ -366,7 +382,11 @@ impl RegistryManager {
                             pkg.license.as_ref().map(|l| l.join(",")),
                             pkg.url,
                             pkg.is_featured,
-                            now
+                            now,
+                            pkg.long_description,
+                            pkg.screenshots
+                                .as_ref()
+                                .and_then(|s| serde_json::to_string(s).ok())
                         ])
                         .map_err(|e| e.to_string())?;
 
@@ -488,7 +508,7 @@ impl RegistryManager {
         let sql = format!(
             "SELECT p.canonical_id, p.name, p.display_name, p.description, p.version, 
                     p.app_id, p.icon, p.installed, p.last_modified, p.maintainer, 
-                    p.license, p.url, p.is_featured
+                    p.license, p.url, p.is_featured, p.long_description, p.screenshots
              FROM packages p
              JOIN package_categories pc ON p.canonical_id = pc.canonical_id
              WHERE pc.category IN ({})
@@ -528,6 +548,10 @@ impl RegistryManager {
                     license,
                     url: row.get(11)?,
                     is_featured: row.get(12)?,
+                    long_description: row.get(13)?,
+                    screenshots: row
+                        .get::<_, Option<String>>(14)?
+                        .and_then(|s| serde_json::from_str(&s).ok()),
                     ..Default::default()
                 })
             })
@@ -577,7 +601,7 @@ impl RegistryManager {
             .prepare(
                 "SELECT canonical_id, name, display_name, description, version, 
                     app_id, icon, installed, last_modified, maintainer, 
-                    license, url, is_featured
+                    license, url, is_featured, long_description, screenshots
              FROM packages WHERE canonical_id = ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -601,6 +625,10 @@ impl RegistryManager {
                     license,
                     url: row.get(11)?,
                     is_featured: row.get(12)?,
+                    long_description: row.get(13)?,
+                    screenshots: row
+                        .get::<_, Option<String>>(14)?
+                        .and_then(|s| serde_json::from_str(&s).ok()),
                     ..Default::default()
                 })
             })
@@ -648,7 +676,7 @@ impl RegistryManager {
             .prepare(
                 "SELECT canonical_id, name, display_name, description, version, 
                     app_id, icon, installed, last_modified, maintainer, 
-                    license, url, is_featured
+                    license, url, is_featured, long_description, screenshots
              FROM packages WHERE canonical_id = ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -683,6 +711,10 @@ impl RegistryManager {
                         license,
                         url: row.get(11)?,
                         is_featured: row.get(12)?,
+                        long_description: row.get(13)?,
+                        screenshots: row
+                            .get::<_, Option<String>>(14)?
+                            .and_then(|s| serde_json::from_str(&s).ok()),
                         ..Default::default()
                     })
                 })
@@ -722,7 +754,7 @@ impl RegistryManager {
             .prepare(
                 "SELECT canonical_id, name, display_name, description, version, 
                     app_id, icon, installed, last_modified, maintainer, 
-                    license, url, is_featured
+                    license, url, is_featured, long_description, screenshots
              FROM packages 
              WHERE name LIKE ?1 OR display_name LIKE ?1 OR description LIKE ?1 OR app_id LIKE ?1
              ORDER BY 
@@ -754,6 +786,10 @@ impl RegistryManager {
                     license,
                     url: row.get(11)?,
                     is_featured: row.get(12)?,
+                    long_description: row.get(13)?,
+                    screenshots: row
+                        .get::<_, Option<String>>(14)?
+                        .and_then(|s| serde_json::from_str(&s).ok()),
                     ..Default::default()
                 })
             })

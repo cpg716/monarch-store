@@ -1,0 +1,544 @@
+    Checking tauri-plugin-aptabase v1.0.0 (/home/chris/Downloads/monarch-store/src-tauri/monarch-gui/plugins/tauri-plugin-aptabase)
+    Checking monarch-helper v0.4.5-alpha (/home/chris/Downloads/monarch-store/src-tauri/monarch-helper)
+    Checking monarch-store v0.4.5-alpha (/home/chris/Downloads/monarch-store/src-tauri/monarch-gui)
+error: `flatten()` will run forever if the iterator repeatedly produces an `Err`
+   --> monarch-helper/src/main.rs:708:42
+    |
+708 | ....lines().flatten() {
+    |             ^^^^^^^^^ help: replace with: `map_while(Result::ok)`
+    |
+note: this expression returning a `std::io::Lines` may produce an infinite number of `Err` in case of a read error
+   --> monarch-helper/src/main.rs:708:21
+    |
+708 | ...ne in stdin.lock().lines().flatte...
+    |          ^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#lines_filter_map_ok
+    = note: `-D clippy::lines-filter-map-ok` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::lines_filter_map_ok)]`
+
+error: could not compile `monarch-helper` (bin "monarch-helper") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: this import is redundant
+ --> monarch-gui/src/flathub_api.rs:2:1
+  |
+2 | use reqwest;
+  | ^^^^^^^^^^^^ help: remove it entirely
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#single_component_path_imports
+  = note: `-D clippy::single-component-path-imports` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(clippy::single_component_path_imports)]`
+
+error: this import is redundant
+ --> monarch-gui/src/flathub_api.rs:4:1
+  |
+4 | use serde_json;
+  | ^^^^^^^^^^^^^^^ help: remove it entirely
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#single_component_path_imports
+
+error: this manual char comparison can be written more succinctly
+  --> monarch-gui/src/alpm_read.rs:31:37
+   |
+31 | ...es(|c: char| c == '=' || c == ' ')
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using an array of `char`: `['=', ' ']`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_pattern_char_comparison
+   = note: `-D clippy::manual-pattern-char-comparison` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::manual_pattern_char_comparison)]`
+
+error: casting to the same type is unnecessary (`u32` -> `u32`)
+  --> monarch-gui/src/aur_api.rs:18:25
+   |
+18 | ...: Some(p.num_votes as u32),
+   |           ^^^^^^^^^^^^^^^^^^ help: try: `p.num_votes`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_cast
+   = note: `-D clippy::unnecessary-cast` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::unnecessary_cast)]`
+
+error: deref which would be done by auto-deref
+   --> monarch-gui/src/commands/package.rs:104:9
+    |
+104 |         &*_state_repo,
+    |         ^^^^^^^^^^^^^ help: try: `&_state_repo`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#explicit_auto_deref
+    = note: `-D clippy::explicit-auto-deref` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::explicit_auto_deref)]`
+
+error: this `if` statement can be collapsed
+   --> monarch-gui/src/commands/package.rs:132:5
+    |
+132 | /     if distro.id == crate::distro_...
+133 | |         if source.id == "chaotic-a...
+134 | |             let msg = "Manjaro Sta...
+135 | |             let _ = app.emit("inst...
+...   |
+139 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+132 ~     if distro.id == crate::distro_context::DistroId::Manjaro
+133 ~         && (source.id == "chaotic-aur" || source.id == "cachyos") {
+134 |             let msg = "Manjaro Stability Guard: Installing pre-built binaries (Chaotic/CachyOS) is blocked on Manjaro to prevent system breakage. Please use the AUR (Native Build) version instead.".to_string();
+...
+137 |             return Err(msg);
+138 ~         }
+    |
+
+error: useless use of `format!`
+   --> monarch-gui/src/commands/package.rs:466:24
+    |
+466 |               return Err(format!(
+    |  ________________________^
+467 | |                 "Sync databases ar...
+468 | |             ));
+    | |_____________^ help: consider using `.to_string()`: `"Sync databases are corrupt (Unrecognized archive format). Use Settings → System Management → Refresh Databases, then retry. If it still fails, run 'sudo pacman -Syy' once.".to_string()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#useless_format
+    = note: `-D clippy::useless-format` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::useless_format)]`
+
+error: this `map_or` can be simplified
+   --> monarch-gui/src/commands/package.rs:818:24
+    |
+818 |                       && line
+    |  ________________________^
+819 | |                         .chars()
+820 | |                         .next()
+821 | |                         .map_or(false, |c| c.is_digit(10) || c.is_whitespace()))
+    | |_______________________________________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_map_or
+    = note: `-D clippy::unnecessary-map-or` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unnecessary_map_or)]`
+help: use is_some_and instead
+    |
+821 -                         .map_or(false, |c| c.is_digit(10) || c.is_whitespace()))
+821 +                         .is_some_and(|c| c.is_digit(10) || c.is_whitespace()))
+    |
+
+error: use of `char::is_digit` with literal radix of 10
+   --> monarch-gui/src/commands/package.rs:821:44
+    |
+821 | ...e, |c| c.is_digit(10) || c.is_whi...
+    |           ^^^^^^^^^^^^^^ help: try: `c.is_ascii_digit()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#is_digit_ascii_radix
+    = note: `-D clippy::is-digit-ascii-radix` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::is_digit_ascii_radix)]`
+
+error: unnecessary map of the identity function
+    --> monarch-gui/src/commands/package.rs:1117:15
+     |
+1117 |           .await
+     |  _______________^
+1118 | |         .map(|b| b)
+     | |___________________^ help: remove the call to `map`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#map_identity
+     = note: `-D clippy::map-identity` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::map_identity)]`
+
+error: unnecessary map of the identity function
+    --> monarch-gui/src/commands/package.rs:1127:15
+     |
+1127 |           .await
+     |  _______________^
+1128 | |         .map(|b| b)
+     | |___________________^ help: remove the call to `map`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#map_identity
+
+error: this function has too many arguments (9/7)
+   --> monarch-gui/src/commands/search.rs:250:1
+    |
+250 | / pub async fn search_packages(
+251 | |     state_repo: State<'_, RepoManager>,
+252 | |     state_chaotic: State<'_, chaotic...
+253 | |     state_flathub: State<'_, Flathub...
+...   |
+259 | |     for_installed_lookup: Option<bool>,
+260 | | ) -> Result<Vec<Package>, String> {
+    | |_________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: called `Iterator::last` on a `DoubleEndedIterator`; this will needlessly iterate the entire iterator
+    --> monarch-gui/src/commands/search.rs:1021:9
+     |
+1021 | /         pkg_lower
+1022 | |             .split('.')
+1023 | |             .last()
+     | |______________-----^
+     |                |
+     |                help: try: `next_back()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#double_ended_iterator_last
+     = note: `-D clippy::double-ended-iterator-last` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::double_ended_iterator_last)]`
+
+error: this function has too many arguments (10/7)
+    --> monarch-gui/src/commands/search.rs:1230:1
+     |
+1230 | / pub async fn get_category_packages_pagina...
+1231 | |     state_meta: State<'_, metadata::Metad...
+1232 | |     state_chaotic: State<'_, chaotic_api:...
+1233 | |     state_repo: State<'_, RepoManager>,
+...    |
+1240 | |     flatpak_enabled: Option<bool>,
+1241 | | ) -> Result<PaginatedResponse, String> {
+     | |______________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this `map_or` can be simplified
+    --> monarch-gui/src/commands/search.rs:1453:24
+     |
+1453 |                       if m.available_sources
+     |  ________________________^
+1454 | |                         .as_ref()
+1455 | |                         .map_or(false, |s| !s.is_empty())
+     | |_________________________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_map_or
+help: use is_some_and instead
+     |
+1455 -                         .map_or(false, |s| !s.is_empty())
+1455 +                         .is_some_and(|s| !s.is_empty())
+     |
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> monarch-gui/src/commands/system.rs:333:34
+    |
+333 | ...ged_script(&script, password, fal...
+    |               ^^^^^^^ help: change this to: `script`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_borrow
+    = note: `-D clippy::needless-borrow` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
+
+error: found call to `str::trim` before `str::split_whitespace`
+   --> monarch-gui/src/commands/system.rs:660:61
+    |
+660 | ...= size_str.trim().split_whitespac...
+    |               ^^^^^^^ help: remove `trim()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#trim_split_whitespace
+    = note: `-D clippy::trim-split-whitespace` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::trim_split_whitespace)]`
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> monarch-gui/src/commands/system.rs:884:34
+    |
+884 | ...ged_script(&script, password, fal...
+    |               ^^^^^^^ help: change this to: `script`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_borrow
+
+error: this `if` has identical blocks
+   --> monarch-gui/src/commands/update.rs:152:17
+    |
+152 | /                 {
+153 | |                     "upgrade"
+154 | |                 } else {
+    | |_________________^
+    |
+note: same as this
+   --> monarch-gui/src/commands/update.rs:154:24
+    |
+154 |                   } else {
+    |  ________________________^
+155 | |                     "upgrade"
+156 | |                 };
+    | |_________________^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#if_same_then_else
+    = note: `-D clippy::if-same-then-else` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::if_same_then_else)]`
+
+error: this `impl` can be derived
+  --> monarch-gui/src/discovery_manager.rs:40:1
+   |
+40 | / impl Default for DiscoveryCache {
+41 | |     fn default() -> Self {
+42 | |         Self {
+43 | |             aur_packages: Vec::new(),
+...  |
+48 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#derivable_impls
+   = note: `-D clippy::derivable-impls` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::derivable_impls)]`
+help: replace the manual implementation with a derive attribute
+   |
+24 + #[derive(Default)]
+25 | pub struct DiscoveryCache {
+   |
+
+error: match can be simplified with `.unwrap_or_default()`
+   --> monarch-gui/src/discovery_manager.rs:165:21
+    |
+165 |           let cache = match load_cac...
+    |  _____________________^
+166 | |             Some(c) => c,
+167 | |             None => DiscoveryCache...
+168 | |         };
+    | |_________^ help: replace it with: `load_cache_from_disk().unwrap_or_default()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_unwrap_or_default
+    = note: `-D clippy::manual-unwrap-or-default` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_unwrap_or_default)]`
+
+error: manual implementation of `Option::map`
+   --> monarch-gui/src/flathub_api.rs:382:13
+    |
+382 | /             if let Some(cached_opt...
+383 | |                 // Clone the inner...
+384 | |                 Some(cached_opt.cl...
+385 | |             } else {
+386 | |                 None // Not in cache
+387 | |             }
+    | |_____________^ help: try: `map_cache.get(pkg_name).map(|cached_opt| cached_opt.clone())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_map
+    = note: `-D clippy::manual-map` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_map)]`
+
+error: returning the result of a `let` binding from a block
+   --> monarch-gui/src/helper_client.rs:150:9
+    |
+138 | /         let wait = if let Some(pre...
+139 | |             let elapsed = prev.ela...
+140 | |             if elapsed < constants...
+141 | |                 Some(constants::HE...
+...   |
+148 | |             None
+149 | |         };
+    | |__________- unnecessary `let` binding
+150 |           wait
+    |           ^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#let_and_return
+    = note: `-D clippy::let-and-return` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::let_and_return)]`
+help: return the expression directly
+    |
+138 ~         
+139 ~         if let Some(prev) = *guard {
+140 +             let elapsed = prev.elapsed();
+141 +             if elapsed < constants::HELPER_DEBOUNCE {
+142 +                 Some(constants::HELPER_DEBOUNCE - elapsed)
+143 +             } else {
+144 +                 *guard = Some(now);
+145 +                 None
+146 +             }
+147 +         } else {
+148 +             *guard = Some(now);
+149 +             None
+150 +         }
+    |
+
+error: usage of `contains_key` followed by `insert` on a `HashMap`
+   --> monarch-gui/src/metadata.rs:134:13
+    |
+134 | /             if !pkg_idx.contains_k...
+135 | |                 pkg_idx.insert(app...
+136 | |             }
+    | |_____________^ help: try: `pkg_idx.entry(app_id_lower).or_insert_with(|| meta.clone());`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#map_entry
+    = note: `-D clippy::map-entry` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::map_entry)]`
+
+error: called `Iterator::last` on a `DoubleEndedIterator`; this will needlessly iterate the entire iterator
+   --> monarch-gui/src/metadata.rs:255:29
+    |
+255 | ... = input_lower.split('.').last() {
+    |       ^^^^^^^^^^^^^^^^^^^^^^^------
+    |                              |
+    |                              help: try: `next_back()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#double_ended_iterator_last
+
+error: this `if` branch is empty
+   --> monarch-gui/src/metadata.rs:554:9
+    |
+554 | /         if component
+555 | |             .pkgname
+556 | |             .clone()
+557 | |             .unwrap_or_default()
+558 | |             .contains("gimp")
+559 | |         {}
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_ifs
+    = note: `-D clippy::needless-ifs` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_ifs)]`
+help: you can remove it
+    |
+554 ~         component
+555 +             .pkgname
+556 +             .clone()
+557 +             .unwrap_or_default()
+558 +             .contains("gimp");
+    |
+
+error: writing `&PathBuf` instead of `&Path` involves a new object where a slice will do
+   --> monarch-gui/src/metadata.rs:648:15
+    |
+648 |     base_dir: &PathBuf,
+    |               ^^^^^^^^ help: change this to: `&Path`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#ptr_arg
+    = note: `-D clippy::ptr-arg` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::ptr_arg)]`
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> monarch-gui/src/metadata.rs:878:17
+    |
+878 |                 &state,
+    |                 ^^^^^^ help: change this to: `state`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_borrow
+
+error: this `if` statement can be collapsed
+   --> monarch-gui/src/metadata.rs:979:13
+    |
+979 | / ...   if base.description.is_none()
+980 | | ...       || base
+981 | | ...           .description
+982 | | ...           .as_ref()
+...   |
+989 | | ...   }
+    | |_______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+979 ~             if (base.description.is_none()
+980 |                 || base
+...
+983 |                     .map(|d| d.len() < 50)
+984 ~                     .unwrap_or(false)
+985 ~                     .unwrap_or(false))
+986 |             {
+987 ~                 && enriched.description.is_some() {
+988 |                     base.description = enriched.description;
+989 ~                 }
+    |
+
+error: redundant pattern matching, consider using `is_some()`
+   --> monarch-gui/src/repair.rs:696:15
+    |
+696 |     while let Some(_) = rx.recv().await {}
+    |     ----------^^^^^^^------------------ help: try: `while rx.recv().await.is_some()`
+    |
+    = note: this will change drop order of the result, as well as all temporaries
+    = note: add `#[allow(clippy::redundant_pattern_matching)]` if this is important
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#redundant_pattern_matching
+    = note: `-D clippy::redundant-pattern-matching` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::redundant_pattern_matching)]`
+
+error: this `if` branch is empty
+   --> monarch-gui/src/repo_db.rs:164:13
+    |
+164 |             if i > 0 {}
+    |             ^^^^^^^^^^^ help: you can remove it: `i > 0;`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_ifs
+
+error: you seem to be trying to use `match` for destructuring a single pattern. Consider using `if let`
+   --> monarch-gui/src/repo_manager.rs:468:13
+    |
+468 | / ...   match handle.await {
+469 | | ...       Ok(Ok((name, pkgs))) => {
+470 | | ...           let mut cache = self...
+471 | | ...           let val = if pkgs.le...
+...   |
+475 | | ...       _ => {}
+476 | | ...   }
+    | |_______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#single_match
+    = note: `-D clippy::single-match` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::single_match)]`
+help: try
+    |
+468 ~             if let Ok(Ok((name, pkgs))) = handle.await {
+469 +                 let mut cache = self.cache.write().await;
+470 +                 let val = if pkgs.len() > 0 { pkgs } else { Vec::new() };
+471 +                 cache.insert(name.clone(), val);
+472 +                 results.push(format!("Synced {} from {}", 0, name)); // Simplified logging
+473 +             }
+    |
+
+error: length comparison to zero
+   --> monarch-gui/src/repo_manager.rs:471:34
+    |
+471 | ...l = if pkgs.len() > 0 { pkgs } el...
+    |           ^^^^^^^^^^^^^^ help: using `!is_empty` is clearer and more explicit: `!pkgs.is_empty()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#len_zero
+    = note: `-D clippy::len-zero` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::len_zero)]`
+
+error: redundant pattern matching, consider using `is_some()`
+   --> monarch-gui/src/repo_manager.rs:551:19
+    |
+551 | ...   while let Some(_) = rx.recv().await {}
+    |       ----------^^^^^^^------------------ help: try: `while rx.recv().await.is_some()`
+    |
+    = note: this will change drop order of the result, as well as all temporaries
+    = note: add `#[allow(clippy::redundant_pattern_matching)]` if this is important
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#redundant_pattern_matching
+
+error: casting to the same type is unnecessary (`u8` -> `u8`)
+   --> monarch-gui/src/utils.rs:193:17
+    |
+193 | ... + (pkg.source.priority() as u8)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `pkg.source.priority()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_cast
+
+error: casting to the same type is unnecessary (`u8` -> `u8`)
+   --> monarch-gui/src/utils.rs:204:22
+    |
+204 | ... = a.source.priority() as u8;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `a.source.priority()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_cast
+
+error: casting to the same type is unnecessary (`u8` -> `u8`)
+   --> monarch-gui/src/utils.rs:205:22
+    |
+205 | ... = b.source.priority() as u8;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `b.source.priority()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_cast
+
+error: called `Iterator::last` on a `DoubleEndedIterator`; this will needlessly iterate the entire iterator
+   --> monarch-gui/src/utils.rs:396:33
+    |
+396 | ... = id_trim.split('.').last() {
+    |       ^^^^^^^^^^^^^^^^^^^------
+    |                          |
+    |                          help: try: `next_back()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#double_ended_iterator_last
+
+error: redundant pattern matching, consider using `is_some()`
+   --> monarch-gui/src/utils.rs:673:34
+    |
+673 | ... = if let Some(_) = &password {
+    |       -------^^^^^^^------------ help: try: `if password.is_some()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#redundant_pattern_matching
+
+error: could not compile `monarch-store` (lib) due to 39 previous errors

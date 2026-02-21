@@ -1,13 +1,19 @@
 # Release Notes
 
-**Current version:** v0.4.6-alpha  
-**Last doc update:** 2026-02-14
+**Current version:** v0.4.7-alpha  
+**Last doc update:** 2026-02-21
 
 ---
 
 # Monarch Store Release Notes
 
-## Latest (v0.4.6-alpha) — The Iron Core Purge
+## Latest (v0.4.7-alpha) — Rich Metadata & Enrichment Fixes
+*   **Rich Metadata Merging (2026-02-21):** Enhanced the aggregation logic to correctly merge `screenshots` and `long_description` fields across Repo, Flatpak, and AUR variants. Installed packages now correctly inherit missing rich metadata from available alternative sources.
+*   **Flathub API Tuning:** Increased Flathub enrichment timeouts to 5 seconds and added logging to improve resilience and diagnosability of metadata fetching.
+*   **Registry Support:** Upgraded the `RegistryManager` with a schema migration to support `long_description` and `screenshots`, ensuring rich metadata is persisted locally.
+*   **Secondary Enrichment Pass:** Implemented a second pass of local AppStream enrichment for search and discovery views to guarantee high-quality metadata for all variants.
+
+## v0.4.6-alpha (2026-02-14) — The Iron Core Purge
 *   **Iron Core Purge (2026-02-14):** Fully offloaded metadata hydration (icons, descriptions, screenshots, ratings) to the Rust backend. The frontend is now a **Dumb View** that relies on fully-enriched ViewModels provided by the backend.
 *   **Initialization Fix:** Resolved the "Initializing system..." hang by releasing the metadata loader lock before starting the registry sync. This allows the UI to remain responsive and load Essentials/Trending data while background synchronization continues.
 *   **Type Safety:** Replaced manual TypeScript interfaces with `tauri-specta` generated types from `bindings.ts` across the entire application.

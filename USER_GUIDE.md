@@ -1,6 +1,7 @@
 # MonARCH Store — User Guide 🚀
 
-**Current version:** v0.4.6-alpha · **Last updated:** 2026-02-14
+**Current Version: v0.4.7-alpha
+Last updated: 2026-02-21
 
 Welcome to MonARCH Store, the host-adaptive software manager for Arch Linux and its derivatives. This guide will help you understand how to use MonARCH and how it works under the hood.
 

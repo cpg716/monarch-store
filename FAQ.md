@@ -1,6 +1,7 @@
 # Frequently Asked Questions (FAQ) ❓
 
-**Current version:** v0.4.6-alpha · **Last updated:** 2026-02-14
+**Current Version: v0.4.7-alpha
+Last updated: 2026-02-21
 
 ### 1. What does "Host-Adaptive" mean?
 Unlike other app stores that might try to force a specific configuration or enable dozens of repositories by default, MonARCH respects your system's existing state. We read your `/etc/pacman.conf` and only show you what your system is actually set up to handle. We adapt to YOU, not the other way around.

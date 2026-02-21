@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Terminal, CheckCircle2, XCircle, Loader2, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw, ChevronUp, Trash2, Download, Package as PackageIcon, Sparkles, Unlock, Key, HardDrive, Wifi } from 'lucide-react';
+import { Terminal, CheckCircle2, XCircle, Loader2, Play, Minimize2, Maximize2, ShieldCheck, RefreshCw, ChevronUp, Trash2, Download, Package as PackageIcon, Sparkles, Unlock, Key, HardDrive, Wifi, Clock, Shield, GitBranch, Wrench, Box } from 'lucide-react';
 import { commands } from '../services/bindings';
 import { unwrap } from '../utils/specta';
 import { listen } from '@tauri-apps/api/event';
@@ -76,6 +76,18 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     const logsRef = useRef<LogEntry[]>([]);
     const autoUnlockAttemptedRef = useRef(false);
     const [commandPreview, setCommandPreview] = useState<string>('');
+
+    // --- Phase 2 Feature State ---
+    // 2.2: Flatpak progress from backend
+    const [flatpakProgress, setFlatpakProgress] = useState<number | null>(null);
+    // 2.3: Flatpak permissions preview
+    const [flatpakPermissions, setFlatpakPermissions] = useState<string[] | null>(null);
+    const [showPermissions, setShowPermissions] = useState(false);
+    // 2.4: Download size
+    const [downloadSize, setDownloadSize] = useState<string | null>(null);
+    // 2.5: Elapsed time
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
+    const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     // Throttle log updates to prevent freeze when hundreds of progress events arrive
     const logBufferRef = useRef<LogEntry[]>([]);
     const logFlushScheduledRef = useRef(false);
@@ -159,8 +171,11 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
     useEffect(() => {
         if (!pkg) return;
 
+        const isFlatpak = pkg.source && typeof pkg.source === 'object' && pkg.source.source_type === 'flatpak';
+
         // ✅ NEW: Listen for structured ALPM progress events
         const unlistenAlpmProgress = listen('alpm-progress', (event: { payload: any }) => {
+            if (isFlatpak) return; // Ignore background ALPM logs during Flatpak installs
             const evt = event.payload as AlpmProgressEvent;
 
             // Don't flood logs with every download_progress tick (status line already shows %); throttle and cap to prevent freeze
@@ -203,10 +218,19 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                 case 'install_complete':
                     setProgressStatusThrottled(99, `Installed ${evt.package || 'package'}`);
                     break;
+                case 'install-finalizing':
+                    // Prevent hanging progress bar; indicate background housekeeping
+                    setProgressStatusThrottled(99, evt.message || 'Finishing up housekeeping...');
+                    break;
                 case 'progress':
                     if (evt.percent !== undefined) {
                         setProgressStatusThrottled(evt.percent, evt.message);
                     }
+                    break;
+                case 'hook_start':
+                case 'pkg_install_start':
+                case 'pkg_remove_start':
+                    setProgressStatusThrottled(evt.percent ?? progressStatusRef.current.target, evt.message);
                     break;
                 default:
                     setProgressStatusThrottled(progressStatusRef.current.target, evt.message);
@@ -216,10 +240,23 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         const unlistenOutput = listen('install-output', (event: { payload: unknown }) => {
             if (typeof event.payload !== 'string') return;
             const line = event.payload;
-            appendLogThrottled(line);
+
+            // Ignore background ALPM sync logs during Flatpak installs
+            if (isFlatpak && !line.includes('[Flatpak') && !line.startsWith('Installing ') && !line.startsWith('Uninstalling ')) {
+                return;
+            }
+
+            // Flatpak emits a new line for every progress frame, leading to thousands of logs.
+            const isFlatpakProgressLine = isFlatpak && line.includes('%') && (line.includes('Installing') || line.includes('Updating') || line.includes('Uninstalling'));
+
+            if (!isFlatpakProgressLine) {
+                appendLogThrottled(line);
+            }
 
             // Enhanced Progress Heuristics (fallback for non-ALPM operations like AUR builds) — throttled
-            if (line.includes('%')) {
+            if (isFlatpak) {
+                // Flatpaks are handled entirely by `flatpak-progress`, do not overwrite the UI status label with raw log text here.
+            } else if (line.includes('%')) {
                 const match = line.match(/(\d+)%/);
                 if (match) {
                     const p = parseInt(match[1], 10);
@@ -241,6 +278,24 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             } else if (line.toLowerCase().includes('compiling')) {
                 const next = Math.min(progressStatusRef.current.target + 1, 90);
                 setProgressStatusThrottled(next, progressStatusRef.current.status);
+            }
+
+            // 2.4: Extract download size from pacman/flatpak output
+            const sizeMatch = line.match(/(?:Total Download Size|Download size|Installed Size)[:\s]+(\d+(?:\.\d+)?\s*(?:MiB|KiB|GiB|MB|KB|GB|B))/i);
+            if (sizeMatch) {
+                setDownloadSize(sizeMatch[1]);
+            }
+
+            // 2.3: Extract Flatpak permissions from metadata lines
+            if (line.includes('permissions:') || line.includes('--filesystem=') || line.includes('--socket=') || line.includes('--device=')) {
+                const permMatch = line.match(/(--\w+=\S+)/g);
+                if (permMatch && permMatch.length > 0) {
+                    setFlatpakPermissions(prev => {
+                        const existing = prev || [];
+                        const newPerms = permMatch.filter(p => !existing.includes(p));
+                        return newPerms.length > 0 ? [...existing, ...newPerms] : existing;
+                    });
+                }
             }
         });
 
@@ -324,14 +379,45 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
             setStatus('error');
         });
 
+        // 2.2: Listen for real-time Flatpak progress events
+        const unlistenFlatpakProgress = listen<number>('flatpak-progress', (event) => {
+            const pct = event.payload;
+            if (typeof pct === 'number' && pct >= 0 && pct <= 100) {
+                setFlatpakProgress(pct);
+                setProgressStatusThrottled(
+                    Math.floor(10 + (pct * 85) / 100),
+                    `Installing Flatpak... ${pct}%`
+                );
+            }
+        });
+
         return () => {
             unlistenAlpmProgress.then((f: () => void) => f()).catch(() => { });
             unlistenOutput.then((f: () => void) => f()).catch(() => { });
             unlistenRepair.then((f: () => void) => f()).catch(() => { });
             unlistenComplete.then((f: () => void) => f()).catch(() => { });
             unlistenClassifiedError.then((f: () => void) => f()).catch(() => { });
+            unlistenFlatpakProgress.then((f: () => void) => f()).catch(() => { });
         };
     }, [pkg, reducePasswordPrompts, requestSessionPassword]);
+
+    // 2.5: Elapsed time counter
+    useEffect(() => {
+        if (status === 'running') {
+            setElapsedSeconds(0);
+            elapsedTimerRef.current = setInterval(() => {
+                setElapsedSeconds(prev => prev + 1);
+            }, 1000);
+        } else {
+            if (elapsedTimerRef.current) {
+                clearInterval(elapsedTimerRef.current);
+                elapsedTimerRef.current = null;
+            }
+        }
+        return () => {
+            if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+        };
+    }, [status]);
 
     // Recovery action handlers
     const handleRecoveryAction = async (action: string) => {
@@ -364,6 +450,18 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     setLogs(prev => [...prev, logEntry('Clearing package cache...')]);
                     unwrap(await commands.clearCache());
                     setLogs(prev => [...prev, logEntry('✓ Cache cleared')]);
+                    break;
+
+                case 'FlatpakReinstall':
+                    if (pkg) {
+                        setLogs(prev => [...prev, logEntry('Reinstalling Flatpak app...'), logEntry('Removing corrupted install...')]);
+                        try {
+                            unwrap(await commands.uninstallPackage(pkg.name, pkg.source as any, pwd ?? null));
+                            setLogs(prev => [...prev, logEntry('✓ Old install removed. Reinstalling...')]);
+                        } catch {
+                            setLogs(prev => [...prev, logEntry('Note: Could not remove old install, attempting fresh install...')]);
+                        }
+                    }
                     break;
 
                 default:
@@ -400,6 +498,8 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                 return { icon: HardDrive, label: 'Clear Cache & Retry', color: 'bg-red-500 hover:bg-red-600' };
             case 'PackageNotFound':
                 return { icon: RefreshCw, label: 'Refresh & Retry', color: 'bg-teal-500 hover:bg-teal-600' };
+            case 'CorruptedPackage':
+                return { icon: RefreshCw, label: 'Reinstall & Retry', color: 'bg-orange-500 hover:bg-orange-600' };
             default:
                 return { icon: RefreshCw, label: 'Retry', color: 'bg-blue-500 hover:bg-blue-600' };
         }
@@ -511,20 +611,52 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
 
     const errorDetails = status === 'error' && logs.length > 0 ? friendlyError(logs[logs.length - 1].text) : null;
 
-    // STEPPER LOGIC
-    const steps = [
-        { id: 1, label: 'Safety', icon: ShieldCheck },
-        { id: 2, label: 'Downloading', icon: Download },
-        { id: 3, label: 'Installing', icon: PackageIcon },
-        { id: 4, label: 'Finalizing', icon: Sparkles }
-    ];
+    // 2.1: SOURCE-ADAPTIVE STEPPER LOGIC
+    const sourceType = pkg.source.source_type;
+    const steps = sourceType === 'aur'
+        ? [
+            { id: 1, label: 'Clone', icon: GitBranch },
+            { id: 2, label: 'Build', icon: Wrench },
+            { id: 3, label: 'Install', icon: PackageIcon },
+            { id: 4, label: 'Done', icon: Sparkles }
+        ]
+        : sourceType === 'flatpak'
+            ? [
+                { id: 1, label: 'Fetch', icon: ShieldCheck },
+                { id: 2, label: 'Download', icon: Download },
+                { id: 3, label: 'Install', icon: Box },
+                { id: 4, label: 'Done', icon: Sparkles }
+            ]
+            : [
+                { id: 1, label: 'Resolve', icon: ShieldCheck },
+                { id: 2, label: 'Download', icon: Download },
+                { id: 3, label: 'Install', icon: PackageIcon },
+                { id: 4, label: 'Done', icon: Sparkles }
+            ];
 
     const currentStep = (() => {
         if (status === 'success') return 4;
-        if (detailedStatus.includes('Safety') || detailedStatus.includes('Resolving') || detailedStatus.includes('Lock')) return 1;
-        if (detailedStatus.includes('Downloading') || detailedStatus.includes('Syncing') || detailedStatus.includes('Cloning')) return 2;
-        if (detailedStatus.includes('Installing') || detailedStatus.includes('Building') || detailedStatus.includes('Compiling')) return 3;
-        return 1;
+
+        let step = 1;
+        if (sourceType === 'aur') {
+            if (detailedStatus.includes('Cloning') || detailedStatus.includes('Source')) step = 1;
+            else if (detailedStatus.includes('Building') || detailedStatus.includes('Compiling') || detailedStatus.includes('makepkg')) step = 2;
+            else if (detailedStatus.includes('Installing') || detailedStatus.includes('Copying')) step = 3;
+        } else if (sourceType === 'flatpak') {
+            if (detailedStatus.includes('Fetch') || detailedStatus.includes('Resolving') || detailedStatus.includes('Safety')) step = 1;
+            else if (detailedStatus.includes('Downloading') || detailedStatus.includes('Flatpak')) step = 2;
+            else if (detailedStatus.includes('Installing') || detailedStatus.includes('Deploying')) step = 3;
+        } else {
+            if (detailedStatus.includes('Safety') || detailedStatus.includes('Resolving') || detailedStatus.includes('Lock') || detailedStatus.includes('Syncing')) step = 1;
+            else if (detailedStatus.includes('Downloading')) step = 2;
+            else if (detailedStatus.includes('Installing') || detailedStatus.includes('Extracting')) step = 3;
+        }
+
+        // Fallback progress tracking if exact keywords don't match
+        if (step === 1 && visualProgress > 0 && visualProgress < 90) return 2;
+        if (visualProgress >= 90 && status === 'running') return 3;
+
+        return step;
     })();
 
     const displayStatus = status === 'error' && errorDetails
@@ -571,14 +703,59 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
         </div>
     );
 
+    // 2.3: Flatpak Permissions Preview Panel
+    const renderFlatpakPermissions = () => {
+        if (sourceType !== 'flatpak' || mode === 'uninstall' || !flatpakPermissions || flatpakPermissions.length === 0) return null;
+
+        const friendlyPerm = (perm: string) => {
+            if (perm.includes('filesystem=home')) return '📁 Home Directory Access';
+            if (perm.includes('filesystem=host')) return '📁 Full Filesystem Access';
+            if (perm.includes('filesystem=')) return `📁 ${perm.replace('--filesystem=', '')}`;
+            if (perm.includes('socket=x11')) return '🖥️ X11 Display';
+            if (perm.includes('socket=wayland')) return '🖥️ Wayland Display';
+            if (perm.includes('socket=pulseaudio')) return '🔊 Audio Access';
+            if (perm.includes('socket=')) return `🔌 ${perm.replace('--socket=', '')}`;
+            if (perm.includes('device=dri')) return '🎮 GPU Access';
+            if (perm.includes('device=all')) return '⚠️ All Devices';
+            if (perm.includes('device=')) return `🔧 ${perm.replace('--device=', '')}`;
+            if (perm.includes('share=network')) return '🌐 Network Access';
+            if (perm.includes('share=ipc')) return '🔗 IPC Access';
+            return perm;
+        };
+
+        return (
+            <div className="px-5 py-3 bg-amber-500/5 border-b border-amber-500/20">
+                <button
+                    onClick={() => setShowPermissions(!showPermissions)}
+                    className="flex items-center gap-2 text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors w-full"
+                >
+                    <Shield size={13} />
+                    <span>Flatpak Permissions ({flatpakPermissions.length})</span>
+                    <ChevronUp size={12} className={clsx('ml-auto transition-transform', !showPermissions && 'rotate-180')} />
+                </button>
+                {showPermissions && (
+                    <div className="mt-2 grid grid-cols-2 gap-1">
+                        {flatpakPermissions.map((perm, i) => (
+                            <span key={i} className="text-[10px] text-app-muted/80 font-mono bg-app-bg/50 rounded px-2 py-0.5 truncate">
+                                {friendlyPerm(perm)}
+                            </span>
+                        ))}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
     if (minimized) {
         return (
-            <div className="fixed bottom-4 right-4 z-50 bg-app-card/95 backdrop-blur-xl border border-app-border p-4 rounded-2xl shadow-2xl flex items-center gap-4 w-80 animate-in slide-in-from-bottom-4 transition-colors">
-                <div className="bg-app-accent/20 p-2.5 rounded-xl text-app-accent">
+            <div className="fixed bottom-4 right-4 z-50 bg-app-card/95 backdrop-blur-xl border border-app-border p-4 rounded-2xl shadow-2xl flex items-center gap-4 w-[22rem] animate-in slide-in-from-bottom-4 transition-all">
+                <div className="bg-app-accent/20 p-2.5 rounded-xl text-app-accent flex-shrink-0">
                     <Loader2 size={20} className="animate-spin" />
                 </div>
                 <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-app-fg truncate">{detailedStatus || (mode === 'uninstall' ? `Uninstalling ${appDisplayName(pkg)}` : `Installing ${appDisplayName(pkg)}`)}</div>
+                    <div className="text-sm font-semibold text-app-fg leading-tight break-words">
+                        {detailedStatus || (mode === 'uninstall' ? `Uninstalling ${appDisplayName(pkg)}` : `Installing ${appDisplayName(pkg)}`)}
+                    </div>
                     <div className="w-full bg-app-fg/10 h-1.5 mt-2 rounded-full overflow-hidden">
                         <div className="h-full bg-app-accent transition-all duration-300 rounded-full" style={{ width: `${visualProgress}%` }} />
                     </div>
@@ -679,8 +856,8 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 (status === 'error' || updateRequired) ? <XCircle size={22} /> :
                                     <Terminal size={22} />}
                         </div>
-                        <div className="min-w-0">
-                            <h2 id="install-monitor-title" className="text-lg font-bold text-app-fg truncate">
+                        <div className="min-w-0 flex-1">
+                            <h2 id="install-monitor-title" className="text-lg font-bold text-app-fg leading-tight break-words pr-4">
                                 {updateRequired
                                     ? 'System Update Required'
                                     : status === 'idle'
@@ -710,88 +887,79 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 </>
                             )}
                             {status !== 'error' && (
-                                <p className="text-app-muted text-sm">{pkg.source.label} · {appDisplayName(pkg)}</p>
+                                <p className="text-app-muted text-sm flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
+                                    <span className="font-medium text-app-fg/80">{pkg.source.label} · {appDisplayName(pkg)}</span>
+                                    {status === 'running' && (
+                                        <span className="inline-flex items-center gap-1 text-app-accent/80 font-mono text-xs shrink-0">
+                                            <Clock size={11} />
+                                            {Math.floor(elapsedSeconds / 60).toString().padStart(2, '0')}:{(elapsedSeconds % 60).toString().padStart(2, '0')}
+                                        </span>
+                                    )}
+                                    {downloadSize && (
+                                        <span className="text-app-muted/70 font-mono text-[10px] shrink-0">({downloadSize})</span>
+                                    )}
+                                </p>
                             )}
                         </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={() => setShowLogs(!showLogs)}
-                            className={clsx(
-                                'p-2.5 rounded-xl transition-colors border',
-                                showLogs ? 'bg-app-accent/15 text-app-accent border-app-accent/30' : 'text-app-muted hover:bg-app-hover border-app-border hover:border-app-fg/20'
-                            )}
-                            title={showLogs ? 'Hide log' : 'View transaction log'}
-                        >
-                            <Terminal size={18} />
-                        </button>
-                        <button
-                            onClick={copyLogsToClipboard}
-                            disabled={logs.length === 0}
-                            className={clsx(
-                                'px-3 py-2 rounded-xl text-xs font-semibold border transition-colors',
-                                logs.length === 0
-                                    ? 'text-app-muted border-app-border cursor-not-allowed opacity-60'
-                                    : 'text-app-accent border-app-border hover:bg-app-accent/10 hover:border-app-accent/40'
-                            )}
-                        >
-                            Copy log
-                        </button>
-                        {status === 'running' && (
-                            <>
-                                <button
-                                    onClick={async () => {
-                                        try {
-                                            unwrap(await commands.abortInstallation());
-                                            unwrap(await commands.cancelInstall());
-                                            setLogs(prev => [...prev, logEntry('Installation cancelled.')]);
-                                            setStatus('error');
-                                            setTimeout(() => onClose(), 800);
-                                        } catch (e) {
-                                            errorService.reportError(e as Error | string);
-                                        }
-                                    }}
-                                    className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs font-bold rounded-lg transition-colors border border-red-500/20 flex items-center gap-2"
-                                    aria-label="Stop installation"
-                                >
-                                    <XCircle size={14} /> Cancel
-                                </button>
-                                <button onClick={() => setMinimized(true)} className="p-2 hover:bg-app-fg/10 rounded-lg text-app-muted transition-colors" aria-label="Minimize install window">
-                                    <Minimize2 size={20} />
-                                </button>
-                            </>
-                        )}
-                        <button
-                            onClick={async () => {
-                                if (status === 'running') {
-                                    const stop = window.confirm(
-                                        'Closing this window will not stop the installation—it will continue in the background. Do you want to cancel the installation instead?'
-                                    );
-                                    if (stop) {
-                                        try {
-                                            unwrap(await commands.abortInstallation());
-                                            unwrap(await commands.cancelInstall());
-                                            setLogs(prev => [...prev, logEntry('Installation cancelled.')]);
-                                            setStatus('error');
-                                            setTimeout(() => onClose(), 800);
-                                        } catch (e) {
-                                            errorService.reportError(e as Error | string);
-                                        }
+                </div>
+                {/* Hide top-right log toggle to deduplicate */}
+                <div className="flex items-center gap-2">
+                    {status === 'running' && (
+                        <>
+                            <button
+                                onClick={async () => {
+                                    try {
+                                        unwrap(await commands.abortInstallation());
+                                        unwrap(await commands.cancelInstall());
+                                        setLogs(prev => [...prev, logEntry('Installation cancelled.')]);
+                                        setStatus('error');
+                                        setTimeout(() => onClose(), 800);
+                                    } catch (e) {
+                                        errorService.reportError(e as Error | string);
                                     }
-                                    return;
+                                }}
+                                className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs font-bold rounded-lg transition-colors border border-red-500/20 flex items-center gap-2"
+                                aria-label="Stop installation"
+                            >
+                                <XCircle size={14} /> Cancel
+                            </button>
+                            <button onClick={() => setMinimized(true)} className="p-2 hover:bg-app-fg/10 rounded-lg text-app-muted transition-colors" aria-label="Minimize install window">
+                                <Minimize2 size={20} />
+                            </button>
+                        </>
+                    )}
+                    <button
+                        onClick={async () => {
+                            if (status === 'running') {
+                                const stop = window.confirm(
+                                    'Closing this window will not stop the installation—it will continue in the background. Do you want to cancel the installation instead?'
+                                );
+                                if (stop) {
+                                    try {
+                                        unwrap(await commands.abortInstallation());
+                                        unwrap(await commands.cancelInstall());
+                                        setLogs(prev => [...prev, logEntry('Installation cancelled.')]);
+                                        setStatus('error');
+                                        setTimeout(() => onClose(), 800);
+                                    } catch (e) {
+                                        errorService.reportError(e as Error | string);
+                                    }
                                 }
-                                onClose();
-                            }}
-                            className="p-2.5 hover:bg-app-hover hover:text-red-500 rounded-xl text-app-muted transition-colors"
-                            aria-label="Close"
-                        >
-                            <XCircle size={20} />
-                        </button>
-                    </div>
+                                return;
+                            }
+                            onClose();
+                        }}
+                        className="p-2.5 hover:bg-app-hover hover:text-red-500 rounded-xl text-app-muted transition-colors"
+                        aria-label="Close"
+                    >
+                        <XCircle size={20} />
+                    </button>
                 </div>
 
                 {/* Body: scrollable so success/Done and info are never cut off */}
                 <div className="p-0 flex-1 min-h-0 flex flex-col overflow-hidden">
+                    {!minimized && sourceType === 'flatpak' && mode !== 'uninstall' && renderFlatpakPermissions()}
                     {!minimized && status !== 'idle' && !updateRequired && renderStepper()}
                     {updateRequired ? (
                         <div className="p-8 flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center space-y-6 animate-in slide-in-from-bottom-4">
@@ -877,8 +1045,8 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     ) : (
                         <div className="flex-1 min-h-0 flex flex-col overflow-y-auto bg-app-bg transition-colors">
                             {status === 'success' ? (
-                                <div className="px-5 py-6 flex flex-col items-center justify-center space-y-5 animate-in zoom-in-95 duration-500">
-                                    <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center shadow-lg shadow-green-500/10">
+                                <div className="px-5 py-6 flex flex-col items-center justify-center space-y-5 animate-in zoom-in-95 duration-500 overflow-y-auto w-full">
+                                    <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center shadow-lg shadow-green-500/10 shrink-0 mt-4">
                                         <CheckCircle2 size={32} className="text-green-500" />
                                     </div>
                                     <div className="text-center space-y-2">
@@ -891,7 +1059,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                     </div>
 
                                     {mode !== 'uninstall' && (
-                                        <div className="bg-blue-500/5 border border-blue-500/10 px-4 py-3 rounded-xl flex gap-3 items-center max-w-xs animate-in slide-in-from-bottom-2 delay-300">
+                                        <div className="bg-blue-500/5 border border-blue-500/10 px-4 py-3 rounded-xl flex gap-3 items-center w-full max-w-sm animate-in slide-in-from-bottom-2 delay-300">
                                             <div className="p-2 bg-blue-500/10 rounded-lg text-blue-500 shrink-0">
                                                 <Play size={16} fill="currentColor" />
                                             </div>
@@ -904,7 +1072,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                         </div>
                                     )}
 
-                                    <div className="w-full max-w-xs space-y-3 pt-1">
+                                    <div className="w-full max-w-sm space-y-3 pt-4 pb-2">
                                         <button
                                             onClick={onClose}
                                             className={clsx(
@@ -923,7 +1091,7 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                                     commands.launchApp({ pkg_name: pkg.name }).then(unwrap).catch((e) => errorService.reportError(e as Error | string));
                                                     onClose();
                                                 }}
-                                                className="w-full py-2.5 rounded-xl text-sm font-semibold text-app-fg hover:bg-app-hover border border-app-border transition-colors flex items-center justify-center gap-1.5"
+                                                className="w-full py-3 rounded-xl text-sm font-semibold text-app-fg hover:bg-app-hover border border-app-border transition-colors flex items-center justify-center gap-1.5"
                                             >
                                                 <Play size={16} fill="currentColor" />
                                                 Launch {appDisplayName(pkg)}
@@ -990,30 +1158,35 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                             </div>
                                         )}
 
-                                        <div className="flex justify-between items-baseline text-sm mb-2">
-                                            <span className="font-medium text-app-fg">{displayStatus}</span>
-                                            <span className="text-app-muted tabular-nums">{Math.round(visualProgress)}%</span>
+                                        <div className="flex justify-between items-start text-sm mb-2 gap-4">
+                                            <span className="font-medium text-app-fg leading-tight break-words flex-1">
+                                                {displayStatus}
+                                            </span>
+                                            <span className="text-app-muted tabular-nums shrink-0 font-bold">{Math.round(visualProgress)}%</span>
                                         </div>
-                                        {pkg.source.source_type === 'aur' && status === 'running' && (detailedStatus.includes('Building') || detailedStatus.includes('Compiling') || detailedStatus.includes('Cloning') || detailedStatus.includes('Downloading Source') || (visualProgress >= 25 && visualProgress <= 85)) && (
-                                            <p className="text-xs text-app-muted mb-2">Building from source — large packages can take several minutes.</p>
+
+                                        {/* NON-TECHNICAL EXPLAINER */}
+                                        {status === 'running' && (
+                                            <div className="text-xs text-app-muted mb-3 italic">
+                                                {(() => {
+                                                    const s = displayStatus.toLowerCase();
+                                                    if (s.includes('resolving dependencies')) return "Figuring out what extra files this app needs to work properly...";
+                                                    if (s.includes('downloading')) return "Fetching the application files securely from the servers...";
+                                                    if (s.includes('verifying') || s.includes('integrity') || s.includes('keyring')) return "Checking the digital locks to ensure the download is safe and authentic...";
+                                                    if (s.includes('building') || s.includes('compiling') || s.includes('cloning')) return "Building the app specifically for your computer (this can take a few minutes)...";
+                                                    if (s.includes('installing') && pkg.source.source_type === 'aur') return "Putting the newly built files in exactly the right places...";
+                                                    if (s.includes('installing')) return "Putting the app files in exactly the right places...";
+                                                    if (s.includes('removing') || s.includes('uninstalling')) return "Carefully removing the app and its leftover files...";
+                                                    if (s.includes('housekeeping')) return "Cleaning up the temporary files we don't need anymore...";
+                                                    if (s.includes('preparing transaction')) return "Getting everything ready for the installation...";
+                                                    return "Please wait while the system processes your request.";
+                                                })()}
+                                            </div>
                                         )}
-                                        {mode === 'uninstall' && status === 'running' && pkg.source.source_type !== 'flatpak' && (
-                                            <p className="text-xs text-app-muted mb-2">Large apps (e.g. OBS) may take 1–2 minutes while uninstall scripts run. Please wait.</p>
-                                        )}
-                                        {mode === 'install' && status === 'running' && pkg.source.source_type !== 'aur' && (visualProgress >= 45 && visualProgress <= 95) && (
-                                            <p className="text-xs text-app-muted mb-2">Large apps may take 1–2 minutes while install scripts run. Please wait.</p>
-                                        )}
-                                        <div className="w-full bg-app-fg/10 h-2.5 rounded-full overflow-hidden">
-                                            {pkg.source.source_type === 'aur' && status === 'running' && (
-                                                <div className="flex justify-between text-[10px] text-app-muted mt-1.5 px-0.5">
-                                                    <span className={clsx(visualProgress > 10 && 'text-app-accent font-semibold')}>Download</span>
-                                                    <span className={clsx(visualProgress > 30 && 'text-app-accent font-semibold')}>Prepare</span>
-                                                    <span className={clsx(visualProgress > 50 && 'text-app-accent font-semibold')}>Build</span>
-                                                    <span className={clsx(visualProgress > 90 && 'text-app-accent font-semibold')}>Install</span>
-                                                </div>
-                                            )}
+
+                                        <div className="w-full bg-app-fg/10 h-3 rounded-full overflow-hidden mb-1">
                                             <div
-                                                className={clsx('h-full transition-all duration-200 rounded-full',
+                                                className={clsx('h-full transition-all duration-300 rounded-full',
                                                     status === 'error' ? 'bg-red-500' : 'bg-app-accent relative'
                                                 )}
                                                 style={{ width: `${visualProgress}%` }}
@@ -1024,39 +1197,41 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                     </div>
 
                                     {/* Advanced: expandable transaction log — out of the way by default */}
-                                    <div className="flex justify-center mt-3 px-4">
+                                    <div className="flex justify-between items-center px-5 pt-3 pb-2 border-t border-app-border/50">
+                                        <span className="text-[10px] text-app-muted uppercase tracking-wider font-semibold">Technical Details</span>
                                         <button
                                             onClick={() => setShowLogs(!showLogs)}
-                                            className="text-xs font-medium text-app-muted hover:text-app-accent flex items-center gap-1.5 transition-colors py-2.5 px-4 rounded-xl hover:bg-app-hover border border-transparent hover:border-app-border"
+                                            className="text-xs font-semibold text-app-muted hover:text-app-accent flex items-center gap-1.5 transition-colors py-1.5 px-3 rounded-lg hover:bg-app-hover border border-transparent hover:border-app-border"
                                             aria-expanded={showLogs}
                                         >
-                                            {showLogs ? <><ChevronUp size={14} /> Hide log</> : <><Terminal size={14} /> View transaction log</>}
+                                            {showLogs ? 'Hide Raw Output' : 'Show Raw Output'}
+                                        </button>
+                                        <button
+                                            onClick={copyLogsToClipboard}
+                                            disabled={logs.length === 0}
+                                            className={clsx(
+                                                'px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors',
+                                                logs.length === 0
+                                                    ? 'text-app-muted border-app-border cursor-not-allowed opacity-60'
+                                                    : 'text-app-accent border-app-border hover:bg-app-accent/10 hover:border-app-accent/40'
+                                            )}
+                                        >
+                                            Copy All Logs
                                         </button>
                                     </div>
 
                                     {showLogs && (
-                                        <div className="flex flex-col min-h-[200px] max-h-[min(50vh,380px)] mt-3 mx-4 mb-4 rounded-xl border border-app-border bg-app-subtle overflow-hidden min-w-0 shrink-0 shadow-inner">
-                                            <div className="flex items-center justify-between px-4 py-2.5 border-b border-app-border bg-app-bg/50 shrink-0">
-                                                <span className="text-xs font-semibold text-app-fg">Transaction log</span>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setShowLogs(false)}
-                                                    className="text-app-muted hover:text-app-fg p-2 rounded-lg hover:bg-app-hover transition-colors"
-                                                    aria-label="Hide log"
-                                                >
-                                                    <ChevronUp size={18} />
-                                                </button>
-                                            </div>
-                                            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto p-4 font-mono text-xs text-app-muted space-y-1 overscroll-contain scroll-gpu">
+                                        <div className="flex flex-col flex-1 min-h-[150px] mx-5 mb-4 rounded-xl border border-app-border bg-black/40 overflow-hidden shadow-inner">
+                                            <div className="flex-1 overflow-y-auto p-4 font-mono text-[10px] text-app-muted space-y-1.5 overscroll-contain">
                                                 {commandPreview && (
-                                                    <div className="mb-3 pb-2 border-b border-app-border text-app-accent font-semibold">
-                                                        {commandPreview}
+                                                    <div className="mb-2 pb-2 border-b border-app-border/30 text-app-accent font-semibold flex items-center gap-2">
+                                                        <Terminal size={12} /> {commandPreview}
                                                     </div>
                                                 )}
                                                 {logs.map((log, i) => (
-                                                    <div key={i} className="break-all whitespace-pre-wrap leading-relaxed">
-                                                        <span className="text-app-muted/70 mr-2 tabular-nums select-none">[{new Date(log.ts).toLocaleTimeString()}]</span>
-                                                        <span className="text-app-fg/90">{log.text}</span>
+                                                    <div key={i} className="break-all whitespace-pre-wrap leading-relaxed flex gap-2">
+                                                        <span className="text-app-muted/50 tabular-nums select-none shrink-0 w-16 opacity-70">[{new Date(log.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
+                                                        <span className="text-app-fg/80">{log.text}</span>
                                                     </div>
                                                 ))}
                                                 <div ref={logsEndRef} />

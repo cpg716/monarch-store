@@ -834,6 +834,14 @@ async checkForUpdates() : Promise<Result<PendingUpdate[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getFlatpakPermissions(appId: string) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_flatpak_permissions", { appId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Returns the exact command we conceptually run for a full system upgrade.
  * Use for "Update in terminal": copy to clipboard or open user's terminal.

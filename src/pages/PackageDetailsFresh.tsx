@@ -807,10 +807,18 @@ export default function PackageDetails({ pkg: pkgProp, onBack, preferredSource, 
                                     <AlertCircle size={18} className="text-amber-500 shrink-0 mt-0.5" />
                                     <div>
                                         <h5 className="text-[10px] font-black text-amber-500 mb-1 uppercase tracking-widest">Notice: Different Source Installed</h5>
-                                        <p className="text-[11px] text-amber-200/50 leading-relaxed font-medium">
-                                            This application is already installed via <span className="text-amber-400 font-bold">{conflictVariant.source?.label || conflictVariant.source?.id}</span>.
-                                            Switching sources will not share application data.
+                                        <p className="text-[11px] text-amber-200/50 leading-relaxed font-medium mb-1">
+                                            This application is currently installed from <span className="text-amber-400 font-bold">{conflictVariant.source?.label || conflictVariant.source?.id}</span>.
                                         </p>
+                                        {(conflictVariant.source?.source_type === 'flatpak' || (typeof selectedSource !== 'string' && selectedSource.source_type === 'flatpak')) ? (
+                                            <p className="text-[11px] text-amber-200/50 leading-relaxed font-medium">
+                                                Installing a Flatpak alongside a Native package creates two separate, independent installations that do not share application data.
+                                            </p>
+                                        ) : (
+                                            <p className="text-[11px] text-amber-200/50 leading-relaxed font-medium">
+                                                Arch considers these Native packages identical. Installing from <span className="text-white/80 font-bold">{(typeof selectedSource !== 'string') ? selectedSource.label : 'this source'}</span> will seamlessly replace (cross-grade) your existing installation. Application data is preserved.
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
                             </motion.div>

@@ -1,6 +1,6 @@
 # AGENTS.md - MonARCH Store
 
-**Last updated:** 2026-02-14 (v0.4.6-alpha)
+**Last updated:** 2026-02-21 (v0.4.7-alpha)
 
 For architectural invariants (Iron Laws), UI/UX standards (Liquid UI), and forbidden patterns, see **`.cursorrules`**.
 

@@ -1,4 +1,4 @@
-# MonARCH Store — Developer Documentation
+# MonARCH Store: Developer Guide (v0.4.7-alpha)
 
 **Last updated:** 2026-02-14 (v0.4.6-alpha)
 

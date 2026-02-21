@@ -1,5 +1,5 @@
 ---
-description: Prepare for Push to GitHub (v0.4.6-alpha)
+description: Prepare for Push to GitHub (v0.4.7-alpha)
 ---
 # /push
 **Goal:** Prepare and push changes to GitHub (main and/or release tag).

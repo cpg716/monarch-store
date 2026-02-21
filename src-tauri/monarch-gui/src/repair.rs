@@ -261,7 +261,7 @@ pub async fn repair_unlock_pacman_impl(
 
     if password.is_none() {
         let mut rx = crate::helper_client::invoke_helper(
-            &app,
+            app,
             crate::helper_client::HelperCommand::ExecuteBatch {
                 manifest: crate::models::TransactionManifest {
                     remove_lock: true,
@@ -303,7 +303,7 @@ pub async fn repair_unlock_pacman_impl(
     }
 
     run_privileged(
-        &app,
+        app,
         "rm",
         &["-f", "/var/lib/pacman/db.lck"][..],
         password,

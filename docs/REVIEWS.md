@@ -1,4 +1,4 @@
-# Hybrid Review System (v0.4.0)
+# Hybrid Review System (v0.4.7-alpha)
 
 **Last updated:** 2026-02-14
 

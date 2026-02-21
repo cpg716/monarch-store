@@ -76,7 +76,7 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
         onConfirm: () => { },
     });
 
-    const pkgVersion = '0.4.6-alpha';
+    const pkgVersion = '0.4.7-alpha';
     const installMode = 'system';
 
     useEffect(() => {

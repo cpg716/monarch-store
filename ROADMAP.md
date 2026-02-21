@@ -1,6 +1,6 @@
 # MonARCH Store Roadmap 🗺️
 
-**Last updated:** 2026-02-14 (v0.4.6-alpha)
+**Last updated:** 2026-02-21 (v0.4.7-alpha)
 
 This document outlines the planned trajectory for MonARCH Store. As an alpha-stage project, our focus is on building a rock-solid, host-adaptive foundation first.
 

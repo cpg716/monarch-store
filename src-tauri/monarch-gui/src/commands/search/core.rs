@@ -359,17 +359,50 @@ pub async fn search_packages(
     results = utils::deduplicate_by_canonical_key(results);
     aggregation::enrich_packages_metadata(&mut results, state_flathub.inner()).await;
     results = aggregation::deduplicate_and_merge_packages(results);
+    if let Ok(loader) = state_metadata.loader.lock() {
+        aggregation::enrich_with_local_metadata(&mut results, &loader);
+    }
 
     let popular_names: Vec<String> = state_discovery.inner().popular_aur_names().await;
     let metadata_loader = state_metadata
         .loader
         .lock()
         .expect("MetadataState lock poisoned");
+
+    // CPU-tier tiebreaker: derive opt_level from source.id for CachyOS-optimized ranking.
+    // This helper mirrors the logic in RepoManager::get_all_packages_with_repos.
+    let derive_opt_level = |source_id: &str| -> u8 {
+        let id = source_id.to_lowercase();
+        if id.contains("-znver4") {
+            3
+        } else if id.contains("-v4") {
+            2
+        } else if id.contains("-v3") || id.contains("-core-v3") || id.contains("-extra-v3") {
+            1
+        } else {
+            0
+        }
+    };
+
     results.sort_by(|a, b| {
         let score_a = calculate_relevance(a, &query_lower, &metadata_loader, &popular_names);
         let score_b = calculate_relevance(b, &query_lower, &metadata_loader, &popular_names);
         score_b
             .cmp(&score_a)
+            .then_with(|| {
+                // CPU-tier tiebreaker: lower rank = higher priority
+                let rank_a = crate::repo_manager::calculate_package_rank(
+                    a,
+                    derive_opt_level(&a.source.id),
+                    distro,
+                );
+                let rank_b = crate::repo_manager::calculate_package_rank(
+                    b,
+                    derive_opt_level(&b.source.id),
+                    distro,
+                );
+                rank_a.cmp(&rank_b)
+            })
             .then_with(|| a.name.len().cmp(&b.name.len()))
             .then_with(|| a.name.cmp(&b.name))
     });

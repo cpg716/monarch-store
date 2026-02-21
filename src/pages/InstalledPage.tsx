@@ -57,10 +57,21 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
             const packages = unwrap(await commands.getInstalledPackages());
             setApps(packages);
 
-            // [IRON CORE PURGE] Size calculation logic removed.
-            // Backend should provide pre-calculated stats if needed.
-            // setTotalSize(`${sizeSum.toFixed(1)} MiB used`);
-            setTotalSize("Size calculation disabled");
+            // Aggregate total installed size from backend-provided per-package size strings
+            let totalMiB = 0;
+            for (const p of packages) {
+                if (!p.size) continue;
+                const match = p.size.match(/([\d.]+)\s*(KiB|MiB|GiB|B)/i);
+                if (match) {
+                    const val = parseFloat(match[1]);
+                    const unit = match[2].toLowerCase();
+                    if (unit === 'gib') totalMiB += val * 1024;
+                    else if (unit === 'mib') totalMiB += val;
+                    else if (unit === 'kib') totalMiB += val / 1024;
+                    else totalMiB += val / (1024 * 1024);
+                }
+            }
+            setTotalSize(totalMiB >= 1024 ? `${(totalMiB / 1024).toFixed(1)} GiB used` : `${totalMiB.toFixed(0)} MiB used`);
         } catch (e) {
             errorService.reportError(e as Error | string);
         } finally {
@@ -208,7 +219,7 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
                                     <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
                                         <div className="flex items-center gap-2 min-w-0">
                                             <h3 className="font-bold text-base text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors truncate">
-                                                {app.name}
+                                                {app.name.split(/[-.]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ')}
                                             </h3>
                                             <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-white/10 text-[10px] font-mono text-slate-500 dark:text-white/60 border border-black/5 dark:border-white/5 shrink-0">
                                                 {app.version}

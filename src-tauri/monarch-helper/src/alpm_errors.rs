@@ -124,7 +124,7 @@ pub fn classify_alpm_error(error_msg: &str) -> AlpmClassifiedError {
     AlpmClassifiedError {
         kind: "Unknown".to_string(),
         title: "Installation Failed".to_string(),
-        description: error_msg.to_string(),
+        description: format!("ALPM Error: {}", error_msg),
         recovery_action: None,
         raw_message: error_msg.to_string(),
     }

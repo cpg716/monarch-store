@@ -2,12 +2,14 @@ import React from 'react';
 import { ShieldCheck, Rocket, Ship, Gamepad2, Layers, Cpu } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useDistro } from '../hooks/useDistro';
+import { useSettings } from '../hooks/useSettings';
 import { clsx } from 'clsx';
 import logo from '../assets/logo.png';
 import archLogo from '../assets/arch-logo.svg';
 
 export default function HeroSection() {
     const { distro, loading } = useDistro();
+    const { isFlatpakEnabled } = useSettings();
 
     if (loading) return <div className="h-[120px] animate-pulse rounded-3xl bg-white/5 mx-6 mt-6 mb-8" />;
 
@@ -44,6 +46,7 @@ export default function HeroSection() {
     // Filter and unique repos for display
     const visibleRepos = Array.from(new Set(distro.active_repos.map(r => getRepoLabel(r).label)));
     if (!visibleRepos.includes('AUR')) visibleRepos.push('AUR'); // AUR is always available via our client
+    if (isFlatpakEnabled && !visibleRepos.includes('Flatpak')) visibleRepos.push('Flatpak');
 
     return (
         <section className="relative px-6 pt-2 pb-4 flex flex-col items-center justify-center text-center z-10">
@@ -110,9 +113,10 @@ export default function HeroSection() {
                             <React.Fragment key={label}>
                                 <span className={clsx(
                                     label === 'AUR' ? 'text-amber-400/90' :
-                                        label === 'Chaotic' ? 'text-purple-400/90' :
-                                            label === 'CachyOS' ? 'text-emerald-400/90' :
-                                                'text-slate-600 dark:text-white/70'
+                                        label === 'Flatpak' ? 'text-cyan-400/90' :
+                                            label === 'Chaotic' ? 'text-purple-400/90' :
+                                                label === 'CachyOS' ? 'text-emerald-400/90' :
+                                                    'text-slate-600 dark:text-white/70'
                                 )}>
                                     {label}
                                 </span>

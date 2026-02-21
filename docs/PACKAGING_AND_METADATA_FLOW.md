@@ -1,4 +1,4 @@
-# Monarch Store: Data Flow & Package Resolution (Iron Core)
+# MonARCH Store — Packaging and Metadata Flow (v0.4.7-alpha)
 
 **Date:** 2026-02-14  
 **Abstract:** This document details the modern data aggregation and hydration pipeline in Monarch Store. The application follows a **"Backend as Truth"** model where the Rust backend is responsible for fully hydrating package ViewModels (icons, descriptions, ratings) from multiple sources (SQLite, ODRS, registries) before the frontend renders them.

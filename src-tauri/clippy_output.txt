@@ -1,0 +1,269 @@
+   Compiling tauri-plugin-aptabase v1.0.0 (/home/chris/Downloads/monarch-store/src-tauri/monarch-gui/plugins/tauri-plugin-aptabase)
+   Compiling monarch-store v0.4.5-alpha (/home/chris/Downloads/monarch-store/src-tauri/monarch-gui)
+    Checking monarch-helper v0.4.5-alpha (/home/chris/Downloads/monarch-store/src-tauri/monarch-helper)
+error: the borrowed expression implements the required traits
+   --> monarch-helper/src/transactions.rs:158:15
+    |
+158 | ...gs(&["-S", "--noconfirm", "--needed"])
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `["-S", "--noconfirm", "--needed"]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_borrows_for_generic_args
+    = note: `-D clippy::needless-borrows-for-generic-args` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_borrows_for_generic_args)]`
+
+error: this `if` statement can be collapsed
+   --> monarch-helper/src/transactions.rs:186:5
+    |
+186 | /     if sync_first {
+187 | |         if check_db_freshness(alpm) {
+188 | |             emit_simple_progress(1...
+189 | |             if let Err(e) = alpm.s...
+...   |
+199 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+186 ~     if sync_first
+187 ~         && check_db_freshness(alpm) {
+188 |             emit_simple_progress(10, "Synchronizing databases...");
+...
+197 |             }
+198 ~         }
+    |
+
+error: the borrowed expression implements the required traits
+   --> monarch-helper/src/transactions.rs:331:15
+    |
+331 | ...gs(&["-Sy", "--dbpath", temp_path.to_str().unwrap()])
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `["-Sy", "--dbpath", temp_path.to_str().unwrap()]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_borrows_for_generic_args
+
+error: the borrowed expression implements the required traits
+   --> monarch-helper/src/transactions.rs:340:23
+    |
+340 | ...gs(&["-Qu", "--dbpath", temp_path.to_str().unwrap()])
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `["-Qu", "--dbpath", temp_path.to_str().unwrap()]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_borrows_for_generic_args
+
+error: this let-binding has unit value
+   --> monarch-helper/src/main.rs:379:5
+    |
+379 |     let _ = alpm.set_parallel_downloads(5);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#let_unit_value
+    = note: `-D clippy::let-unit-value` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::let_unit_value)]`
+help: omit the `let` binding
+    |
+379 -     let _ = alpm.set_parallel_downloads(5);
+379 +     alpm.set_parallel_downloads(5);
+    |
+
+error: unnecessary `if let` since only the `Ok` variant of the iterator element is used
+   --> monarch-helper/src/main.rs:708:9
+    |
+708 | / ...   for line in stdin.lock().lin...
+709 | | ...       if let Ok(line) = line {
+710 | | ...           let trimmed = line.t...
+711 | | ...           if trimmed.is_empty() {
+...   |
+756 | | ...   }
+    | |_______^
+    |
+help: try `.flatten()` and remove the `if let` statement in the for loop
+   --> monarch-helper/src/main.rs:709:13
+    |
+709 | / ...   if let Ok(line) = line {
+710 | | ...       let trimmed = line.trim();
+711 | | ...       if trimmed.is_empty() {
+712 | | ...           continue; // Skip em...
+...   |
+755 | | ...   }
+    | |_______^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_flatten
+    = note: `-D clippy::manual-flatten` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_flatten)]`
+help: try
+    |
+708 ~         for line in stdin.lock().lines().flatten() {
+709 +             let trimmed = line.trim();
+710 +             if trimmed.is_empty() {
+711 +                 continue; // Skip empty lines
+712 +             }
+713 +             // CRITICAL: Validate that input looks like JSON before attempting to parse
+714 +             // Reject raw strings (e.g., repo names like "cachyos") that aren't JSON
+715 +             if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+716 +                 logger::error(&format!(
+717 +                     "Received non-JSON input on stdin: {:?}",
+718 +                     trimmed.chars().take(80).collect::<String>()
+719 +                 ));
+720 +                 emit_progress(
+721 +                     0,
+722 +                     &format!(
+723 +                         "Error: Invalid input on stdin. Expected JSON command, got raw string: {:?}. This may indicate a serialization bug in the GUI.",
+724 +                         trimmed.chars().take(80).collect::<String>()
+725 +                     ),
+726 +                 );
+727 +                 continue; // Skip this line and try next
+728 +             }
+729 +             match serde_json::from_str::<HelperCommand>(trimmed) {
+730 +                 Ok(cmd) => execute_command(cmd, &mut alpm),
+731 +                 Err(e) => {
+732 +                     let err_str = e.to_string();
+733 +                     let is_outdated_helper = err_str.contains("unknown variant")
+734 +                         && (trimmed.contains("AlpmInstall")
+735 +                             || trimmed.contains("AlpmUpgrade")
+736 +                             || trimmed.contains("AlpmUninstall"));
+737 +                     if is_outdated_helper {
+738 +                         emit_progress(
+739 +                             0,
+740 +                             "Error: The installed monarch-helper is outdated and does not support ALPM install/update. Please update monarch-store: run 'pacman -Syu monarch-store' or reinstall the package so the helper matches this app version.",
+741 +                         );
+742 +                     } else {
+743 +                         let preview: String = trimmed.chars().take(80).collect();
+744 +                         emit_progress(
+745 +                             0,
+746 +                             &format!(
+747 +                                 "Error: Failed to parse command JSON: {}. Payload preview: {:?}",
+748 +                                 err_str, preview
+749 +                             ),
+750 +                         );
+751 +                     }
+752 +                 }
+753 +             }
+754 +         }
+    |
+
+error: this block may be rewritten with the `?` operator
+   --> monarch-helper/src/main.rs:876:17
+    |
+876 | /                 if let Err(e) = en...
+877 | |                     return Err(e);
+878 | |                 }
+    | |_________________^ help: replace it with: `ensure_db_ready()?;`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#question_mark
+    = note: `-D clippy::question-mark` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::question_mark)]`
+
+error: this block may be rewritten with the `?` operator
+   --> monarch-helper/src/main.rs:915:17
+    |
+915 | /                 if let Err(e) = en...
+916 | |                     return Err(e);
+917 | |                 }
+    | |_________________^ help: replace it with: `ensure_db_ready()?;`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#question_mark
+
+error: this block may be rewritten with the `?` operator
+   --> monarch-helper/src/main.rs:958:17
+    |
+958 | /                 if let Err(e) = en...
+959 | |                     return Err(e);
+960 | |                 }
+    | |_________________^ help: replace it with: `ensure_db_ready()?;`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#question_mark
+
+error: this let-binding has unit value
+    --> monarch-helper/src/main.rs:1116:13
+     |
+1116 |             let _ = db.unregister();
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#let_unit_value
+help: omit the `let` binding
+     |
+1116 -             let _ = db.unregister();
+1116 +             db.unregister();
+     |
+
+error: manual implementation of `split_once`
+    --> monarch-helper/src/main.rs:1171:21
+     |
+1171 | ...   line.splitn(2, "Server = ").nth(1).un...
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `line.split_once("Server = ").map(|x| x.1)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_split_once
+     = note: `-D clippy::manual-split-once` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_split_once)]`
+
+error: manual implementation of `split_once`
+    --> monarch-helper/src/main.rs:1173:21
+     |
+1173 | ...   line.splitn(2, "Server=").nth(1).un...
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `line.split_once("Server=").map(|x| x.1)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_split_once
+
+error: manual implementation of `split_once`
+    --> monarch-helper/src/main.rs:1183:21
+     |
+1183 | ...   line.splitn(2, "SigLevel = ").nth(1).un...
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `line.split_once("SigLevel = ").map(|x| x.1)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_split_once
+
+error: manual implementation of `split_once`
+    --> monarch-helper/src/main.rs:1185:21
+     |
+1185 | ...   line.splitn(2, "SigLevel=").nth(1).un...
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `line.split_once("SigLevel=").map(|x| x.1)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_split_once
+
+error: manual implementation of `split_once`
+    --> monarch-helper/src/main.rs:1199:21
+     |
+1199 | ...   line.splitn(2, "Usage = ").nth(1).un...
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `line.split_once("Usage = ").map(|x| x.1)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_split_once
+
+error: manual implementation of `split_once`
+    --> monarch-helper/src/main.rs:1201:21
+     |
+1201 | ...   line.splitn(2, "Usage=").nth(1).un...
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `line.split_once("Usage=").map(|x| x.1)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_split_once
+
+error: could not compile `monarch-helper` (bin "monarch-helper") due to 16 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: `to_string` applied to a type that implements `Display` in `debug!` args
+   --> monarch-gui/plugins/tauri-plugin-aptabase/src/dispatcher.rs:118:60
+    |
+118 | ... {}", err.to_string());
+    |             ^^^^^^^^^^^^ help: remove this
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#to_string_in_format_args
+    = note: `-D clippy::to-string-in-format-args` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::to_string_in_format_args)]`
+
+error: current MSRV (Minimum Supported Rust Version) is `1.70.0` but this item is stable since `1.81.0`
+  --> monarch-gui/plugins/tauri-plugin-aptabase/src/lib.rs:31:34
+   |
+31 | ...lient, &PanicHookInfo<'_>, String)...
+   |            ^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#incompatible_msrv
+   = note: `-D clippy::incompatible-msrv` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::incompatible_msrv)]`
+
+error: current MSRV (Minimum Supported Rust Version) is `1.70.0` but this item is stable since `1.81.0`
+  --> monarch-gui/plugins/tauri-plugin-aptabase/src/lib.rs:33:29
+   |
+33 | ...ge(info: &PanicHookInfo) -> String {
+   |              ^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#incompatible_msrv
+
+error: could not compile `tauri-plugin-aptabase` (lib) due to 3 previous errors

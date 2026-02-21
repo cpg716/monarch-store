@@ -1,6 +1,6 @@
 # Troubleshooting Guide 🛟
 
-**Current Version:** v0.4.6-alpha  
+**Current version:** v0.4.7-alpha (2026-02-21) 
 **Last updated:** 2026-02-14
 
 Common issues users encounter when using MonARCH Store.

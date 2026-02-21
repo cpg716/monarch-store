@@ -11,8 +11,9 @@ import { useErrorService } from '../context/ErrorContext';
 import { useToast } from '../context/ToastContext';
 import { useSessionPassword } from '../context/useSessionPassword';
 import { friendlyError } from '../utils/friendlyError';
-import { commands, UpdateItem, NewsItem, AppMetadata } from '../services/bindings';
+import { commands, UpdateItem, NewsItem, AppMetadata, DistroContext } from '../services/bindings';
 import { unwrap } from '../utils/specta';
+import { notifyUpdateComplete } from '../services/notificationService';
 
 import RepoBadge from '../components/RepoBadge';
 
@@ -64,6 +65,27 @@ export default function UpdatesPage() {
     const [viewingPkgbuild, setViewingPkgbuild] = useState<string | null>(null);
     const [pkgbuildContent, setPkgbuildContent] = useState<string>('');
     const [isLoadingPkgbuild, setIsLoadingPkgbuild] = useState(false);
+
+    // Distro context for safety banners
+    const [distroContext, setDistroContext] = useState<DistroContext | null>(null);
+    useEffect(() => {
+        commands.getDistroContext().then(setDistroContext).catch(() => { });
+    }, []);
+
+    // 3.1: Transaction manifest from backend
+    interface UpdateManifest {
+        total: number;
+        repo_count: number;
+        aur_count: number;
+        flatpak_count: number;
+        repo_packages: string[];
+        aur_packages: string[];
+        flatpak_packages: string[];
+    }
+    const [manifest, setManifest] = useState<UpdateManifest | null>(null);
+
+    // 3.2: Per-source progress indicators
+    const [sourceProgress, setSourceProgress] = useState<{ repo: 'idle' | 'active' | 'done' | 'error'; aur: 'idle' | 'active' | 'done' | 'error'; flatpak: 'idle' | 'active' | 'done' | 'error' }>({ repo: 'idle', aur: 'idle', flatpak: 'idle' });
 
     // Batch fetch metadata for updates
     useEffect(() => {
@@ -181,6 +203,14 @@ export default function UpdatesPage() {
         const unlisten = listen<{ success: boolean; message: string }>('update-complete', async (event) => {
             setUpdating(false);
             setUpdateResult(event.payload.message);
+            // Mark all sources as done when update completes
+            setSourceProgress(prev => ({
+                repo: prev.repo === 'active' ? 'done' : prev.repo,
+                aur: prev.aur === 'active' ? 'done' : prev.aur,
+                flatpak: prev.flatpak === 'active' ? 'done' : prev.flatpak,
+            }));
+            // Desktop notification on update completion
+            notifyUpdateComplete(event.payload.success, event.payload.message).catch(() => { });
             checkForUpdates();
             try {
                 const warnings = unwrap(await commands.getPacnewWarnings());
@@ -204,6 +234,36 @@ export default function UpdatesPage() {
         };
     }, [setUpdating, setPacnewWarnings]);
 
+    // 3.1: Listen for transaction manifest from backend
+    useEffect(() => {
+        const unlisten = listen<UpdateManifest>('update-manifest', (event) => {
+            setManifest(event.payload);
+        });
+
+        // 3.2: Per-source progress from update-status messages (tightened matching)
+        const unlistenStatus = listen<string>('update-status', (event) => {
+            const msg = typeof event.payload === 'string' ? event.payload.toLowerCase() : '';
+            if (msg.includes('synchronizing') || msg.includes('system upgrade') || msg.includes('official') || msg.includes('database') || msg.includes('upgrading system') || msg.includes('waiting for authentication')) {
+                setSourceProgress(prev => ({ ...prev, repo: 'active' }));
+            } else if (msg.includes('aur') || msg.includes('building') || msg.includes('makepkg')) {
+                setSourceProgress(prev => ({ ...prev, repo: prev.repo === 'active' ? 'done' : prev.repo, aur: 'active' }));
+            } else if (msg.includes('flatpak')) {
+                setSourceProgress(prev => ({ ...prev, aur: prev.aur === 'active' ? 'done' : prev.aur, flatpak: 'active' }));
+            } else if (msg.includes('all updates completed')) {
+                setSourceProgress(prev => ({
+                    repo: prev.repo !== 'idle' ? 'done' : 'idle',
+                    aur: prev.aur !== 'idle' ? 'done' : 'idle',
+                    flatpak: prev.flatpak !== 'idle' ? 'done' : 'idle',
+                }));
+            }
+        });
+
+        return () => {
+            unlisten.then((fn) => fn()).catch(() => { });
+            unlistenStatus.then((fn) => fn()).catch(() => { });
+        };
+    }, []);
+
     const handleUpdateAll = () => {
         const readIds = getReadNewsIds();
         const unreadCritical = newsItems.filter((i) => i.is_critical && !readIds.includes(i.id));
@@ -221,6 +281,7 @@ export default function UpdatesPage() {
         setUpdateResult(null);
         clearUpdateLogs();
         setCurrentStep(0);
+        setSourceProgress({ repo: 'idle', aur: 'idle', flatpak: 'idle' });
 
         // For updates, sources are never "off": always run AUR and Flatpak phases for installed packages.
         // Pass modal password when AUR updates require it (backend uses it for makepkg/sudo).
@@ -301,6 +362,34 @@ export default function UpdatesPage() {
                         )}
                     </div>
                 </div>
+
+                {/* Distro-Aware Safety Banner */}
+                {distroContext && distroContext.id !== 'arch' && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className={clsx(
+                            'mt-4 rounded-xl px-4 py-2.5 flex items-center gap-3 text-xs font-bold border',
+                            distroContext.id === 'manjaro'
+                                ? 'bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400'
+                                : 'bg-app-accent/5 border-app-accent/15 text-app-accent/80'
+                        )}
+                    >
+                        <ShieldCheck size={16} className="shrink-0" />
+                        <span>
+                            {distroContext.id === 'manjaro'
+                                ? 'Manjaro Stability Guard: Chaotic-AUR is blocked. Updates follow Manjaro\'s delayed release cycle.'
+                                : distroContext.id === 'cachyos'
+                                    ? `Powered by CachyOS — ${distroContext.cpu_tier.toUpperCase()} optimized binaries included`
+                                    : distroContext.id === 'garuda'
+                                        ? 'Garuda detected — Chaotic-AUR pre-installed, included in updates'
+                                        : distroContext.id === 'endeavouros'
+                                            ? 'EndeavourOS detected — close-to-Arch experience'
+                                            : `${distroContext.pretty_name} — Arch-compatible update pipeline`
+                            }
+                        </span>
+                    </motion.div>
+                )}
 
                 {/* System Status Indicators (NEW: Phase 4 & 5) */}
                 {(rebootRequired || pacnewWarnings.length > 0) && (
@@ -481,6 +570,52 @@ export default function UpdatesPage() {
                                 >
                                     <div className="absolute inset-0 bg-white/20 animate-pulse" />
                                 </motion.div>
+                            </div>
+
+                            {/* 3.2: Per-source progress badges */}
+                            <div className="flex items-center gap-3 mt-3">
+                                {updates.some(u => u.source.source_type === 'repo') && (
+                                    <div className={clsx(
+                                        'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all duration-300',
+                                        sourceProgress.repo === 'active' ? 'bg-blue-500/15 text-blue-400 border-blue-500/30 animate-pulse' :
+                                            sourceProgress.repo === 'done' ? 'bg-green-500/15 text-green-400 border-green-500/30' :
+                                                sourceProgress.repo === 'error' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
+                                                    'bg-app-fg/5 text-app-muted/50 border-app-border/50'
+                                    )}>
+                                        {sourceProgress.repo === 'done' ? <CheckCircle2 size={10} /> :
+                                            sourceProgress.repo === 'active' ? <Loader2 size={10} className="animate-spin" /> :
+                                                <span className="w-1.5 h-1.5 rounded-full bg-current" />}
+                                        Repo
+                                    </div>
+                                )}
+                                {updates.some(u => u.source.source_type === 'aur') && (
+                                    <div className={clsx(
+                                        'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all duration-300',
+                                        sourceProgress.aur === 'active' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30 animate-pulse' :
+                                            sourceProgress.aur === 'done' ? 'bg-green-500/15 text-green-400 border-green-500/30' :
+                                                sourceProgress.aur === 'error' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
+                                                    'bg-app-fg/5 text-app-muted/50 border-app-border/50'
+                                    )}>
+                                        {sourceProgress.aur === 'done' ? <CheckCircle2 size={10} /> :
+                                            sourceProgress.aur === 'active' ? <Loader2 size={10} className="animate-spin" /> :
+                                                <span className="w-1.5 h-1.5 rounded-full bg-current" />}
+                                        AUR
+                                    </div>
+                                )}
+                                {updates.some(u => u.source.source_type === 'flatpak') && (
+                                    <div className={clsx(
+                                        'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all duration-300',
+                                        sourceProgress.flatpak === 'active' ? 'bg-purple-500/15 text-purple-400 border-purple-500/30 animate-pulse' :
+                                            sourceProgress.flatpak === 'done' ? 'bg-green-500/15 text-green-400 border-green-500/30' :
+                                                sourceProgress.flatpak === 'error' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
+                                                    'bg-app-fg/5 text-app-muted/50 border-app-border/50'
+                                    )}>
+                                        {sourceProgress.flatpak === 'done' ? <CheckCircle2 size={10} /> :
+                                            sourceProgress.flatpak === 'active' ? <Loader2 size={10} className="animate-spin" /> :
+                                                <span className="w-1.5 h-1.5 rounded-full bg-current" />}
+                                        Flatpak
+                                    </div>
+                                )}
                             </div>
 
                             <div className="flex items-center justify-between mt-4">
@@ -738,6 +873,7 @@ export default function UpdatesPage() {
                 onClose={() => {
                     setShowConfirm(false);
                     setPassword('');
+                    setManifest(null);
                 }}
                 onConfirm={performUpdate}
                 title="Update System"
@@ -749,6 +885,41 @@ export default function UpdatesPage() {
                                 : "This will update all system packages. Are you ready to proceed?"
                             }
                         </p>
+
+                        {/* 3.1: Transaction Manifest Details */}
+                        <div className="space-y-2 bg-app-bg/50 rounded-xl p-3 border border-app-border">
+                            <p className="text-xs font-semibold text-app-fg/80 uppercase tracking-wider">Transaction Summary</p>
+                            {updates.filter(u => u.source.source_type === 'repo').length > 0 && (
+                                <div className="flex items-center gap-2">
+                                    <span className="w-2 h-2 rounded-full bg-blue-500" />
+                                    <span className="text-xs text-app-muted">
+                                        <strong className="text-app-fg">{updates.filter(u => u.source.source_type === 'repo').length}</strong> Official packages (full system upgrade)
+                                    </span>
+                                </div>
+                            )}
+                            {updates.filter(u => u.source.source_type === 'aur').length > 0 && (
+                                <div className="flex items-center gap-2">
+                                    <span className="w-2 h-2 rounded-full bg-amber-500" />
+                                    <span className="text-xs text-app-muted">
+                                        <strong className="text-app-fg">{updates.filter(u => u.source.source_type === 'aur').length}</strong> AUR packages
+                                        <span className="text-[10px] opacity-60 ml-1">(build from source)</span>
+                                    </span>
+                                </div>
+                            )}
+                            {updates.filter(u => u.source.source_type === 'flatpak').length > 0 && (
+                                <div className="flex items-center gap-2">
+                                    <span className="w-2 h-2 rounded-full bg-purple-500" />
+                                    <span className="text-xs text-app-muted">
+                                        <strong className="text-app-fg">{updates.filter(u => u.source.source_type === 'flatpak').length}</strong> Flatpak apps
+                                    </span>
+                                </div>
+                            )}
+                            <hr className="border-app-border/50" />
+                            <p className="text-[10px] text-app-muted/60 font-mono">
+                                Total: {updates.length} package{updates.length !== 1 ? 's' : ''}
+                            </p>
+                        </div>
+
                         {doSnapshot && snapshotStatus?.is_configured && (
                             <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-3">
                                 <ShieldCheck size={18} className="text-emerald-500" />

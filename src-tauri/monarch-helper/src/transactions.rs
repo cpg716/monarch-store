@@ -44,7 +44,7 @@ pub struct TransactionManifest {
     pub target_repo: Option<String>,
 }
 
-fn emit_progress_event(event: AlpmProgressEvent) {
+pub fn emit_progress_event(event: AlpmProgressEvent) {
     if let Ok(json) = serde_json::to_string(&event) {
         progress::send_progress_line(json);
     }
@@ -117,29 +117,62 @@ fn check_db_freshness(alpm: &Alpm) -> bool {
 }
 
 pub fn force_refresh_sync_dbs(alpm: &mut Alpm) -> Result<(), String> {
-    emit_simple_progress(5, "Force refreshing sync databases...");
-    let sync_dir = std::path::Path::new("/var/lib/pacman/sync");
-    if let Ok(entries) = std::fs::read_dir(sync_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    }
-    emit_simple_progress(25, "Cleared local sync database cache");
-
+    emit_simple_progress(5, "Refreshing sync databases...");
     match alpm.syncdbs_mut().update(true) {
         Ok(_) => {
             emit_simple_progress(100, "Sync databases refreshed");
             Ok(())
         }
-        Err(e) => Err(e.to_string()),
+        Err(e) => {
+            let err_str = e.to_string();
+            if is_corrupt_db_error(&err_str) {
+                emit_simple_progress(
+                    25,
+                    "Corrupt database detected. Clearing sync cache safely...",
+                );
+                let sync_dir = std::path::Path::new("/var/lib/pacman/sync");
+                if let Ok(entries) = std::fs::read_dir(sync_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                }
+                match alpm.syncdbs_mut().update(true) {
+                    Ok(_) => {
+                        emit_simple_progress(100, "Sync databases refreshed after recovery");
+                        Ok(())
+                    }
+                    Err(e2) => Err(e2.to_string()),
+                }
+            } else {
+                Err(err_str)
+            }
+        }
     }
 }
 
+const KEYRING_CHECK_FILE: &str = "/var/tmp/monarch-keyring-check";
+const KEYRING_CHECK_INTERVAL_SECS: u64 = 43200; // 12 hours
+
 fn ensure_keyrings_updated(alpm: &Alpm) -> Result<(), String> {
-    emit_simple_progress(1, "Pre-Flight: Verifying security keys...");
+    // ✅ THROTTLING: Skip if we checked recently (within 12 hours)
+    if let Ok(meta) = std::fs::metadata(KEYRING_CHECK_FILE) {
+        if let Ok(modified) = meta.modified() {
+            if let Ok(elapsed) = modified.elapsed() {
+                if elapsed.as_secs() < KEYRING_CHECK_INTERVAL_SECS {
+                    logger::trace("Keyring pre-flight: recently checked, skipping.");
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    emit_simple_progress(
+        1,
+        "Pre-Flight: Verifying security keys (this may take a moment on first run)...",
+    );
     let mut targets = vec!["archlinux-keyring"];
 
     let has_chaotic = alpm
@@ -166,10 +199,13 @@ fn ensure_keyrings_updated(alpm: &Alpm) -> Result<(), String> {
         .map_err(|e| format!("Failed to launch pacman for keyring: {}", e))?;
 
     if output.status.success() {
+        // ✅ Update timestamp on success
+        let _ = std::fs::File::create(KEYRING_CHECK_FILE);
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         logger::warn(&format!("Keyring update warning: {}", stderr));
+        // Don't update timestamp on failure so we retry next time
         Ok(())
     }
 }
@@ -181,10 +217,6 @@ pub fn execute_alpm_install(
     target_repo: Option<String>,
     alpm: &mut Alpm,
 ) -> Result<(), String> {
-    if let Err(e) = ensure_keyrings_updated(alpm) {
-        logger::warn(&format!("Keyring pre-flight failed: {}", e));
-    }
-
     emit_simple_progress(5, "Initializing transaction...");
 
     if sync_first && check_db_freshness(alpm) {
@@ -193,7 +225,6 @@ pub fn execute_alpm_install(
             let err = e.to_string();
             if is_corrupt_db_error(&err) {
                 force_refresh_sync_dbs(alpm)?;
-                alpm.syncdbs_mut().update(true).map_err(|e| e.to_string())?;
             } else {
                 return Err(format!("Database sync failed: {}", err));
             }
@@ -297,6 +328,7 @@ pub fn execute_alpm_install(
         }
         Err(e) => {
             let msg = e.to_string();
+            logger::warn(&format!("ALPM Transaction Commit Failed: {}", msg));
             let classified = classify_alpm_error(&msg);
             emit_progress_event(AlpmProgressEvent {
                 event_type: "error".to_string(),
@@ -425,8 +457,7 @@ pub fn execute_alpm_upgrade(packages: Option<Vec<String>>, alpm: &mut Alpm) -> R
         );
     }
 
-    ensure_keyrings_updated(alpm)?;
-
+    emit_simple_progress(5, "Resolving dependencies for system upgrade...");
     // RETRY LOOP: Scoped manually to avoid borrow checker issues
     let mut retry_needed = false;
 
@@ -596,23 +627,104 @@ pub fn execute_alpm_sync(repos: Vec<String>, alpm: &mut Alpm) -> Result<(), Stri
     }
 }
 
+extern "C" fn safe_progress_cb(
+    _ctx: *mut std::ffi::c_void,
+    _progress: alpm_sys::alpm_progress_t,
+    pkgname: *const std::ffi::c_char,
+    percent: std::ffi::c_int,
+    _howmany: usize,
+    _current: usize,
+) {
+    let pkg_str = if pkgname.is_null() {
+        "system components"
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(pkgname) }
+            .to_str()
+            .unwrap_or("unknown")
+    };
+    let msg = format!("Processing {}... {}%", pkg_str, percent);
+    emit_simple_progress(percent as u8, &msg);
+}
+
+extern "C" fn safe_dl_cb(
+    _ctx: *mut std::ffi::c_void,
+    filename: *const std::ffi::c_char,
+    _event: alpm_sys::alpm_download_event_type_t,
+    _data: *mut std::ffi::c_void,
+) {
+    if filename.is_null() {
+        return;
+    }
+}
+
 fn setup_progress_callbacks(alpm: &mut Alpm) -> Result<(), String> {
     // Callback signatures fixed for alpm 5.x
-    // Ignoring download events for now to simplify type checking
-    alpm.set_dl_cb((), move |_, _, _| {
-        // no-op for now to satisfy type checker
-    });
+    // BUGFIX: bypassing alpm-rs to handle NULL pkgname/filenames from libalpm directly.
+    unsafe {
+        alpm_sys::alpm_option_set_dlcb(
+            alpm.as_alpm_handle_t(),
+            Some(safe_dl_cb),
+            std::ptr::null_mut(),
+        );
+        alpm_sys::alpm_option_set_progresscb(
+            alpm.as_alpm_handle_t(),
+            Some(safe_progress_cb),
+            std::ptr::null_mut(),
+        );
+    }
 
-    // Progress Callback: FnMut(&mut Ctx, &str, i32, usize, usize, ?)
-    // We cannot reliably access Progress enum (AddStart etc) due to API changes/version mismatch.
-    // Falling back to generic "Processing" message using package name and percent.
-    alpm.set_progress_cb((), move |_, pkg_name, percent, _, _, _| {
-        // percent arg is i32, pkg_name is &str
-        let msg = format!("Processing {}... {}%", pkg_name, percent);
-        emit_simple_progress(percent as u8, &msg);
-    });
+    // BUGFIX: bypassing alpm-rs to handle NULL hook/event fields.
+    // The alpm-rs crate panics if fields like name or desc are NULL during HookRunStart.
+    unsafe {
+        alpm_sys::alpm_option_set_eventcb(
+            alpm.as_alpm_handle_t(),
+            Some(safe_event_cb),
+            std::ptr::null_mut(),
+        );
+    }
 
     Ok(())
+}
+
+extern "C" fn safe_event_cb(_ctx: *mut std::ffi::c_void, event: *mut alpm_sys::alpm_event_t) {
+    if event.is_null() {
+        return;
+    }
+
+    // We only care about HookRunStart right now for UI progress
+    unsafe {
+        if (*event).type_ == alpm_sys::_alpm_event_type_t::ALPM_EVENT_HOOK_RUN_START {
+            let hook_run = (*event).hook_run;
+
+            let name_str = if hook_run.name.is_null() {
+                "Unknown Hook"
+            } else {
+                std::ffi::CStr::from_ptr(hook_run.name)
+                    .to_str()
+                    .unwrap_or("Unknown Hook")
+            };
+
+            let desc_str = if hook_run.desc.is_null() {
+                "Running system maintenance hook..."
+            } else {
+                std::ffi::CStr::from_ptr(hook_run.desc)
+                    .to_str()
+                    .unwrap_or("Running system maintenance hook...")
+            };
+
+            emit_progress_event(AlpmProgressEvent {
+                event_type: "hook_start".to_string(),
+                package: None,
+                percent: Some(95),
+                downloaded: None,
+                total: None,
+                message: format!(
+                    "Running hook: {} ({}) [{}/{}]",
+                    name_str, desc_str, hook_run.position, hook_run.total
+                ),
+            });
+        }
+    }
 }
 
 fn lookup_packages<'a>(
@@ -643,20 +755,23 @@ fn lookup_packages<'a>(
     found_packages
 }
 pub fn find_orphans(alpm: &Alpm) -> Vec<String> {
-    let mut required = std::collections::HashSet::new();
-    for pkg in alpm.localdb().pkgs() {
-        for dep in pkg.depends() {
-            required.insert(dep.name().to_string());
-        }
-        for provide in pkg.provides() {
-            let name = provide.name().split('=').next().unwrap_or(provide.name());
-            required.insert(name.to_string());
-        }
-    }
     alpm.localdb()
         .pkgs()
         .iter()
-        .filter(|pkg| pkg.reason() == alpm::PackageReason::Depend && !required.contains(pkg.name()))
+        .filter(|pkg| pkg.reason() == alpm::PackageReason::Depend)
+        .filter(|pkg| {
+            // Check if required by anything
+            let req_by = pkg.required_by();
+            if !req_by.is_empty() {
+                return false;
+            }
+            // Check if optionally required by anything
+            let opt_for = pkg.optional_for();
+            if !opt_for.is_empty() {
+                return false;
+            }
+            true
+        })
         .map(|pkg| pkg.name().to_string())
         .collect()
 }

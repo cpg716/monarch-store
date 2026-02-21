@@ -1,6 +1,6 @@
-# State of the Union — Architecture Report
-**MonARCH Store v0.4.6-alpha**  
-**Report Date:** 2026-02-14  
+# MonARCH Store: STATE OF THE UNION ARCHITECTURE REPORT (v0.4.7-alpha)
+**Date:** 2026-02-21
+**Version:** v0.4.7-alpha
 **Scope:** Full codebase assimilation (Iron Core Purge, documentation, Rust backend, React frontend, configuration)
 
 ---
