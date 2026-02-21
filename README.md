@@ -20,16 +20,17 @@ A premium, universal software center built with Tauri and React. MonARCH **respe
 
 ![MonARCH Store Dashboard](screenshots/home.png)
 
-## ✨ Key Features (v0.4.6)
+## ✨ Key Features (v0.4.7)
 
-### 🦎 Host-Adaptive Architecture (v0.4.6-alpha)
-MonARCH no longer "injects" its own opinions into your system. **No manual repo configuration required** — we discover repositories from your system.
+### 🦎 Host-Adaptive Architecture (v0.4.7-alpha)
+MonARCH respects your existing system configuration. **No manual repo configuration required** — we discover repositories from your system state.
 *   **Respects `pacman.conf`**: We typically only show repositories you have explicitly enabled on your host system.
 *   **Manjaro Guard**: Automatically prevents enabling incompatible repositories (like `chaotic-aur`) on Manjaro systems to ensure stability.
 *   **Discovery Mode**: Automatically detects CachyOS, Garuda, or EndeavourOS specific repositories and displays them correctly.
 
-### 🛡️ Iron Core Purge (v0.4.6-alpha)
-A hardened Single Source of Truth implementation that offloads logic to the backend.
+### 🛡️ Iron Core (v0.4.7-alpha)
+A hardened Single Source of Truth backend that offloads all complex logic and metadata hydration.
+*   **Bulletproof ALPM (v0.4.7)**: Hardened FFI callback isolation that prevents `signal 6` abort panics during heavy official repository transactions.
 *   **Dumb View Frontend**: The UI only renders data; all complex metadata hydration and normalization happens in the Rust backend for maximum performance.
 *   **Zero-Blink Registry**: SQLite-backed registry handles thousands of packages with stable references, preventing flickering during background syncs.
 *   **Typed Bindings**: Type-safe contract between Rust and TypeScript via `tauri-specta`, eliminating interface drift.
@@ -37,9 +38,12 @@ A hardened Single Source of Truth implementation that offloads logic to the back
 ### 📦 Unified Search & Aggregation
 Stop searching three different websites. MonARCH combines them all:
 *   **One Search Bar**: Queries **Official Repos**, **AUR**, and **Flathub** simultaneously.
+*   **Rich Metadata Merging (v0.4.7)**: Intelligently merges screenshots and long descriptions from Flatpak into Repo/AUR sources for a unified browsing experience.
 *   **Source Priority**: Intelligently ranks results (Official > Flatpak > AUR).
-*   **Smart Merging**: Duplicate apps are merged into a single card with a "Source" selector using a generic first-segment canonical key (e.g., `heroic` merges with `heroic-games-launcher`).
+*   **Smart Merging**: Duplicate apps are merged into a single card with a "Source" selector using a generic first-segment canonical key.
 *   **One Proper Name**: Apps use consistent, human-friendly display names (e.g., "Discord" instead of "com.discordapp.Discord").
+
+![MonARCH Store Unified Search](screenshots/details.png)
 
 ### 🛠️ Native AUR Builder
 A robust, safe implementation of the Arch User Repository.
