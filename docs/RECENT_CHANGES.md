@@ -1,7 +1,7 @@
 # Recent Changes — Full Update
 
-**Report date:** 2026-02-14  
-**Scope:** Iron Core Purge (offloading hydration, bindings only), Universal Data Engine (canonical key without per-app list, one proper name per app), Essentials/Categories load fix, Trending repo packages, icon/base64 fix. Earlier: Unification, Operation Chaotic Good, labels and RepoSelector.
+**Report date:** 2026-02-21  
+**Scope:** v0.4.7-alpha Release. Rich Metadata (screenshots, long descriptions), Bulletproof ALPM (FFI stability fixes), Second-pass enrichment, multi-source merging.
 
 ---
 
@@ -176,4 +176,22 @@ To improve code organization and testability, the core aggregation logic was ext
 
 ### Impact
 - **No functional change:** The application behaves exactly as before.
-- **Improved Testing:** Unit tests in `tests.rs` now import directly from the middleware, allowing for more targeted testing of the aggregation logic.
+---
+
+## 11. Rich Metadata & FFI Stability (2026-02-21)
+
+### Rich Metadata Merging
+- **Screenshots & Long Descriptions**: Updated the deduplication and merging logic in `aggregation.rs`. Generic variants (Repo/AUR) now automatically inherit rich content (screenshots, multi-paragraph descriptions) from matched Flatpak variants.
+- **SSOT Pass 2**: Added a secondary local AppStream enrichment pass to all discovery views (Trending, Essentials, Search). This guarantees that even if external APIs return early, local metadata is systematically cross-referenced for any missing icons or details.
+- **Persistence**: Expanded the SQLite registry schema to store `long_description` and `screenshots`. Applied migrations to existing developer/user databases.
+
+### Bulletproof ALPM (FFI Stability)
+- **Signal 6 Fix**: Resolved critical `signal 6 (SIGABRT)` abort panics that occurred during large official repository transactions (e.g., kernel or firmware upgrades).
+- **Callback Safety**: Implemented strict pointer validation and thread boundary isolation for ALPM progress and status callbacks.
+- **Optimized Hydration**: Decoupled high-frequency metadata hydration from the mission-critical ALPM operation thread to prevent race conditions during heavy IO.
+
+### UI & Configuration
+- **Settings & Sidebar**: Hardcoded version strings updated to `v0.4.7-alpha`.
+- **Labels**: Refined `SourceSelector` labels for better clarity across different variants.
+
+**Files:** `middleware/aggregation.rs`, `commands/search.rs`, `registry.rs`, `helper_client.rs`, `monarch-helper/main.rs`, `SettingsPage.tsx`, `Sidebar.tsx`.

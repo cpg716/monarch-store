@@ -96,6 +96,11 @@ All system modifications pass through a strict gatekeeper:
     *   **Update-before-install**: `update_and_install_package` runs a full system upgrade (ExecuteBatch with refresh + upgrade) **before** installing the target package.
     *   **No silent full upgrade**: If an install fails due to stale DB, the GUI emits `failed_update_required` and returns an error—user must explicitly confirm a system upgrade.
 
+### 🛡️ FFI Stability (Bulletproof ALPM)
+(v0.4.7 Milestone) To prevent `signal 6 (SIGABRT)` panics during intensive ALPM transactions:
+- **Callback Isolation**: Progress and status callbacks are rigorously validated before dereferencing pointers.
+- **Thread Separation**: High-frequency metadata hydration is decoupled from the primary ALPM transaction thread to prevent lock contention and race conditions.
+
 ## 5. Unified Update System (Operation "Unified State")
 **Modules:** `commands/update.rs`, `transactions.rs`
 

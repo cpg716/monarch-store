@@ -1,7 +1,6 @@
 # MonARCH Store — Packaging and Metadata Flow (v0.4.7-alpha)
 
-**Date:** 2026-02-14  
-**Abstract:** This document details the modern data aggregation and hydration pipeline in Monarch Store. The application follows a **"Backend as Truth"** model where the Rust backend is responsible for fully hydrating package ViewModels (icons, descriptions, ratings) from multiple sources (SQLite, ODRS, registries) before the frontend renders them.
+**Abstract:** This document details the modern data aggregation and hydration pipeline in Monarch Store. The application follows a **"Backend as Truth"** model where the Rust backend is responsible for fully hydrating package ViewModels (icons, descriptions, screenshots, ratings) from multiple sources (SQLite, ODRS, registries) before the frontend renders them.
 
 ---
 
@@ -21,6 +20,7 @@ When a search or listing command is invoked (e.g., `search_packages`), the backe
 -   **Aggregates**: Parallel fetch from ALPM, AUR, and Flathub.
 -   **Merges**: Groups results by `canonical_merge_key`.
 -   **Hydrates**: Joins the merged results against the SQLite Registry. If a package (like AUR or Repo) matches an AppID in the registry, it is **automatically backfilled** with icons, screenshots, and descriptions.
+-   **SSOT Pass 2**: (v0.4.7) A final enrichment pass is performed post-aggregation to ensure all variants (including search results) carry the richest metadata available in the local AppStream index.
 
 ---
 
@@ -49,11 +49,12 @@ When merging, the system enforces a strict priority to determine the "Primary So
 2.  **Flatpak** (Flathub)
 3.  **AUR**
 
-Metadata is preserved from the **best metadata source** during the merge, regardless of which source is chosen as the primary install target.
+Metadata is preserved from the **best metadata source** during the merge, regardless of which source is chosen as the primary install target. v0.4.7 ensures `screenshots` and `long_description` are prioritized from Flatpak sources if missing in Repo/AUR.
 
 ---
 
 ## 5. Summary of Improvements
-1.  **Eliminated 400 Errors**: Base64 icons are ahora properly wrapped and validated in the backend/middleware.
+1.  **Eliminated 400 Errors**: Base64 icons are properly wrapped and validated in the backend/middleware.
 2.  **Zero Layout Shift**: Since cards arrive fully hydrated, there is no "pop-in" of icons or descriptions.
-3.  **Reduced IPC**: Batch syncs (`syncRegistryBulk`) minimize bridge flooding by only fetching IDs that are actually visible.
+3.  **Bulletproof FFI**: Progress callbacks are isolated to prevent panics during intensive ALPM transactions.
+4.  **Rich Persistence**: Long descriptions and screenshots are now stored in the local SQLite registry for offline access and faster loading.

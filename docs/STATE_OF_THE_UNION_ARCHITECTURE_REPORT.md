@@ -9,11 +9,13 @@
 
 MonARCH Store is a **Host-Adaptive, Universal** software center for Arch-based systems. It unifies **Official Repos**, **AUR**, and **Flatpak** under one interface while maintaining a **Dumb View** frontend that subscribes to a backend-hydrated registry.
 
-### Core Capabilities (v0.4.6-alpha)
+### Core Capabilities (v0.4.7-alpha)
 
 | Capability | Description |
 |------------|-------------|
 | **Universal Search** | Single search bar queries ALPM (repo), AUR (raur), and Flathub in parallel; results merged and deduplicated by canonical key. |
+| **Rich Metadata** | (v0.4.7) Secondary enrichment pass & multi-source merging (Screenshots, Long Descriptions). |
+| **Bulletproof ALPM** | (v0.4.7) FFI-safe callback isolation preventing signal 6/abort panics during heavy IO. |
 | **Native AUR Builder** | User-level `makepkg` (libgit2 clone, `.SRCINFO` parse, GPG key import); built `.pkg.tar.zst` installed via monarch-helper. |
 | **Flatpak** | First-class install/remove/update via Flathub API and Flatpak CLI. |
 | **Host-Adaptive Repos** | Repositories discovered from ALPM/`pacman.conf`; only `chaotic-aur` is toggled via drop-in; Manjaro blocks chaotic-aur. |
@@ -223,5 +225,23 @@ End-to-end path of a search from the React SearchBar to the Rust backend and bac
 | AGENTS.md | Build commands, critical package rules, lock safety. |
 
 ---
+
+---
+
+## 8. Milestone Archive: v0.4.7-alpha (Rich Metadata & Stability)
+
+The v0.4.7-alpha release represents a significant hardening of the existing "Iron Core" architecture:
+
+### 8.1 FFI Stability (Bulletproof ALPM)
+- **Problem:** Frequent `signal 6 (SIGABRT)` panics during large transactions (e.g. `linux` kernel updates) caused by unsafe pointer access in ALPM progress callbacks.
+- **Solution:** Rationalized the FFI callback layer. Implemented safe pointer validation and ensured metadata hydration avoids blocking the ALPM transaction thread.
+
+### 8.2 Rich Metadata Merging
+- **Merging Logic:** `aggregation.rs` now allows generic variants (Repo/AUR) to inherit `screenshots` and `long_description` from rich variants (Flatpak) during the deduplication phase.
+- **SSOT Pass 2:** Implementation of a secondary local AppStream enrichment pass for all discovery views, ensuring icons and descriptions are consistent regardless of the API fetching order.
+
+### 8.3 Registry Persistence
+- **Schema Migration:** Added `long_description` and `screenshots` columns to the local registry DB.
+- **Performance:** Optimized `bulk_upsert_packages` to prevent UI lockup while syncing 3000+ AppStream entries.
 
 **Report generated from full codebase review. Use for onboarding, audits, and planning.**
