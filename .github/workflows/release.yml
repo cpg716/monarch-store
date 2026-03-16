@@ -45,12 +45,14 @@ jobs:
       - name: Install libalpm (for monarch-helper / monarch-core)
         run: |
           set -euo pipefail
-          sudo add-apt-repository -y universe
+          # ubuntu-24.04 runner already has universe enabled; avoid add-apt-repository flakiness.
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libalpm-dev
           export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+          echo "libalpm pc dir: $(pkg-config --variable=pcfiledir libalpm 2>/dev/null || echo 'unknown')"
           echo "libalpm version: $(pkg-config --modversion libalpm || true)"
-          pkg-config --exists libalpm && echo "libalpm OK"
+          pkg-config --exists libalpm || (echo "pkg-config cannot resolve libalpm; dumping errors:"; pkg-config --print-errors libalpm; exit 1)
+          echo "libalpm OK"
 
       - name: Build monarch-helper
         run: |
