@@ -53,3 +53,6 @@ src-tauri/icons/*
 *.tar.gz
 src-tauri/Cargo.lock
 node_modules
+
+# Legacy / external repo clone (not part of MonARCH build)
+flathub-website-clone/
