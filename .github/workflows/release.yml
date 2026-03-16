@@ -29,6 +29,7 @@ jobs:
             base-devel \
             rustup \
             pkgconf \
+            wget \
             libadwaita \
             gtk4 \
             webkit2gtk-4.1 \
