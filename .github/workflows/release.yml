@@ -35,6 +35,7 @@ jobs:
             librsvg \
             pacman \
             github-cli \
+            git \
             libarchive \
             curl \
             gpgme \
