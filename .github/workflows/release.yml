@@ -1,5 +1,5 @@
 # Release: build GTK-only MonARCH Store (monarch-gtk) and publish draft release.
-# Uses native Ubuntu runner so apt can install libadwaita-1-dev and libalpm-dev (container had no libadwaita).
+# Build runs in Arch container; publish runs on host so gh has access to .git.
 name: Release
 on:
   push:
@@ -8,11 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  release-gtk:
-    permissions:
-      contents: write
+  build:
     runs-on: ubuntu-24.04
-    # Build inside Arch Linux so we get a modern pacman/libalpm and GTK/libadwaita stack.
     container:
       image: archlinux:latest
 
@@ -67,24 +64,6 @@ jobs:
           cd src-tauri
           cargo build --release -p monarch-gtk
 
-      - name: Prepare release body
-        id: release_body
-        run: |
-          TAG="${{ github.ref_name }}"
-          if section=$(awk -v tag="$TAG" '/^## / { if (found) exit; if ($0 ~ tag) found=1 } found { print }' RELEASE_NOTES.md) && [ -n "$section" ]; then
-            body="Release **${TAG}**
-
-          ${section}
-
-          See assets below for installation."
-          else
-            body="Release **${TAG}**. See assets below for installation."
-          fi
-          delimiter="release_body_$(date +%s)"
-          echo "body<<${delimiter}" >> "$GITHUB_OUTPUT"
-          echo "$body" >> "$GITHUB_OUTPUT"
-          echo "${delimiter}" >> "$GITHUB_OUTPUT"
-
       - name: Create release tarball
         run: |
           TAG="${{ github.ref_name }}"
@@ -109,18 +88,41 @@ jobs:
           tar czf "${PREFIX}.tar.gz" "$PREFIX"
           echo "tarball=${PREFIX}.tar.gz" >> $GITHUB_ENV
 
-      - name: Create draft release and upload assets
-        working-directory: ${{ github.workspace }}
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball
+          path: ${{ env.tarball }}
+
+  publish:
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+
+      - name: Create draft release and upload tarball
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_BODY: ${{ steps.release_body.outputs.body }}
         run: |
-          cd "$GITHUB_WORKSPACE"
-          export GIT_DIR="$GITHUB_WORKSPACE/.git"
-          export GIT_WORK_TREE="$GITHUB_WORKSPACE"
           TAG="${{ github.ref_name }}"
-          tarball="${{ env.tarball }}"
-          echo "$RELEASE_BODY" > /tmp/release_notes.md
+          tarball=$(find . -maxdepth 2 -name '*.tar.gz' | head -1)
+          if section=$(awk -v tag="$TAG" '/^## / { if (found) exit; if ($0 ~ tag) found=1 } found { print }' RELEASE_NOTES.md) && [ -n "$section" ]; then
+            body="Release **${TAG}**
+
+          ${section}
+
+          See assets below for installation."
+          else
+            body="Release **${TAG}**. See assets below for installation."
+          fi
+          echo "$body" > /tmp/release_notes.md
           gh release create "$TAG" --draft --title "MonARCH Store $TAG" --notes-file /tmp/release_notes.md --prerelease 2>/dev/null || true
           gh release upload "$TAG" "$tarball" --clobber
           echo "Draft release created/updated: $TAG"
