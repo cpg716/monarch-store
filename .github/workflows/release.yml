@@ -110,10 +110,14 @@ jobs:
           echo "tarball=${PREFIX}.tar.gz" >> $GITHUB_ENV
 
       - name: Create draft release and upload assets
+        working-directory: ${{ github.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_BODY: ${{ steps.release_body.outputs.body }}
         run: |
+          cd "$GITHUB_WORKSPACE"
+          export GIT_DIR="$GITHUB_WORKSPACE/.git"
+          export GIT_WORK_TREE="$GITHUB_WORKSPACE"
           TAG="${{ github.ref_name }}"
           tarball="${{ env.tarball }}"
           echo "$RELEASE_BODY" > /tmp/release_notes.md
