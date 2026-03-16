@@ -34,7 +34,6 @@ jobs:
             webkit2gtk-4.1 \
             librsvg \
             pacman \
-            libalpm \
             libarchive \
             curl \
             gpgme \
