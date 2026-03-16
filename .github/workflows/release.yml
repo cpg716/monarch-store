@@ -34,9 +34,15 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libgtk-4-dev \
             libadwaita-1-dev
-          # Ensure pkg-config can find libs (for this step and later steps)
           echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
           pkg-config --exists libadwaita-1 || (echo "libadwaita-1.pc not found after install:"; find /usr -name 'libadwaita*.pc' 2>/dev/null; exit 1)
+
+      - name: Install libadwaita-1 dependencies (for libadwaita-sys)
+        run: |
+          apt-get update
+          apt-get install -y libadwaita-1-dev libadwaita-1-0
+          pkg-config --print-variables libadwaita-1 || true
+          pkg-config --exists libadwaita-1 && echo "libadwaita-1 found" || (echo "Missing libadwaita-1.pc"; exit 1)
 
       - name: Build monarch-helper
         env:
