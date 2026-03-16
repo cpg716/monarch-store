@@ -12,6 +12,9 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-24.04
+    # Build inside Arch Linux so we get a modern pacman/libalpm and GTK/libadwaita stack.
+    container:
+      image: archlinux:latest
 
     steps:
       - uses: actions/checkout@v4
@@ -19,49 +22,39 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install libadwaita and build dependencies
+      - name: Install GTK/libadwaita, libalpm, and build dependencies (Arch)
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libadwaita-1-dev \
-            libgtk-4-dev \
-            librsvg2-dev \
-            libwebkit2gtk-4.1-dev \
-            xdg-utils \
-            pkg-config \
-            build-essential \
+          pacman -Syu --noconfirm --needed \
+            base-devel \
+            rustup \
+            pkgconf \
+            libadwaita \
+            gtk4 \
+            webkit2gtk-4.1 \
+            librsvg \
+            pacman \
+            libalpm \
+            libarchive \
+            curl \
+            gpgme \
+            openssl \
+            sqlite \
             clang \
-            lld \
-            libssl-dev \
-            libsqlite3-dev \
-            ca-certificates
-          echo "pkg-config version: $(pkg-config --version)"
-          echo "libadwaita-1 version: $(pkg-config --modversion libadwaita-1 || true)"
-          echo "gtk4 version: $(pkg-config --modversion gtk4 || true)"
-          pkg-config --exists 'libadwaita-1 >= 1.4' && echo "libadwaita-1 >= 1.4 OK"
-          pkg-config --exists gtk4 && echo "gtk4 OK"
-
-      - name: Install libalpm (for monarch-helper / monarch-core)
-        run: |
-          set -euo pipefail
-          # ubuntu-24.04 runner already has universe enabled; avoid add-apt-repository flakiness.
-          sudo apt-get update
-          # `pkg-config --exists libalpm` validates transitive `Requires:` too.
-          # On Ubuntu, `libalpm.pc` commonly pulls in these deps.
-          sudo apt-get install -y --no-install-recommends \
-            libalpm-dev \
-            libarchive-dev \
-            libcurl4-openssl-dev \
-            libgpgme-dev
-          export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+            lld
+          # Ensure cargo/rustc are available via rustup inside the container.
+          rustup default stable
+          export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/lib64/pkgconfig:/usr/share/pkgconfig"
+          echo "pkg-config version: $(pkg-config --version || echo 'unknown')"
+          echo "libadwaita version: $(pkg-config --modversion libadwaita-1 || echo 'unknown')"
+          echo "gtk4 version: $(pkg-config --modversion gtk4 || echo 'unknown')"
           echo "libalpm pc dir: $(pkg-config --variable=pcfiledir libalpm 2>/dev/null || echo 'unknown')"
           echo "libalpm version: $(pkg-config --modversion libalpm || true)"
-          echo "libalpm requires: $(pkg-config --print-requires libalpm 2>/dev/null || echo 'unknown')"
+          pkg-config --exists 'libadwaita-1 >= 1.4' && echo "libadwaita-1 >= 1.4 OK" || pkg-config --print-errors 'libadwaita-1 >= 1.4'
+          pkg-config --exists gtk4 && echo "gtk4 OK" || pkg-config --print-errors gtk4
           pkg-config --print-errors --exists libalpm || (echo "pkg-config cannot resolve libalpm; dumping errors:"; pkg-config --print-errors libalpm; exit 1)
-          echo "libalpm cflags: $(pkg-config --cflags libalpm)"
-          echo "libalpm libs: $(pkg-config --libs libalpm)"
-          echo "libalpm OK"
+          echo "libalpm cflags: $(pkg-config --cflags libalpm || echo 'unknown')"
+          echo "libalpm libs: $(pkg-config --libs libalpm || echo 'unknown')"
 
       - name: Build monarch-helper
         run: |
