@@ -1,24 +1,24 @@
 # Maintainer: cpg716 (developer and creator; built with the help of AI coding tools)
 # https://github.com/cpg716/monarch-store
 pkgname=monarch-store
-pkgver=0.4.7_alpha
+pkgver=0.5.0_alpha
 pkgrel=1
 # pkgdesc kept under 80 chars for terminal clarity
-pkgdesc="Distro-aware software store for Arch, Manjaro, CachyOS (Tauri)"
+pkgdesc="Distro-aware software store for Arch, Manjaro, CachyOS (GTK)"
 arch=('x86_64')
 url="https://github.com/cpg716/monarch-store"
 license=('MIT')
-depends=('webkit2gtk-4.1' 'gtk3' 'openssl' 'polkit' 'pacman-contrib' 'git')
+depends=('webkit2gtk-4.1' 'gtk3' 'openssl' 'polkit' 'pacman-contrib' 'git' 'libadwaita')
 # checkupdates is in pacman-contrib; rate-mirrors/reflector optional for Test Mirrors
 optdepends=('rate-mirrors: Test Mirrors with latency (Settings → Repositories)'
             'reflector: alternative for Test Mirrors / mirror ranking')
 makedepends=('cargo' 'nodejs' 'npm')
 # For -git: SKIP. After pushing tag v${pkgver}, run: ./scripts/release-finalize-pkgbuild.sh
-source=("https://github.com/cpg716/monarch-store/archive/refs/tags/v0.4.7_alpha.tar.gz")
+source=("https://github.com/cpg716/monarch-store/archive/refs/tags/v0.5.0_alpha.tar.gz")
 sha256sums=('SKIP')
 
 prepare() {
-  cd "monarch-store-0.4.7_alpha"
+  cd "monarch-store-0.5.0_alpha"
   # Contain npm cache in $srcdir (Arch: no $HOME pollution)
   export npm_config_cache="$srcdir/.npm"
   # Reproducible install when package-lock.json exists
@@ -26,23 +26,21 @@ prepare() {
 }
 
 build() {
-  cd "monarch-store-0.4.6_alpha"
-  # Contain Cargo home in $srcdir (Arch: no $HOME pollution)
+  cd "monarch-store-0.5.0_alpha"
   export CARGO_HOME="$srcdir/.cargo"
   export npm_config_cache="$srcdir/.npm"
-  # RELRO + noexecstack + PIE (workspace Cargo.toml already has release: lto=true, strip=true, panic=abort)
   export RUSTFLAGS="-C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack -C relocation-model=pie"
-  # Helper built first to same target dir as tauri build (so package() finds it). Do not rely on .cargo/config target-dir.
-  (cd src-tauri && CARGO_TARGET_DIR="$srcdir/$pkgname/src-tauri/target" cargo build --release -p monarch-helper)
-  npm run tauri build
+  # v0.5.0: GTK-only; build helper and GTK binary
+  (cd src-tauri && cargo build --release -p monarch-helper)
+  (cd src-tauri && cargo build --release -p monarch-gtk)
 }
 
 package() {
-  cd "monarch-store-0.4.6_alpha"
+  cd "monarch-store-0.5.0_alpha"
 
-  # 1. Install Binary (workspace build: binary is under monarch-gui or workspace target)
-  _bin=src-tauri/target/release/monarch-store
-  [ ! -f "$_bin" ] && _bin=src-tauri/monarch-gui/target/release/monarch-store
+  # 1. Install Binary (v0.5.0: GTK binary from monarch-gtk)
+  _bin=src-tauri/target/release/monarch-gtk
+  [ ! -f "$_bin" ] && _bin=src-tauri/target/release/monarch-store
   install -Dm755 "$_bin" "$pkgdir/usr/bin/monarch-store"
 
   # 2. Install AppStream metainfo (required for software center integration)

@@ -1,6 +1,8 @@
-# MonARCH Store — Packaging and Metadata Flow (v0.4.7-alpha)
+# MonARCH Store — Packaging and Metadata Flow
 
-**Abstract:** This document details the modern data aggregation and hydration pipeline in Monarch Store. The application follows a **"Backend as Truth"** model where the Rust backend is responsible for fully hydrating package ViewModels (icons, descriptions, screenshots, ratings) from multiple sources (SQLite, ODRS, registries) before the frontend renders them.
+**Last updated:** 2026-03-09
+
+**Abstract:** This document describes the current Iron Core aggregation and hydration pipeline. MonARCH follows a **backend-as-truth** model where Rust builds canonical package payloads before the GTK frontend renders them.
 
 ---
 
@@ -20,40 +22,52 @@ When a search or listing command is invoked (e.g., `search_packages`), the backe
 -   **Aggregates**: Parallel fetch from ALPM, AUR, and Flathub.
 -   **Merges**: Groups results by `canonical_merge_key`.
 -   **Hydrates**: Joins the merged results against the SQLite Registry. If a package (like AUR or Repo) matches an AppID in the registry, it is **automatically backfilled** with icons, screenshots, and descriptions.
--   **SSOT Pass 2**: (v0.4.7) A final enrichment pass is performed post-aggregation to ensure all variants (including search results) carry the richest metadata available in the local AppStream index.
+-   **SSOT Pass 2**: (v0.4.8) A final enrichment pass is performed post-aggregation to ensure all variants (including search results) carry the richest metadata available in the local AppStream index.
 
 ---
 
 ## 2. The "Dumb View" Frontend
 
-The React frontend is now a strict **subscriber** to the backend registry:
-- **Bindings Only**: All types and commands flow through `tauri-specta` generated `bindings.ts`.
-- **Zero-Hydration Hooks**: Legacy hooks like `usePrewarmCards`, `usePackageMetadata`, and `useRatings` have been deleted.
-- **Store Sync**: The `internal_store.ts` acts as a simple Key-Value cache of the hydrated ViewModels provided by the backend.
+The active GTK frontend is a strict **subscriber** to Iron Core:
+- **Model contract only**: GTK renders `Package`, `PackagePresentation`, `PackageVariant`, `FullPackageDetails`, `SearchOptions`, `HomeSnapshot`, and `GtkSettings`.
+- **Zero frontend hydration**: metadata parsing, source merge logic, and taxonomy truth stay in Rust.
+- **Legacy Tauri note**: the older React/Tauri frontend is historical/reference-only.
 
 ---
 
 ## 3. Canonical Merge Key & Identity
 
-Identity is governed by the **first-segment rule**:
-- **Logic:** Identifiers are normalized (suffixes stripped), and the first segment is used as a brand key (e.g. `heroic-games-launcher` -> `heroic`).
-- **One Card per App:** This ensures that Repo, AUR, and Flatpak variants of the same application are unified into a single card with a source selector.
-- **Full Specification:** See `docs/UNIVERSAL_DATA_ENGINE.md`.
+Identity is governed by `utils::canonical_merge_key` and `utils::canonical_search_base`:
+- **App ID first:** trusted app-id mappings take precedence.
+- **Packaging suffixes stripped:** `-bin`, `-git`, `-appimage`, `-desktop`, `.desktop`, `-hg`, `-svn`, `-official`, `-repo`, `-stable`.
+- **Channel variants preserved:** canary/beta/nightly/ptb/dev/esr/developer-edition/insider remain distinct identities (not merged into stable).
+- **One card per product identity:** Repo/AUR/Flatpak variants for the same identity are merged into one card with source selector.
+- **No frontend inference:** selector order and default source come from backend payload.
 
 ---
 
-## 4. Repo Priority & Deduplication
+## 4. Source Priority & Deduplication
 
-When merging, the system enforces a strict priority to determine the "Primary Source" (shown on the card badge):
-1.  **Official/Repo** (Arch, CachyOS, etc.)
-2.  **Flatpak** (Flathub)
-3.  **AUR**
+When merging, the system enforces a strict priority for the primary source (badge + default selector):
+1.  **Distro-native repo** (e.g. CachyOS/Manjaro/Garuda families on matching hosts)
+2.  **Arch Official** (`core`, `extra`, `multilib`, etc.)
+3.  **Chaotic-AUR** (repo binaries)
+4.  **Flatpak** (Flathub)
+5.  **AUR** (source build)
 
-Metadata is preserved from the **best metadata source** during the merge, regardless of which source is chosen as the primary install target. v0.4.7 ensures `screenshots` and `long_description` are prioritized from Flatpak sources if missing in Repo/AUR.
+Discovery aggregation also respects enabled-source gating from Settings, so disabled sources do not leak into Search/Trending/Essentials/Categories.
+
+Metadata is preserved from the **best metadata source** during the merge, regardless of which source is chosen as the primary install target. v0.4.8 ensures `screenshots` and `long_description` are prioritized from Flatpak sources if missing in Repo/AUR.
 
 ---
 
-## 5. Summary of Improvements
+## 5. Installed Source Truth
+
+Installed-source labels are computed from ALPM/localdb + syncdb candidate matching and exact Flatpak app-id checks, not inferred from fuzzy text metadata. This prevents false source labels (for example, incorrectly marking a package as Chaotic-installed).
+
+---
+
+## 6. Summary of Improvements
 1.  **Eliminated 400 Errors**: Base64 icons are properly wrapped and validated in the backend/middleware.
 2.  **Zero Layout Shift**: Since cards arrive fully hydrated, there is no "pop-in" of icons or descriptions.
 3.  **Bulletproof FFI**: Progress callbacks are isolated to prevent panics during intensive ALPM transactions.

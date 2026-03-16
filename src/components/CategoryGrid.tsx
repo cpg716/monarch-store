@@ -1,5 +1,6 @@
 import { Gamepad2, Briefcase, Globe, Music, Cpu, Terminal, PenTool, LayoutGrid, LucideIcon } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { clsx } from 'clsx';
 
 interface CategoryGridProps {
     onSelectCategory: (category: string) => void;
@@ -31,7 +32,7 @@ export const CATEGORIES: CategoryData[] = [
     {
         id: 'Office',
         label: 'Productivity',
-        description: 'Office suites, note-taking, and professional tools.',
+        description: 'Office suites, note-taking, and school or work essentials.',
         popular: ['LibreOffice', 'Obsidian', 'Thunderbird', 'OnlyOffice'],
         icon: Briefcase,
         color: 'text-blue-600 dark:text-blue-400',
@@ -41,7 +42,7 @@ export const CATEGORIES: CategoryData[] = [
     {
         id: 'Network',
         label: 'Internet',
-        description: 'Web browsers, messengers, and cloud clients.',
+        description: 'Web browsers, messengers, and connected apps.',
         popular: ['Firefox', 'Brave', 'Discord', 'Telegram'],
         icon: Globe,
         color: 'text-emerald-600 dark:text-emerald-400',
@@ -51,7 +52,7 @@ export const CATEGORIES: CategoryData[] = [
     {
         id: 'AudioVideo',
         label: 'Multimedia',
-        description: 'Video editors, music players, and streaming tools.',
+        description: 'Video players, editors, music, and streaming tools.',
         popular: ['VLC', 'Spotify', 'OBS Studio', 'Kdenlive'],
         icon: Music,
         color: 'text-rose-600 dark:text-rose-400',
@@ -70,8 +71,8 @@ export const CATEGORIES: CategoryData[] = [
     },
     {
         id: 'Graphics',
-        label: 'Graphics',
-        description: 'Digital art, modeling, and photo editing software.',
+        label: 'Graphics & Design',
+        description: 'Digital art, design, 3D modeling, and photo editing software.',
         popular: ['GIMP', 'Blender', 'Inkscape', 'Krita'],
         icon: PenTool,
         color: 'text-fuchsia-600 dark:text-fuchsia-400',
@@ -80,8 +81,8 @@ export const CATEGORIES: CategoryData[] = [
     },
     {
         id: 'System',
-        label: 'System',
-        description: 'System utilities, file managers, and hardware tools.',
+        label: 'System Tools',
+        description: 'System utilities, file managers, and hardware-focused tools.',
         popular: ['GParted', 'BleachBit', 'Htop', 'Timeshift'],
         icon: Cpu,
         color: 'text-slate-600 dark:text-slate-400',
@@ -136,15 +137,15 @@ export default function CategoryGrid({ onSelectCategory, selectedCategoryId }: C
                         whileHover={{ scale: 1.02 }}
                         whileTap={{ scale: 0.98 }}
                         onClick={() => onSelectCategory(cat.id)}
-                        className={`group relative p-6 rounded-3xl cursor-pointer border border-black/5 dark:border-white/5 bg-white/60 dark:bg-black/20 hover:bg-white/80 dark:hover:bg-black/40 hover:shadow-xl transition-all overflow-hidden backdrop-blur-sm ${selectedCategoryId === cat.id ? 'ring-2 ring-blue-500' : ''}`}
+                        className={`group relative p-6 rounded-3xl cursor-pointer border border-app-border bg-app-card/70 hover:bg-app-card transition-all overflow-hidden backdrop-blur-sm ${selectedCategoryId === cat.id ? 'ring-2 ring-blue-500' : ''}`}
                     >
                         <div className="flex items-start justify-between relative z-10">
                             <div className="flex flex-col gap-3">
                                 <div className="flex items-center gap-4 mb-2">
-                                    <div className={`p-3 rounded-2xl ${cat.iconBg} ${cat.color} border border-black/5 dark:border-white/5 shadow-inner`}>
+                                    <div className={`p-3 rounded-2xl ${cat.iconBg} ${cat.color} border border-app-border shadow-inner`}>
                                         <cat.icon size={26} />
                                     </div>
-                                    <h3 className={`text-2xl font-bold text-slate-800 dark:text-white group-hover:${cat.color} transition-colors tracking-tight`}>
+                                    <h3 className={clsx("text-2xl font-bold text-slate-800 dark:text-white transition-colors tracking-tight", cat.color)}>
                                         {cat.label}
                                     </h3>
                                 </div>
@@ -158,7 +159,7 @@ export default function CategoryGrid({ onSelectCategory, selectedCategoryId }: C
                                         <span
                                             key={typeof app === 'string' ? `${app}-${i}` : `popular-${i}`}
                                             onClick={(e) => { e.stopPropagation(); onSelectCategory(cat.id); }}
-                                            className="text-[10px] uppercase tracking-wider font-bold px-2.5 py-1 rounded-lg bg-black/5 dark:bg-white/5 text-slate-500 dark:text-white/50 border border-black/5 dark:border-white/5 hover:bg-black/10 dark:hover:bg-white/10 hover:text-slate-700 dark:hover:text-white hover:border-black/10 dark:hover:border-white/20 transition-all cursor-default"
+                                            className="text-[10px] uppercase tracking-wider font-bold px-2.5 py-1 rounded-lg bg-app-subtle text-slate-500 dark:text-white/50 border border-app-border hover:bg-app-card hover:text-slate-700 dark:hover:text-white transition-all cursor-default"
                                         >
                                             {app}
                                         </span>

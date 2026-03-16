@@ -193,9 +193,9 @@ async optimizeSystem(password: string | null) : Promise<Result<string, string>> 
     else return { status: "error", error: e  as any };
 }
 },
-async triggerRepoSync(syncIntervalHours: string | null) : Promise<Result<string, string>> {
+async triggerRepoSync(syncIntervalHours: number | null, password: string | null) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("trigger_repo_sync", { syncIntervalHours }) };
+    return { status: "ok", data: await TAURI_INVOKE("trigger_repo_sync", { syncIntervalHours, password }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -490,7 +490,7 @@ async isOnboardingCompleted() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async setOnboardingCompleted(completed: boolean) : Promise<Result<null, string>> {
+async setOnboardingCompleted(completed: boolean) : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_onboarding_completed", { completed }) };
 } catch (e) {
@@ -525,6 +525,14 @@ async getAccentColor() : Promise<Result<string, string>> {
 async setAccentColor(color: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_accent_color", { color }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getHostAppearance() : Promise<Result<HostAppearance, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_host_appearance") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -650,6 +658,14 @@ async searchPackages(query: string, options: SearchOptions | null) : Promise<Res
     else return { status: "error", error: e  as any };
 }
 },
+async searchPackagesRich(query: string, options: SearchOptions | null) : Promise<Result<SearchResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("search_packages_rich", { query, options }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async searchAur(query: string) : Promise<Result<Package[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("search_aur", { query }) };
@@ -661,6 +677,14 @@ async searchAur(query: string) : Promise<Result<Package[], string>> {
 async getPackagesByNames(names: string[], options: SearchOptions | null, cacheContext: string | null) : Promise<Result<Package[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_packages_by_names", { names, options, cacheContext }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getPackagesByCanonicalIds(ids: string[]) : Promise<Result<Package[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_packages_by_canonical_ids", { ids }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -685,6 +709,30 @@ async getChaoticPackagesBatch(names: string[]) : Promise<Result<{ [key in string
 async getTrending(options: SearchOptions | null) : Promise<Result<Package[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_trending", { options }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getTrendingSnapshot(options: SearchOptions | null) : Promise<Result<Package[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_trending_snapshot", { options }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getEssentialsSnapshot() : Promise<Result<Package[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_essentials_snapshot") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getDiscoveryHomeSnapshot() : Promise<Result<DiscoveryHomeSnapshot, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_discovery_home_snapshot") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -818,6 +866,14 @@ async fetchPkgbuild(pkgName: string) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getInstalledCatalog() : Promise<Result<Package[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_installed_catalog") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getInstalledPackages() : Promise<Result<InstalledPackage[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_installed_packages") };
@@ -837,6 +893,22 @@ async checkForUpdates() : Promise<Result<PendingUpdate[], string>> {
 async getFlatpakPermissions(appId: string) : Promise<Result<string[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_flatpak_permissions", { appId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getFullPackageDetails(name: string) : Promise<Result<FullPackageDetails, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_full_package_details", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getFullPackageDetailsByCanonicalId(canonicalId: string) : Promise<Result<FullPackageDetails, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_full_package_details_by_canonical_id", { canonicalId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -874,6 +946,14 @@ async checkUpdates(includeAur: boolean | null, includeFlatpak: boolean | null) :
     else return { status: "error", error: e  as any };
 }
 },
+async getUpdateSnapshot(includeAur: boolean | null, includeFlatpak: boolean | null) : Promise<Result<UpdateSnapshot, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_update_snapshot", { includeAur, includeFlatpak }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Unified Execution Engine (Phase 3 & 4)
  * Safely executes the update queue respecting the "Safety Lock".
@@ -905,9 +985,33 @@ async getPackageIcon(pkgName: string) : Promise<Result<string | null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async launchPackage(launchRequest: LaunchRequest) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("launch_package", { launchRequest }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async launchApp(launchAppArgs: LaunchAppArgs) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("launch_app", { launchAppArgs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async clearMetadataCaches() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_metadata_caches") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async rebuildMetadataIndex() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rebuild_metadata_index") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1161,20 +1265,25 @@ export type ChaoticPackage = { id: string | null; pkgname: string; lastUpdated: 
  */
 export type ChaoticStatus = { compatible: boolean; chaotic_in_alpm: boolean }
 export type ChaoticSupport = "allowed" | "blocked" | "native"
+export type DiscoveryHomeSnapshot = { essentials: Package[]; trending: Package[]; quick_starts: DiscoveryIntent[]; generated_at: string; stale: boolean }
+export type DiscoveryIntent = { id: string; label: string; description: string; query: string | null; category: string | null }
 export type DistroCapabilities = { repo_management: RepoManagementMode; chaotic_aur_support: ChaoticSupport; default_search_sort: string; description: string; icon_key: string }
 export type DistroContext = { id: DistroId; pretty_name: string; capabilities: DistroCapabilities; cpu_tier: string; active_repos: string[] }
 export type DistroId = "arch" | "manjaro" | "endeavouros" | "garuda" | "cachyos" | { unknown: string }
+export type FullPackageDetails = { package: Package | null; presentation: PackagePresentation | null; installed_status: PackageInstallStatus; all_installed_variants: PackageInstallStatus[]; flatpak_permissions: string[] | null; all_variants: PackageVariant[]; display_title: string | null; primary_action: string | null; primary_action_label: string | null; selected_default_source: PackageSource | null; source_summary: string | null; security_summary: string | null; installed_source_label: string | null; source_switch_policy: string | null; source_switch_notice: string | null; security: PackageSecuritySummary | null; developer_name: string | null; donation_url: string | null }
 export type HealthIssue = { category: string; severity: string; message: string; action_label: string; action_command: string | null }
+export type HostAppearance = { color_scheme: string; accent_color: string | null; desktop: string }
 export type InfraStats = { builders: number; users: number }
 export type InitializationStatus = { needs_policy: boolean; needs_keyring: boolean; needs_migration: boolean; 
 /**
  * Sync databases in /var/lib/pacman/sync/ are corrupt (Unrecognized archive format).
  */
 needs_sync_db_repair: boolean; is_healthy: boolean; reasons: string[] }
-export type InstalledPackage = { name: string; version: string; description: string; install_date: string | null; size: string | null; url: string | null; repository: string | null; icon: string | null }
+export type InstalledPackage = { name: string; version: string; description: string; install_date: string | null; install_date_unix: string | null; size: string | null; size_bytes: string | null; url: string | null; repository: string | null; source_label: string | null; resolved_source: PackageSource | null; display_name: string | null; launchable: boolean; icon: string | null }
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue }
 export type KeyringStatus = { healthy: boolean; message: string }
 export type LaunchAppArgs = { pkg_name: string }
+export type LaunchRequest = { package_name: string; app_id: string | null; desktop_entry: string | null; launch_target: string | null; source: PackageSource | null }
 export type LocalReview = { app_id: string; rating: number; summary: string; description: string; user_display: string; date_created: string }
 /**
  * Result of testing one mirror: URL and optional latency in ms.
@@ -1197,20 +1306,24 @@ export type OdrsRating = { star1: number; star2: number; star3: number; star4: n
  * Typed response for get_orphans_with_size (replaces raw serde_json::json!).
  */
 export type OrphansWithSizeResult = { orphans: string[]; total_size_bytes: string; human_readable: string }
-export type Package = { name: string; display_name: string | null; description: string; version: string; source: PackageSource; maintainer: string | null; license: string[] | null; url: string | null; last_modified: string | null; first_submitted: string | null; out_of_date: string | null; keywords: string[] | null; num_votes: number | null; icon: string | null; screenshots: string[] | null; provides: string[] | null; app_id: string | null; 
+export type Package = { name: string; display_name: string | null; display_title?: string | null; description: string; version: string; source: PackageSource; primary_action?: string | null; primary_action_label?: string | null; source_summary?: string | null; trust_level?: string | null; security_summary?: string | null; maintainer: string | null; license: string[] | null; url: string | null; last_modified: string | null; last_modified_unix?: string | null; first_submitted: string | null; out_of_date: string | null; keywords: string[] | null; num_votes: number | null; icon: string | null; screenshots: string[] | null; provides: string[] | null; app_id: string | null; 
 /**
  * Canonical key used for merge deduplication (e.g. "discord"). Set during merge; used as React key.
  */
-canonical_id?: string; is_optimized: boolean | null; depends: string[] | null; make_depends: string[] | null; is_featured: boolean | null; installed: boolean; download_size: string | null; installed_size: string | null; alternatives: Package[] | null; available_sources: PackageSource[] | null; rating: OdrsRating | null; long_description: string | null; installed_sources?: string[] | null }
+canonical_id?: string; is_optimized: boolean | null; depends: string[] | null; make_depends: string[] | null; is_featured: boolean | null; installed: boolean; download_size: string | null; installed_size: string | null; download_size_bytes?: string | null; installed_size_bytes?: string | null; alternatives: Package[] | null; available_sources: PackageSource[] | null; rating: OdrsRating | null; long_description: string | null; installed_sources?: string[] | null; launch_target?: string | null }
 export type PackageInstallStatus = { installed: boolean; version: string | null; repo: string | null; source: PackageSource | null; actual_package_name: string | null }
+export type PackagePresentation = { display_title: string | null; icon: string | null; short_description: string | null; long_description: string | null; screenshots: string[]; app_id: string | null; developer_name: string | null; donation_url: string | null }
+export type PackageSecuritySummary = { trust_tier: string; system_access: string; maintainer_known: boolean; verification_note: string; user_action_note: string }
 export type PackageSource = { source_type: string; id: string; version: string; label: string; package_name?: string | null }
-export type PackageVariant = { source: PackageSource; version: string; repo_name: string | null; pkg_name: string | null }
+export type PackageVariant = { source: PackageSource; version: string; repo_name: string | null; pkg_name: string | null; download_size: string | null; installed_size: string | null; maintainer: string | null; license: string[] | null; description: string | null; screenshots: string[] | null; security: PackageSecuritySummary | null }
 export type PaginatedResponse = { packages: Package[]; total: number; page: number; has_more: boolean }
 export type PendingUpdate = { name: string; old_version: string; new_version: string; repo: string }
 export type RepoConfig = { name: string; url: string; source: PackageSource; enabled: boolean }
 export type RepoManagementMode = "unlocked" | "locked" | "managed"
 export type Review = { review_id: string | null; app_id: string; user_display: string | null; summary: string | null; description: string | null; rating: number | null; date_created: number | null; version: string | null; distro: string | null; locale: string | null }
 export type SearchOptions = { flatpak_enabled: boolean | null; aur_enabled: boolean | null; chaotic_enabled: boolean | null; for_installed_lookup: boolean | null }
+export type SearchResponse = { packages: Package[]; suggestions: SearchSuggestion[]; query_interpretation: string | null }
+export type SearchSuggestion = { label: string; query: string; reason: string }
 export type SnapshotStatus = { tool: SnapshotTool; is_configured: boolean; message: string }
 export type SnapshotTool = "Snapper" | "Timeshift" | "None"
 export type SystemInfo = { kernel: string; distro: string; pacman_version: string; chaotic_enabled: boolean; cpu_optimization: string }
@@ -1219,6 +1332,9 @@ export type SystemInfo = { kernel: string; distro: string; pacman_version: strin
  */
 export type SystemUpdateCommandPayload = { command: string; description: string }
 export type UpdateItem = { name: string; display_name: string | null; current_version: string; new_version: string; source: PackageSource; size: string | null; icon: string | null }
+export type UpdateSnapshot = { items: UpdateSnapshotItem[]; sources: UpdateSourceStatus[] }
+export type UpdateSnapshotItem = { package: Package; current_version: string; new_version: string }
+export type UpdateSourceStatus = { source: string; status: string; duration_ms: string; error: string | null }
 
 /** tauri-specta globals **/
 

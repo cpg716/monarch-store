@@ -59,6 +59,7 @@ pub struct AppStreamLoader {
     category_index: HashMap<String, Vec<AppMetadata>>,
     icon_index: HashMap<String, String>,
     pub(crate) pkg_index: HashMap<String, AppMetadata>,
+    package_category_index: HashMap<String, Vec<String>>,
     // Optimizing "The Storm": Cache local filesystem icons to avoid 1500+ disk scans
     local_icon_index: HashMap<String, String>,
 }
@@ -90,6 +91,7 @@ impl AppStreamLoader {
             category_index: HashMap::new(),
             icon_index: HashMap::new(),
             pkg_index: HashMap::new(),
+            package_category_index: HashMap::new(),
             local_icon_index: HashMap::new(),
         };
 
@@ -159,6 +161,7 @@ impl AppStreamLoader {
     fn rebuild_indices_extended(&mut self, col: &Collection) {
         for component in col.components.iter() {
             let meta = self.component_to_metadata(component);
+            let categories: Vec<String> = component.categories.iter().map(clean_category).collect();
 
             // 1. Package Index
             if let Some(pkg_name) = &meta.pkg_name {
@@ -175,6 +178,10 @@ impl AppStreamLoader {
                         .entry(pkg_lower)
                         .or_insert_with(|| icon.clone());
                 }
+
+                self.package_category_index
+                    .entry(pkg_name.to_lowercase())
+                    .or_insert_with(|| categories.clone());
             }
 
             // 3. App ID Index
@@ -182,6 +189,12 @@ impl AppStreamLoader {
             self.pkg_index
                 .entry(app_id_lower)
                 .or_insert_with(|| meta.clone());
+            self.package_category_index
+                .entry(meta.app_id.to_lowercase())
+                .or_insert_with(|| categories.clone());
+            self.package_category_index
+                .entry(meta.name.to_lowercase())
+                .or_insert_with(|| categories.clone());
 
             // 4. Category Index
             for category in &component.categories {
@@ -254,17 +267,18 @@ impl AppStreamLoader {
 
     pub fn get_all_entries_with_categories(&self) -> Vec<(crate::models::Package, Vec<String>)> {
         let mut entries = Vec::new();
-        if let Some(col) = &self.collection {
-            for component in &col.components {
-                let meta = self.component_to_metadata(component);
-                let pkg = self.app_metadata_to_package(&meta);
-                let categories: Vec<String> = component
-                    .categories
-                    .iter()
-                    .map(|c| clean_category(c))
-                    .collect();
-                entries.push((pkg, categories));
+        let mut seen = std::collections::HashSet::new();
+        for meta in self.pkg_index.values() {
+            let dedupe_key = format!("{}|{}", meta.app_id, meta.pkg_name.clone().unwrap_or_default());
+            if !seen.insert(dedupe_key) {
+                continue;
             }
+            let pkg = self.app_metadata_to_package(meta);
+            let categories = self.resolve_categories_for_package(
+                meta.pkg_name.as_deref().unwrap_or(&meta.name),
+                Some(&meta.app_id),
+            );
+            entries.push((pkg, categories));
         }
         entries
     }
@@ -458,18 +472,24 @@ impl AppStreamLoader {
         // 3. Check Cache (Now O(1) Memory Lookup instead of Disk Scan)
         let exact_png = format!("{}.png", pkg_name);
         let exact_svg = format!("{}.svg", pkg_name);
+        let exact_symbolic_svg = format!("{}-symbolic.svg", pkg_name);
 
         // Check if exact matches exist in our index
         let found_path = if let Some(p) = self.local_icon_index.get(&exact_png) {
             Some(p.clone())
         } else if let Some(p) = self.local_icon_index.get(&exact_svg) {
             Some(p.clone())
+        } else if let Some(p) = self.local_icon_index.get(&exact_symbolic_svg) {
+            Some(p.clone())
         } else {
             // Heuristic prefix scan (slower, but memory-only now)
             // Optimization: Only scan if we have to.
             self.local_icon_index
                 .iter()
-                .find(|(k, _)| k.starts_with(&format!("{}_", pkg_name)))
+                .find(|(k, _)| {
+                    k.starts_with(&format!("{}_", pkg_name))
+                        || k.starts_with(&format!("{}-", pkg_name))
+                })
                 .map(|(_, v)| v.clone())
         };
 
@@ -498,7 +518,9 @@ impl AppStreamLoader {
                             && (name.ends_with(".png") || name.ends_with(".svg")))
                             && (name == format!("{}.png", pkg_name)
                                 || name == format!("{}.svg", pkg_name)
-                                || name.starts_with(&format!("{}_", pkg_name)))
+                                || name == format!("{}-symbolic.svg", pkg_name)
+                                || name.starts_with(&format!("{}_", pkg_name))
+                                || name.starts_with(&format!("{}-", pkg_name)))
                         {
                             if let Ok(bytes) = std::fs::read(&path) {
                                 let mime = if path.extension().is_some_and(|e| e == "svg") {
@@ -523,6 +545,8 @@ impl AppStreamLoader {
             PathBuf::from("/usr/share/icons/hicolor/48x48/apps"),
             PathBuf::from("/usr/share/icons/hicolor/256x256/apps"),
             PathBuf::from("/usr/share/icons/hicolor/512x512/apps"),
+            PathBuf::from("/usr/share/icons/breeze/apps/24"),
+            PathBuf::from("/usr/share/icons/breeze-dark/apps/24"),
         ];
 
         for path in system_paths {
@@ -552,20 +576,40 @@ impl AppStreamLoader {
 
     pub fn get_apps_by_category(&self, category: &str) -> Vec<AppMetadata> {
         let cat_lower = category.to_lowercase();
-        let query_key = match cat_lower.as_str() {
-            "utilities" => "utility",
-            "games" => "game",
-            "multimedia" => "audiovideo", // AudioVideo is XDG standard
-            "graphics" => "graphics",
-            "network" | "internet" => "network",
-            "office" | "productivity" => "office",
-            "development" | "develop" => "development",
-            "system" => "system",
-            k => k,
+        let query_keys: &[&str] = match cat_lower.as_str() {
+            "game" | "games" => &["game", "games"],
+            "utilities" | "utility" => &["utility", "utilities"],
+            "multimedia" | "audiovideo" | "audio" | "video" => {
+                &["audiovideo", "multimedia", "audio", "video"]
+            }
+            "graphics" => &["graphics"],
+            "network" | "internet" => &["network", "internet"],
+            "office" | "productivity" => &["office", "productivity"],
+            "development" | "develop" => &["development", "develop"],
+            "system" => &["system"],
+            _ => &[],
         };
 
-        if let Some(res) = self.category_index.get(query_key) {
-            return res.clone();
+        let mut combined = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for key in query_keys {
+            if let Some(res) = self.category_index.get(*key) {
+                for meta in res {
+                    let dedupe_key = format!(
+                        "{}|{}",
+                        meta.app_id,
+                        meta.pkg_name.clone().unwrap_or_default()
+                    );
+                    if seen.insert(dedupe_key) {
+                        combined.push(meta.clone());
+                    }
+                }
+            }
+        }
+
+        if !combined.is_empty() {
+            return combined;
         }
 
         // Fallback: Try generic lookup if alias failed or exact match wanted
@@ -573,6 +617,32 @@ impl AppStreamLoader {
             .get(&cat_lower)
             .cloned()
             .unwrap_or_default()
+    }
+
+    pub fn resolve_categories_for_package(
+        &self,
+        pkg_name: &str,
+        app_id: Option<&str>,
+    ) -> Vec<String> {
+        let pkg_lower = pkg_name.to_lowercase();
+        let stripped_lower = crate::utils::strip_package_suffix(pkg_name).to_lowercase();
+        let app_id_lower = app_id.map(|value| value.to_lowercase());
+
+        if let Some(app_id_key) = app_id_lower.as_ref() {
+            if let Some(categories) = self.package_category_index.get(app_id_key) {
+                return categories.clone();
+            }
+        }
+
+        if let Some(categories) = self.package_category_index.get(&pkg_lower) {
+            return categories.clone();
+        }
+
+        if let Some(categories) = self.package_category_index.get(&stripped_lower) {
+            return categories.clone();
+        }
+
+        Vec::new()
     }
 
     fn component_to_metadata(&self, component: &Component) -> AppMetadata {

@@ -1,5 +1,6 @@
 use crate::models::{Package, PackageSource};
 use alpm::{Alpm, PackageReason, SigLevel};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
@@ -29,7 +30,7 @@ fn collect_repo_sections_from_conf(conf_path: &str) -> Vec<String> {
         }
         if line.to_lowercase().starts_with("include") {
             let rest = line[6..]
-                .trim_start_matches(|c: char| c == '=' || c == ' ')
+                .trim_start_matches(['=', ' '])
                 .trim();
             let path = rest.trim_matches(|c| c == '"' || c == '\'');
             let full = if path.starts_with('/') {
@@ -80,6 +81,115 @@ fn glob_includes(pattern: &str) -> Vec<String> {
     out
 }
 
+fn server_template_to_db_url(repo_name: &str, template: &str) -> Option<String> {
+    let raw = template.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    if raw.ends_with(".db") || raw.contains(".db?") {
+        return Some(raw.to_string());
+    }
+
+    let arch = std::env::consts::ARCH;
+    let arch_v3 = format!("{}_v3", arch);
+    let arch_v4 = format!("{}_v4", arch);
+    let arch_znver4 = format!("{}_znver4", arch);
+
+    let resolved = raw
+        .replace("${repo}", repo_name)
+        .replace("$repo", repo_name)
+        .replace("${arch_znver4}", &arch_znver4)
+        .replace("$arch_znver4", &arch_znver4)
+        .replace("${arch_v4}", &arch_v4)
+        .replace("$arch_v4", &arch_v4)
+        .replace("${arch_v3}", &arch_v3)
+        .replace("$arch_v3", &arch_v3)
+        .replace("${arch}", arch)
+        .replace("$arch", arch);
+
+    let trimmed = resolved.trim_end_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(format!("{}/{}.db", trimmed, repo_name))
+    }
+}
+
+fn collect_repo_server_map_from_conf(
+    conf_path: &str,
+    repo_servers: &mut HashMap<String, Vec<String>>,
+    current_repo: &mut Option<String>,
+) {
+    let content = match std::fs::read_to_string(conf_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let conf_dir = Path::new(conf_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("/etc"));
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        if line.starts_with('[') && line.ends_with(']') {
+            let section = line[1..line.len() - 1].trim();
+            if section == "options" {
+                *current_repo = None;
+            } else {
+                *current_repo = Some(section.to_string());
+            }
+            continue;
+        }
+
+        if line.to_lowercase().starts_with("include") {
+            let rest = line[6..]
+                .trim_start_matches(['=', ' '])
+                .trim();
+            let path = rest.trim_matches(|c| c == '"' || c == '\'');
+            let full = if path.starts_with('/') {
+                path.to_string()
+            } else {
+                conf_dir.join(path).to_string_lossy().into_owned()
+            };
+            for included_path in glob_includes(&full) {
+                collect_repo_server_map_from_conf(&included_path, repo_servers, current_repo);
+            }
+            continue;
+        }
+
+        if line.to_lowercase().starts_with("server") {
+            let Some(repo_name) = current_repo.clone() else {
+                continue;
+            };
+            let rest = line[6..]
+                .trim_start_matches(['=', ' '])
+                .trim();
+            if rest.is_empty() {
+                continue;
+            }
+            if let Some(resolved) = server_template_to_db_url(&repo_name, rest) {
+                repo_servers.entry(repo_name).or_default().push(resolved);
+            }
+        }
+    }
+}
+
+/// Resolve repo names to concrete Server URLs from pacman.conf and all Include'd files.
+/// This complements ALPM syncdb discovery because db.servers() may be empty for some host-discovered repos.
+pub fn get_repo_servers_from_conf(conf_path: &str) -> HashMap<String, Vec<String>> {
+    let mut repo_servers = HashMap::new();
+    let mut current_repo = None;
+    collect_repo_server_map_from_conf(conf_path, &mut repo_servers, &mut current_repo);
+    repo_servers
+}
+
+pub fn resolve_server_template_to_db_url(repo_name: &str, template: &str) -> Option<String> {
+    server_template_to_db_url(repo_name, template)
+}
+
 /// Register all repo sections from system pacman.conf (and Include'd files).
 /// Call this before iterating syncdbs() so Manjaro, Garuda, Chaotic-AUR, CachyOS, etc. are discovered.
 pub fn register_syncdbs_from_conf(alpm: &Alpm, conf_path: &str) {
@@ -113,80 +223,165 @@ pub fn vercmp_greater(v1: &str, v2: &str) -> bool {
     alpm::vercmp(v1, v2) == std::cmp::Ordering::Greater
 }
 
+fn read_local_installed_db(pkg_name: &str, version: &str) -> Option<String> {
+    let desc_path = format!("/var/lib/pacman/local/{}-{}/desc", pkg_name, version);
+    let contents = std::fs::read_to_string(desc_path).ok()?;
+    let mut lines = contents.lines();
+
+    while let Some(line) = lines.next() {
+        if line.trim() == "%INSTALLED_DB%" {
+            return lines
+                .find(|next| !next.trim().is_empty())
+                .map(|repo| repo.trim().to_string())
+                .filter(|repo| !repo.is_empty());
+        }
+    }
+
+    None
+}
+
 pub fn get_package_native(name: &str) -> Option<Package> {
     let alpm = Alpm::new("/", "/var/lib/pacman").ok()?;
 
     register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
-    let installed_version = alpm
-        .localdb()
-        .pkg(name)
-        .ok()
-        .map(|p| p.version().to_string());
     let distro = crate::distro_context::DistroContext::new();
+    let local_pkg = alpm.localdb().pkg(name).ok();
+    let installed_version = local_pkg.as_ref().map(|p| p.version().to_string());
+    let installed_db = local_pkg
+        .as_ref()
+        .and_then(|pkg| read_local_installed_db(pkg.name(), pkg.version().as_str()));
 
-    // Prefer the syncdb whose package version matches the installed version (likely install origin)
-    let mut first: Option<(String, String, String, u64, u64)> = None;
+    #[derive(Clone)]
+    struct RepoCandidate {
+        db_name: String,
+        version: String,
+        description: String,
+        download_size: u64,
+        installed_size: u64,
+        depends: Vec<String>,
+        make_depends: Vec<String>,
+    }
+
+    let repo_score = |repo_name: &str| -> i32 {
+        let id = repo_name.to_lowercase();
+        let is_official = matches!(id.as_str(), "core" | "extra" | "community" | "multilib");
+
+        // Distro-native repos should win on their own distro.
+        if distro.id_str() == "cachyos" && id.starts_with("cachyos") {
+            return 300;
+        }
+        if distro.id_str() == "manjaro" && id.starts_with("manjaro") {
+            return 300;
+        }
+        if distro.id_str() == "garuda" && id.starts_with("garuda") {
+            return 300;
+        }
+        if distro.id_str() == "endeavouros" && id.starts_with("endeavour") {
+            return 300;
+        }
+
+        // Global fallback order: official > chaotic > other community repos.
+        if is_official {
+            return 220;
+        }
+        if id.contains("chaotic") {
+            return 150;
+        }
+        200
+    };
+
+    let mut candidates: Vec<RepoCandidate> = Vec::new();
     for db in alpm.syncdbs() {
         if let Ok(pkg) = db.pkg(name) {
-            let version_matches = installed_version
-                .as_ref()
-                .map(|v| v == pkg.version().as_str())
-                .unwrap_or(false);
-            if version_matches {
-                let installed = alpm.localdb().pkg(name).is_ok();
-                return Some(Package {
-                    name: pkg.name().to_string(),
-                    version: pkg.version().to_string(),
-                    description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-                    source: PackageSource::from_repo_name(
-                        db.name(),
-                        pkg.version().as_str(),
-                        &distro,
-                        &pkg.name(),
-                    ),
-                    installed,
-                    download_size: Some(pkg.download_size() as u64),
-                    installed_size: Some(pkg.isize() as u64),
-                    depends: Some(pkg.depends().iter().map(|d| d.to_string()).collect()),
-                    make_depends: Some(pkg.makedepends().iter().map(|d| d.to_string()).collect()),
-                    ..Default::default()
-                });
-            }
-            if first.is_none() {
-                first = Some((
-                    db.name().to_string(),
-                    pkg.version().to_string(),
-                    pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-                    pkg.download_size() as u64,
-                    pkg.isize() as u64,
-                ));
-            }
+            candidates.push(RepoCandidate {
+                db_name: db.name().to_string(),
+                version: pkg.version().to_string(),
+                description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
+                download_size: pkg.download_size() as u64,
+                installed_size: pkg.isize() as u64,
+                depends: pkg.depends().iter().map(|d| d.to_string()).collect(),
+                make_depends: pkg.makedepends().iter().map(|d| d.to_string()).collect(),
+            });
         }
     }
-    if let Some((db_name, version, description, download_size, isize)) = first {
-        let installed = alpm.localdb().pkg(name).is_ok();
+
+    if !candidates.is_empty() {
+        let installed = local_pkg.is_some();
+        let best = if installed {
+            if let Some(installed_repo) = installed_db.as_deref() {
+                candidates
+                    .iter()
+                    .find(|c| c.db_name == installed_repo)
+                    .cloned()
+                    .or_else(|| candidates.iter().max_by_key(|c| repo_score(&c.db_name)).cloned())?
+            } else {
+                candidates
+                    .iter()
+                    .max_by_key(|c| repo_score(&c.db_name))
+                    .cloned()?
+            }
+        } else {
+            candidates
+                .iter()
+                .max_by_key(|c| repo_score(&c.db_name))
+                .cloned()?
+        };
+
+        let effective_version = installed_version.clone().unwrap_or_else(|| best.version.clone());
+        let source = if installed {
+            if let Some(installed_repo) = installed_db.as_deref() {
+                PackageSource::from_repo_name(installed_repo, &effective_version, &distro, name)
+            } else {
+                PackageSource::new_with_name(
+                    "local",
+                    "local",
+                    &effective_version,
+                    "Installed (Local Package)",
+                    name,
+                )
+            }
+        } else {
+            PackageSource::from_repo_name(&best.db_name, &effective_version, &distro, name)
+        };
+
+        let description = if installed {
+            local_pkg
+                .as_ref()
+                .and_then(|p| p.desc().map(|d| d.to_string()))
+                .unwrap_or(best.description.clone())
+        } else {
+            best.description.clone()
+        };
+
         return Some(Package {
             name: name.to_string(),
-            version: version.clone(),
+            version: effective_version,
             description,
-            source: PackageSource::from_repo_name(&db_name, &version, &distro, name),
+            source,
             installed,
-            download_size: Some(download_size),
-            installed_size: Some(isize),
-            depends: alpm.syncdbs().iter().find(|db| db.name() == db_name)
-                .and_then(|db| db.pkg(name).ok())
-                .map(|p| p.depends().iter().map(|d| d.to_string()).collect()),
+            download_size: Some(best.download_size),
+            installed_size: Some(if installed {
+                local_pkg
+                    .as_ref()
+                    .map(|p| p.isize() as u64)
+                    .unwrap_or(best.installed_size)
+            } else {
+                best.installed_size
+            }),
+            depends: Some(best.depends),
+            make_depends: Some(best.make_depends),
             ..Default::default()
         });
     }
 
-    // Installed but not in any sync DB (e.g. AUR-only): return localdb package; assume AUR
-    if let Ok(pkg) = alpm.localdb().pkg(name) {
+    // Installed but not in any sync DB (typically AUR/local build): mark as AUR instead of
+    // guessing a repo origin.
+    if let Some(pkg) = local_pkg {
         return Some(Package {
             name: pkg.name().to_string(),
             version: pkg.version().to_string(),
             description: pkg.desc().map(|d| d.to_string()).unwrap_or_default(),
-            source: PackageSource::new("local", "local", pkg.version().as_str(), "Local"),
+            source: PackageSource::new("aur", "aur", pkg.version().as_str(), "AUR"),
             installed: true,
             installed_size: Some(pkg.isize() as u64),
             ..Default::default()
@@ -486,11 +681,13 @@ pub fn search_installed_packages_cli(query: &str) -> Vec<Package> {
                 let full_name = parts[0].trim_start_matches("local/");
                 let version = parts[1];
 
-                let mut p = Package::default();
-                p.name = full_name.to_string();
-                p.version = version.to_string();
-                p.installed = true;
-                p.source = PackageSource::new("local", "local", version, "Installed (Local)");
+                let p = Package {
+                    name: full_name.to_string(),
+                    version: version.to_string(),
+                    installed: true,
+                    source: PackageSource::new("local", "local", version, "Installed (Local)"),
+                    ..Default::default()
+                };
                 current_pkg = Some(p);
             }
         } else if line.starts_with("    ") {

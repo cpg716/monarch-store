@@ -46,7 +46,7 @@ const SearchBar: React.FC<SearchBarProps> = ({ value, onChange, onBack }) => {
                             (e.target as HTMLInputElement).blur();
                         }
                     }}
-                    placeholder="Search for apps (e.g. firefox, spotify)"
+                    placeholder="Search apps by name or task (e.g. browser, video editor, Discord)"
                     data-monarch-search
                     className="flex-1 min-w-0 py-3 pr-3 text-base text-app-fg placeholder:text-app-muted/70 bg-transparent border-0 focus:outline-none focus:ring-0"
                 />

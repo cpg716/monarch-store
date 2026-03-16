@@ -1,6 +1,6 @@
 # Aptabase Integration — MonARCH Store
 
-**Last updated:** 2026-02-03 (v0.4.5-alpha)
+**Last updated:** 2026-03-16
 
 This document describes how MonARCH Store integrates with [Aptabase](https://aptabase.com) for privacy-respecting, opt-in analytics.
 
@@ -49,6 +49,14 @@ Frontend (React)                    Backend (Rust)
 | **Onboarding** | User can toggle “Anonymous usage stats” in the Privacy step; choice is persisted with `set_telemetry_enabled` before sending `onboarding_completed`. |
 | **Settings** | Settings → Privacy shows the same toggle; changes are persisted and synced to the backend. |
 | **Panic events** | Sent by the plugin’s panic hook directly (no consent check); only fires on app crash. |
+
+### 3.1 GTK frontend (monarch-gtk)
+
+The GTK app uses a **minimal Aptabase-compatible sender** (same project/key as Tauri). Events are sent only when `telemetry_enabled` is true in gtk-settings.json.
+
+- **Onboarding:** The “Authorization and privacy” step includes an “Anonymous usage stats” switch; the choice is stored in `GtkSettings` and persisted when the user finishes onboarding.
+- **Settings:** Mission Control → Privacy has a “Telemetry” switch that reads/writes the same `telemetry_enabled` field in `~/.config/monarch-store/gtk-settings.json`.
+- **Events sent (when enabled):** `app_started`, `onboarding_completed`, `review_submitted` (payload shape matches Tauri so events appear in the same Aptabase project).
 
 ---
 

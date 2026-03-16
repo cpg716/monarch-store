@@ -1,20 +1,49 @@
 # Troubleshooting Guide 🛟
 
-**Current version:** v0.4.7-alpha (2026-02-21) 
-**Last updated:** 2026-02-14
+**Current version:** v0.4.8-alpha (2026-02-27) 
+**Last updated:** 2026-02-27
 
 Common issues users encounter when using MonARCH Store.
+
+**Current app:** The active frontend is **GTK** (`monarch-gtk`). To run it from source: `cd src-tauri && cargo run -p monarch-gtk`. The Tauri/React workflow (`npm run tauri dev`, `npm run tauri build`) is legacy/reference-only; sections below that mention it apply to that legacy path.
 
 > [!CAUTION]
 > **MonARCH Store is in ALPHA.** Installation and update operations are experimental. If you encounter persistent failures, please use the standard terminal tools (`pacman`, `yay`, etc.) and report the issue.
 
 **Install/Update not working or password prompts:** See [Developer Guide](DEVELOPER.md) for architecture details.
 
+## 🧭 Source badges/installed labels look wrong
+
+**Symptom:** A package appears as Chaotic/Flatpak installed when it was installed from another source, or source badges look inconsistent between list pages and details.
+
+**Current behavior (v0.4.8 hardening):**
+- Source ordering is deterministic: distro-native repo → Arch Official → Chaotic-AUR → Flatpak → AUR.
+- Installed-source labels come from ALPM/localdb + syncdb matching and exact Flatpak installed IDs.
+- Discovery pages honor source toggles; updates still include already-installed packages from all sources.
+
+**What to do if stale labels persist after an update:**
+1. Restart MonARCH once (forces fresh startup state and cache warmup).
+2. Open Settings → Sources and click **Check Connection / Sync**.
+3. Re-run search/details for the same app; if mismatch remains, capture logs and file an issue with app name + expected source + shown source.
+
+## 🔎 Search or category loads time out
+
+**Symptom:** Search/category shows timeout messages or long skeleton loading.
+
+**Notes:**
+- MonARCH now discards stale in-flight UI requests (typing and tab changes can cancel previous responses).
+- Slow host/network phases (AUR/Flathub and repo sync fallbacks) can still delay final results.
+
+**What to do:**
+1. Wait for initial warmup to complete after launch (first run in session can take longer).
+2. Check network/repo health in Settings → Maintenance.
+3. If issue repeats, capture backend logs (`[SEARCH] completed ... total_ms`) and frontend console timeout messages for debugging.
+
 ## 🦎 Chaotic-AUR not showing / "Configure Source" or "Setup Required"
 
 **Symptom:** Some packages show "Setup Required" or "Configure Source" instead of Install; Chaotic-AUR packages don't appear in search.
 
-**Cause:** Chaotic-AUR is not enabled on your system. MonARCH never edits `/etc/pacman.conf` for you—you must add the repo block yourself after we install the keyring and mirrorlist.
+**Cause:** Chaotic-AUR is not enabled on your system. Depending on flow, MonARCH either guides you through a final manual pacman.conf step or uses the interactive terminal helper (with explicit confirmation) to append the repo block.
 
 **Fix:**
 1. Go to **Settings → Sources**.

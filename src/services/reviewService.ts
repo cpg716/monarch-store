@@ -46,7 +46,7 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
     let odrsSum = 0;
 
     const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - 365);
+    cutoffDate.setDate(cutoffDate.getDate() - 730);
 
     // 1. Fetch ODRS (if available)
     for (const id of Array.from(probeIds)) {
@@ -55,7 +55,7 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
             const odrsReviews = unwrap(await commands.getAppReviews(id));
 
             if (odrsReviews && odrsReviews.length > 0) {
-                // Filter ODRS reviews - Currency (365 days) AND Language (English)
+                // Filter ODRS reviews - Currency (24 months) AND Language (English)
                 const recentOdrs = odrsReviews.filter(r => {
                     const d = new Date((r.date_created || 0) * 1000);
                     const isRecent = d >= cutoffDate;
@@ -103,7 +103,7 @@ export async function getPackageReviews(pkgName: string, appStreamId?: string): 
             .from('reviews')
             .select('*')
             .eq('package_name', pkgName)
-            .gte('created_at', cutoffDate.toISOString()) // Database-level filter for efficiency
+            .gte('created_at', cutoffDate.toISOString()) // Database-level filter for efficiency (24 months)
             .order('created_at', { ascending: false });
 
 
@@ -177,9 +177,9 @@ export async function getRatingsBatch(pkgNames: string[]): Promise<Map<string, {
         odrsResults = unwrap(await commands.getAppRatingsBatch(probes));
     } catch (e) { getErrorService()?.reportWarning(`ODRS Batch failed: ${e}`); }
 
-    // 2. Fetch Supabase (365 Days Filter)
+    // 2. Fetch Supabase (24 Months Filter)
     const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - 365);
+    cutoffDate.setDate(cutoffDate.getDate() - 730);
 
     let supabaseMap = new Map<string, { sum: number; count: number }>();
     try {
@@ -235,7 +235,7 @@ export async function getRatingsBatch(pkgNames: string[]): Promise<Map<string, {
 
 /**
  * Fetches just the rating summary (efficiently) for a package.
- * Hybrid Merge: ODRS (All Time) + Supabase (365 Days).
+ * Hybrid Merge: ODRS (All Time) + Supabase (24 Months).
  */
 export async function getCompositeRating(pkgName: string, appStreamId?: string): Promise<{ average: number; count: number } | null> {
     const probeIds = new Set<string>();
@@ -264,12 +264,12 @@ export async function getCompositeRating(pkgName: string, appStreamId?: string):
         } catch (e) { /* ODRS probe - silent fallthrough */ }
     }
 
-    // 2. Fetch Supabase (365 Days)
+    // 2. Fetch Supabase (24 Months)
     let sbCount = 0;
     let sbSum = 0;
     try {
         const cutoffDate = new Date();
-        cutoffDate.setDate(cutoffDate.getDate() - 365);
+        cutoffDate.setDate(cutoffDate.getDate() - 730);
 
         const { data } = await supabase
             .from('reviews')

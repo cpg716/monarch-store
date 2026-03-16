@@ -1,3 +1,5 @@
+> Historical note: This review document describes a legacy or point-in-time parity snapshot. GTK current-state and release-gate status now live in `docs/GTK_TAURI_PARITY_MATRIX.md` and the GTK-first root docs.
+
 # Homepage and Sidebar — Full Review
 
 **Date:** 2026-02-05  

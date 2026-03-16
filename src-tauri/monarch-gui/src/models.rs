@@ -42,15 +42,24 @@ impl PackageSource {
     pub fn priority(&self) -> u8 {
         match self.source_type.as_str() {
             "repo" => {
-                // Give priority to optimized repos?
-                match self.id.as_str() {
-                    "chaotic-aur" | "cachyos" => 1, // cachyos = any CachyOS repo (v3/v4/znver4)
-                    _ => 2,                         // Standard repos
+                let id = self.id.to_lowercase();
+                if id.contains("cachyos")
+                    || id.contains("manjaro")
+                    || id.contains("garuda")
+                    || id.contains("endeavour")
+                {
+                    1 // Distro-native repos
+                } else if matches!(id.as_str(), "core" | "extra" | "community" | "multilib" | "official") {
+                    2 // Official Arch repos
+                } else if id.contains("chaotic") {
+                    3 // Chaotic-AUR (after distro-native and official)
+                } else {
+                    2 // Other configured repos default near official tier
                 }
             }
-            "flatpak" => 3,
-            "aur" => 4,
-            _ => 5,
+            "flatpak" => 4,
+            "aur" => 5,
+            _ => 6,
         }
     }
 
@@ -109,13 +118,27 @@ impl PackageSource {
 pub struct Package {
     pub name: String,
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub display_title: Option<String>,
     pub description: String,
     pub version: String,
     pub source: PackageSource,
+    #[serde(default)]
+    pub primary_action: Option<String>,
+    #[serde(default)]
+    pub primary_action_label: Option<String>,
+    #[serde(default)]
+    pub source_summary: Option<String>,
+    #[serde(default)]
+    pub trust_level: Option<String>,
+    #[serde(default)]
+    pub security_summary: Option<String>,
     pub maintainer: Option<String>,
     pub license: Option<Vec<String>>,
     pub url: Option<String>,
     pub last_modified: Option<i64>,
+    #[serde(default)]
+    pub last_modified_unix: Option<i64>,
     pub first_submitted: Option<i64>,
     pub out_of_date: Option<i64>,
     pub keywords: Option<Vec<String>>,
@@ -134,12 +157,18 @@ pub struct Package {
     pub installed: bool,
     pub download_size: Option<u64>,
     pub installed_size: Option<u64>,
+    #[serde(default)]
+    pub download_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub installed_size_bytes: Option<u64>,
     pub alternatives: Option<Vec<Package>>,
     pub available_sources: Option<Vec<PackageSource>>, // For consolidated search results
     pub rating: Option<crate::odrs_api::OdrsRating>,
     pub long_description: Option<String>,
     #[serde(default)]
     pub installed_sources: Option<Vec<String>>,
+    #[serde(default)]
+    pub launch_target: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
@@ -148,6 +177,13 @@ pub struct PackageVariant {
     pub version: String,
     pub repo_name: Option<String>,
     pub pkg_name: Option<String>, // Actual package name (e.g. firefox-nightly)
+    pub download_size: Option<u64>,
+    pub installed_size: Option<u64>,
+    pub maintainer: Option<String>,
+    pub license: Option<Vec<String>>,
+    pub description: Option<String>,
+    pub screenshots: Option<Vec<String>>,
+    pub security: Option<PackageSecuritySummary>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
@@ -159,6 +195,80 @@ pub struct UpdateItem {
     pub source: PackageSource, // "official", "aur", "flatpak"
     pub size: Option<u64>,
     pub icon: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct UpdateSnapshotItem {
+    pub package: Package,
+    pub current_version: String,
+    pub new_version: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct UpdateSourceStatus {
+    pub source: String,
+    pub status: String,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct UpdateSnapshot {
+    pub items: Vec<UpdateSnapshotItem>,
+    pub sources: Vec<UpdateSourceStatus>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct DiscoveryIntent {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub query: Option<String>,
+    pub category: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct DiscoveryHomeSnapshot {
+    pub essentials: Vec<Package>,
+    pub trending: Vec<Package>,
+    pub quick_starts: Vec<DiscoveryIntent>,
+    pub generated_at: i64,
+    pub stale: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct SearchSuggestion {
+    pub label: String,
+    pub query: String,
+    pub reason: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct SearchResponse {
+    pub packages: Vec<Package>,
+    pub suggestions: Vec<SearchSuggestion>,
+    pub query_interpretation: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct PackageSecuritySummary {
+    pub trust_tier: String,
+    pub system_access: String,
+    pub maintainer_known: bool,
+    pub verification_note: String,
+    pub user_action_note: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, Type)]
+pub struct PackagePresentation {
+    pub display_title: Option<String>,
+    pub icon: Option<String>,
+    pub short_description: Option<String>,
+    pub long_description: Option<String>,
+    pub screenshots: Vec<String>,
+    pub app_id: Option<String>,
+    pub developer_name: Option<String>,
+    pub donation_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, Type)]
@@ -179,4 +289,26 @@ pub struct TransactionManifest {
 pub struct CacheStats {
     pub total_size_bytes: u64,
     pub package_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct FullPackageDetails {
+    pub package: Option<Package>,
+    pub presentation: Option<PackagePresentation>,
+    pub installed_status: crate::commands::package::PackageInstallStatus,
+    pub all_installed_variants: Vec<crate::commands::package::PackageInstallStatus>,
+    pub flatpak_permissions: Option<Vec<String>>,
+    pub all_variants: Vec<PackageVariant>,
+    pub display_title: Option<String>,
+    pub primary_action: Option<String>,
+    pub primary_action_label: Option<String>,
+    pub selected_default_source: Option<PackageSource>,
+    pub source_summary: Option<String>,
+    pub security_summary: Option<String>,
+    pub installed_source_label: Option<String>,
+    pub source_switch_policy: Option<String>,
+    pub source_switch_notice: Option<String>,
+    pub security: Option<PackageSecuritySummary>,
+    pub developer_name: Option<String>,
+    pub donation_url: Option<String>,
 }

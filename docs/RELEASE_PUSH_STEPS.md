@@ -13,10 +13,10 @@ The release process relies on two GitHub Actions workflows:
 ## 🚀 Release Steps
 
 ### 1. Pre-Flight Checks
-Ensure your local `package.json` and `Cargo.toml` versions match the target release.
+Ensure your local `package.json` and Cargo.toml versions match the target release.
 ```bash
-# Check version consistency
-grep "version" package.json src-tauri/monarch-gui/Cargo.toml
+# Check version consistency (GTK release)
+grep "version" package.json src-tauri/monarch-core/Cargo.toml src-tauri/monarch-gtk/Cargo.toml src-tauri/monarch-helper/Cargo.toml PKGBUILD
 ```
 
 ### 2. Update the Builder Image (If Dependencies Changed)
@@ -31,10 +31,10 @@ The **Release** workflow is triggered by pushing a tag starting with `v*`.
 
 ```bash
 # Tag the current commit (ensure it's clean and tested)
-git tag v0.4.5-alpha
+git tag v0.5.0-alpha
 
 # Push to GitHub
-git push origin v0.4.5-alpha
+git push origin v0.5.0-alpha
 ```
 
 ### 4. Verify & Publish
@@ -62,10 +62,10 @@ You have two options:
 **Option A: The Clean Reset (Recommended)**
 Delete the tag remote and local, then re-push.
 ```bash
-git push --delete origin v0.4.5-alpha
-git tag -d v0.4.5-alpha
-git tag v0.4.5-alpha
-git push origin v0.4.5-alpha
+git push --delete origin v0.5.0-alpha
+git tag -d v0.5.0-alpha
+git tag v0.5.0-alpha
+git push origin v0.5.0-alpha
 ```
 
 **Option B: Manual Trigger**

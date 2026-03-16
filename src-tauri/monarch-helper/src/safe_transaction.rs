@@ -91,9 +91,9 @@ impl<'a> SafeUpdateTransaction<'a> {
                 }
             }
 
-            // Add upgrades to transaction
+            // Add upgrades to transaction (surface first failure so prepare/commit errors are clearer)
             for pkg in upgrades {
-                let _ = alpm.trans_add_pkg(pkg);
+                alpm.trans_add_pkg(pkg).map_err(|e| e.to_string())?;
             }
         } // Release borrows
 

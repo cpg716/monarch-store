@@ -6,6 +6,7 @@ import DOMPurify from 'dompurify';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { commands, NewsItem, NewsCategory } from '../services/bindings';
 import { unwrap } from '../utils/specta';
+import { getErrorService } from '../context/getErrorService';
 
 import { useAppStore } from '../store/internal_store';
 
@@ -43,7 +44,7 @@ export default function NewsFeed({ limit, compact = false, onItemOpen }: NewsFee
             const list = unwrap(await commands.fetchNews());
             setItems(list || []);
         } catch (e) {
-            console.error('[MonARCH] Failed to fetch news:', e);
+            getErrorService()?.reportWarning(e as Error | string);
             setError(String(e));
             setItems([]);
         } finally {
@@ -141,13 +142,13 @@ export default function NewsFeed({ limit, compact = false, onItemOpen }: NewsFee
         }
 
         return (
-            <div className="mb-10 last:mb-0">
+            <div className="mb-8 last:mb-0">
                 <div className="flex items-center gap-3 mb-4 px-1">
                     <div className={clsx(
-                        "p-2 rounded-xl",
+                        "p-2 rounded-lg",
                         category === 'critical' ? "bg-red-500/10 text-red-500" :
                             category === 'system' ? "bg-blue-500/10 text-blue-500" :
-                                "bg-purple-500/10 text-purple-500"
+                                "bg-slate-500/10 text-slate-400"
                     )}>
                         {icon}
                     </div>
@@ -210,11 +211,11 @@ function NewsCard({
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
             className={clsx(
-                'group rounded-2xl border transition-all duration-300',
-                expanded ? 'ring-2 ring-blue-500/50 scale-[1.01] shadow-xl shadow-blue-500/10' : 'hover:scale-[1.005] hover:shadow-md',
+                'group rounded-xl border transition-colors duration-200',
+                expanded ? 'ring-1 ring-blue-500/40 border-blue-500/30' : 'hover:border-white/10',
                 critical
-                    ? 'border-red-500/30 bg-red-500/5 dark:bg-red-500/10'
-                    : 'border-black/5 dark:border-white/5 bg-white dark:bg-app-card/60'
+                    ? 'border-red-500/25 bg-red-500/10 dark:bg-red-500/10'
+                    : 'border-black/5 dark:border-white/5 bg-white dark:bg-app-card'
             )}
         >
             <button
@@ -311,4 +312,3 @@ function NewsCard({
         </motion.div>
     );
 }
-

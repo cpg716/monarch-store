@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useErrorService } from '../context/ErrorContext';
 import { API, ChaoticStatus } from '../services/api';
+import { useAppStore } from '../store/internal_store';
 
 
 
-/** Chaotic-AUR is "enabled" only when host is compatible and repo is in ALPM syncdbs. */
+/** Chaotic discovery visibility is controlled by user settings; system status is reported separately. */
 export function useChaoticStatus(): {
     status: ChaoticStatus | null;
     enabled: boolean;
@@ -14,6 +15,8 @@ export function useChaoticStatus(): {
     const [status, setStatus] = useState<ChaoticStatus | null>(null);
     const [loading, setLoading] = useState(true);
     const errorService = useErrorService();
+    const advancedMode = useAppStore((s) => s.advancedMode);
+    const discoveryEnabled = useAppStore((s) => s.isChaoticEnabled);
 
     const fetchStatus = async () => {
         try {
@@ -32,7 +35,9 @@ export function useChaoticStatus(): {
         fetchStatus();
     }, []);
 
-    const enabled = status ? status.compatible && status.chaotic_in_alpm : false;
+    // Discovery surfaces follow the explicit user toggle.
+    // Safety guard: if host is blocked and expert mode is off, force disabled.
+    const enabled = discoveryEnabled && (status ? (status.compatible || advancedMode) : true);
 
     const refresh = async () => {
         await fetchStatus();

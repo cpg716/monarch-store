@@ -11,12 +11,94 @@ use std::collections::HashMap;
 
 /// Modifies packages in-place to upgrade them to "Unified" identity.
 /// Capped and parallelized so Essentials/Trending/Categories don't stall on many Flathub calls.
-const ENRICH_CAP: usize = 48;
-const ENRICH_CHUNK: usize = 12;
+const ENRICH_CAP: usize = 80;
+const ENRICH_CHUNK: usize = 8;
 
-/// Shared registry backfill: upgrades a Package's icon, display_name, app_id, and description
-/// from a cached Registry entry. Centralises the logic previously duplicated in 5 + places.
+#[inline]
+fn same_source_slot(a: &PackageSource, b: &PackageSource) -> bool {
+    a.id == b.id && a.source_type == b.source_type && a.package_name == b.package_name
+}
+
+fn normalize_sources_for_package(pkg: &mut Package) {
+    let mut sources = pkg
+        .available_sources
+        .clone()
+        .unwrap_or_else(|| vec![pkg.source.clone()]);
+
+    // Dedup by source slot (id + type + package_name), keep newest version per slot.
+    let mut deduped: Vec<PackageSource> = Vec::new();
+    for src in sources.drain(..) {
+        if let Some(existing) = deduped.iter_mut().find(|s| same_source_slot(s, &src)) {
+            if src.version > existing.version {
+                *existing = src;
+            }
+        } else {
+            deduped.push(src);
+        }
+    }
+
+    if !deduped.is_empty() {
+        deduped.sort_by(|a, b| {
+            source_score(b)
+                .cmp(&source_score(a))
+                .then_with(|| a.id.cmp(&b.id))
+                .then_with(|| a.package_name.cmp(&b.package_name))
+        });
+        let current_source_present = deduped.iter().any(|src| same_source_slot(src, &pkg.source));
+        if !current_source_present {
+            if pkg.installed {
+                if let Some(installed_source) =
+                    utils::installed_source_for_package(&pkg.name, pkg.app_id.as_deref())
+                {
+                    pkg.source = installed_source;
+                } else {
+                    pkg.source = best_primary_source(&deduped);
+                }
+            } else {
+                pkg.source = best_primary_source(&deduped);
+            }
+        }
+        pkg.available_sources = Some(deduped);
+    }
+}
+
+fn merge_available_sources_into(target: &mut Package, extra_sources: &[PackageSource]) {
+    let mut merged = target
+        .available_sources
+        .clone()
+        .unwrap_or_else(|| vec![target.source.clone()]);
+
+    for src in extra_sources {
+        if let Some(existing) = merged.iter_mut().find(|s| same_source_slot(s, src)) {
+            if src.version > existing.version {
+                *existing = src.clone();
+            }
+        } else {
+            merged.push(src.clone());
+        }
+    }
+
+    target.available_sources = Some(merged);
+}
+
+fn merge_registry_variants(target: &mut Package, cached: &Package) {
+    let mut extra_sources = cached
+        .available_sources
+        .clone()
+        .unwrap_or_else(|| vec![cached.source.clone()]);
+    if extra_sources.is_empty() {
+        extra_sources.push(cached.source.clone());
+    }
+    merge_available_sources_into(target, &extra_sources);
+}
+
+// Shared registry backfill: upgrades a Package's icon, display_name, app_id, and description
+// from a cached Registry entry. Centralises the logic previously duplicated in 5 + places.
+// NEW BEHAVIOR: Trust the registry outright instead of performing casing/length heuristics,
+// because the registry should already reflect the highest tier source data via the BFF hierarchy.
 pub fn apply_registry_backfill(pkg: &mut Package, reg: &Package) {
+    merge_registry_variants(pkg, reg);
+
     // 1. Icon: Prefer rich (HTTP/Data) over local/none
     let reg_is_rich = reg
         .icon
@@ -29,22 +111,20 @@ pub fn apply_registry_backfill(pkg: &mut Package, reg: &Package) {
         .map(|s| !s.starts_with("http") && !s.starts_with("data:"))
         .unwrap_or(true);
 
-    if reg_is_rich && (pkg.icon.is_none() || current_is_local) {
-        pkg.icon = reg.icon.clone();
-    } else if pkg.icon.is_none() && reg.icon.is_some() {
+    if (reg_is_rich && (pkg.icon.is_none() || current_is_local))
+        || (pkg.icon.is_none() && reg.icon.is_some())
+    {
         pkg.icon = reg.icon.clone();
     }
 
-    // 2. Display Name: Prefer Title Case (registry) over lowercase/missing (current)
-    let cached_dn = reg.display_name.as_deref().unwrap_or("");
+    // 2. Display Name: Trust registry if current is missing or just the raw name
     let current_dn = pkg.display_name.as_deref().unwrap_or("");
-    let cached_has_upper = cached_dn.chars().any(|c| c.is_uppercase());
-    let current_has_upper = current_dn.chars().any(|c| c.is_uppercase());
-
-    if !cached_dn.is_empty()
-        && (cached_has_upper && !current_has_upper || pkg.display_name.is_none())
-    {
-        pkg.display_name = reg.display_name.clone();
+    if pkg.display_name.is_none() || current_dn == pkg.name {
+        if let Some(reg_dn) = &reg.display_name {
+            if !reg_dn.is_empty() {
+                pkg.display_name = Some(reg_dn.clone());
+            }
+        }
     }
 
     // 3. App ID: Trust registry if current is missing
@@ -54,12 +134,22 @@ pub fn apply_registry_backfill(pkg: &mut Package, reg: &Package) {
         }
     }
 
-    // 4. Description: Fallback to registry if current is empty/short
-    if pkg.description.is_empty() || pkg.description.len() < 10 {
-        if !reg.description.is_empty() {
+    // 4. Description: Fallback to registry if current is empty or significantly shorter.
+    // If the registry entry contains a Flatpak source, we treat its description as authoritative "Rich" metadata.
+    let reg_has_flatpak = reg.source.source_type == "flatpak"
+        || reg
+            .available_sources
+            .as_ref()
+            .map(|s| s.iter().any(|src| src.source_type == "flatpak"))
+            .unwrap_or(false);
+
+    if (pkg.description.is_empty()
+        || pkg.description == pkg.name
+        || reg_has_flatpak
+        || (reg.description.len() > pkg.description.len() + 20))
+        && !reg.description.is_empty() {
             pkg.description = reg.description.clone();
         }
-    }
 }
 
 /// Shared pipeline step: Enrich packages using local AppStream metadata (AppInfo, Icons).
@@ -112,31 +202,27 @@ pub fn enrich_with_local_metadata(packages: &mut [Package], loader: &metadata::A
 
         // 3. Metadata Upgrade (Display Name / Description)
         if let Some(meta) = loader.find_package(&pkg.name) {
-            // IRON CORE PROTECTION: Only upgrade name if current is weak (lowercase or same as pkg_name)
-            // or if we lack a strong App ID. If we have a strong ID (from Registry/Flathub), we trust our current name.
-            let current_is_weak = pkg
-                .display_name
-                .as_ref()
-                .map(|n| n == &pkg.name || n.chars().all(|c| c.is_lowercase()))
-                .unwrap_or(true);
-
+            // IRON CORE PROTECTION: Only upgrade name if we lack a strong App ID.
+            // If we have a strong ID (from Registry/Flathub), we already trust our current name.
             let has_strong_id = pkg
                 .app_id
                 .as_ref()
                 .map(|id| id.contains('.'))
                 .unwrap_or(false);
 
-            if current_is_weak || !has_strong_id {
+            if !has_strong_id {
                 pkg.display_name = Some(meta.name.clone());
             }
 
-            // Upgrade description if current is weak
-            if pkg.description.len() < 10 || pkg.description == pkg.name {
+            // Upgrade description unconditionally if current is empty or matches name
+            if pkg.description.is_empty() || pkg.description == pkg.name {
                 if let Some(desc) = meta.summary {
                     pkg.description = desc;
                 }
             }
         }
+
+        utils::apply_package_ui_defaults(pkg);
     }
 }
 
@@ -161,10 +247,13 @@ pub fn merge_search_results(
         p.canonical_id = key.clone();
         if let Some(existing) = package_map.get_mut(&key) {
             if let Some(sources) = &mut existing.available_sources {
-                if !sources
-                    .iter()
-                    .any(|s| s.id == p.source.id && s.source_type == p.source.source_type)
+                if let Some(existing_src) =
+                    sources.iter_mut().find(|s| same_source_slot(s, &p.source))
                 {
+                    if p.source.version > existing_src.version {
+                        *existing_src = p.source.clone();
+                    }
+                } else {
                     sources.push(p.source.clone());
                 }
             }
@@ -191,12 +280,10 @@ pub fn merge_search_results(
                     cached.icon
                 );
 
-                // 1. Calculate Priority (using references)
-                let cached_dn = cached.display_name.as_deref().unwrap_or("");
-                let current_dn = p.display_name.as_deref().unwrap_or("");
-                let cached_has_upper = cached_dn.chars().any(|c| c.is_uppercase());
-                let current_has_upper = current_dn.chars().any(|c| c.is_uppercase());
+                merge_registry_variants(&mut p, &cached);
 
+                // 1. Calculate Priority (using references)
+                // IRON CORE: Prefer cached if it has a strict Remote ID or better Visuals
                 let cached_has_rdn = cached
                     .app_id
                     .as_ref()
@@ -225,9 +312,9 @@ pub fn merge_search_results(
                     .unwrap_or(false)
                     || !p.screenshots.as_ref().map(|s| s.is_empty()).unwrap_or(true);
 
-                // IRON CORE: Prefer cached if it's strictly richer (case, ID, or visuals)
-                let prefer_cached = (cached_has_upper && !current_has_upper)
-                    || (cached_has_rdn && !current_has_rdn)
+                // IRON CORE: Prefer cached if it's strictly richer (ID, or visuals)
+                // Name casing is no longer a heuristic since we trust the hierarchy.
+                let prefer_cached = (cached_has_rdn && !current_has_rdn)
                     || (cached_has_visuals && !current_has_visuals);
 
                 // 2. Icon Upgrade (Special case: prefer rich icon even if name isn't better)
@@ -242,9 +329,9 @@ pub fn merge_search_results(
                     .map(|s| !s.starts_with("http") && !s.starts_with("data:"))
                     .unwrap_or(true);
 
-                if cached_is_rich_icon && (p.icon.is_none() || current_is_local_icon) {
-                    p.icon = cached.icon.clone();
-                } else if p.icon.is_none() && cached.icon.is_some() {
+                if (cached_is_rich_icon && (p.icon.is_none() || current_is_local_icon))
+                    || (p.icon.is_none() && cached.icon.is_some())
+                {
                     p.icon = cached.icon.clone();
                 }
 
@@ -286,7 +373,6 @@ pub fn merge_search_results(
 
     // B. Flatpak — key by app_id so Discord (com.discordapp.Discord) always merges to same key as repo "discord"
     for (hit, version_opt) in flatpak_hits {
-        let canonical_id = hit.app_id.to_lowercase();
         let display_name = Some(hit.name.clone());
         let version = version_opt.unwrap_or_else(|| "latest".to_string());
 
@@ -303,7 +389,13 @@ pub fn merge_search_results(
 
         if let Some(existing) = package_map.get_mut(&key) {
             if let Some(sources) = &mut existing.available_sources {
-                if !sources.iter().any(|s| s.source_type == "flatpak") {
+                if let Some(existing_src) =
+                    sources.iter_mut().find(|s| same_source_slot(s, &flatpak_source))
+                {
+                    if flatpak_source.version > existing_src.version {
+                        *existing_src = flatpak_source.clone();
+                    }
+                } else {
                     sources.push(flatpak_source.clone());
                 }
             }
@@ -355,7 +447,7 @@ pub fn merge_search_results(
                 source: flatpak_source.clone(), // Default source if only Flatpak found
                 icon: hit.icon.clone(),
                 app_id: Some(hit.app_id.clone()),
-                canonical_id: canonical_id.clone(),
+                canonical_id: key.clone(),
                 installed: is_installed,
                 available_sources: Some(vec![flatpak_source.clone()]),
                 ..Default::default()
@@ -363,6 +455,7 @@ pub fn merge_search_results(
 
             // BACKFILL FROM REGISTRY: Even for Flatpaks, the Registry might have better AppStream descriptions
             if let Ok(Some(cached)) = state_registry.get_package(&key) {
+                merge_registry_variants(&mut p, &cached);
                 if p.description.is_empty() {
                     p.description = cached.description;
                 }
@@ -379,7 +472,13 @@ pub fn merge_search_results(
         let key = utils::canonical_merge_key(&p.name, p.app_id.as_deref());
         if let Some(existing) = package_map.get_mut(&key) {
             if let Some(sources) = &mut existing.available_sources {
-                if !sources.iter().any(|s| s.source_type == "aur") {
+                if let Some(existing_src) =
+                    sources.iter_mut().find(|s| same_source_slot(s, &p.source))
+                {
+                    if p.source.version > existing_src.version {
+                        *existing_src = p.source.clone();
+                    }
+                } else {
                     sources.push(p.source.clone());
                 }
             }
@@ -410,6 +509,7 @@ pub fn merge_search_results(
             // BACKFILL FROM REGISTRY: Effective Golden Data Protection
             // BACKFILL FROM REGISTRY: Effective Golden Data Protection
             if let Ok(Some(cached)) = state_registry.get_package(&key) {
+                merge_registry_variants(&mut p, &cached);
                 // Log the merge attempt
                 log::debug!(
                     "[AGGREGATION-AUR] Merging {} (Incoming) with Cached: {}",
@@ -492,6 +592,34 @@ pub fn merge_search_results(
     out
 }
 
+/// Canonical output builder used by Search/Trending/Essentials/Categories/Details seeds.
+/// One identity engine, one dedup pipeline, one source-priority policy.
+pub fn build_package_view_models_v2(
+    official: Vec<Package>,
+    aur: Vec<Package>,
+    flatpak_hits: Vec<(SearchResult, Option<String>)>,
+    state_registry: &crate::registry::RegistryManager,
+    installed_flatpaks: &std::collections::HashSet<String>,
+) -> Vec<Package> {
+    let mut packages = merge_search_results(
+        official,
+        aur,
+        flatpak_hits,
+        state_registry,
+        installed_flatpaks,
+    );
+    packages = utils::deduplicate_by_canonical_key(packages);
+    packages = deduplicate_and_merge_packages(packages);
+
+    for pkg in &mut packages {
+        if pkg.canonical_id.is_empty() {
+            pkg.canonical_id = utils::canonical_merge_key(&pkg.name, pkg.app_id.as_deref());
+        }
+    }
+
+    packages
+}
+
 fn best_primary_source(sources: &[PackageSource]) -> PackageSource {
     // Rank: Repo > Flatpak > AUR
     // Within Repo: Official > Chaotic
@@ -512,27 +640,258 @@ fn source_score(s: &PackageSource) -> i32 {
     match s.source_type.as_str() {
         "repo" => {
             let id = s.id.to_lowercase();
-            // Tier 0: Chaotic-AUR (pre-built AUR — above raw AUR, below official)
-            if id.contains("chaotic") {
-                85
-            }
-            // Tier 1: Distro-Optimized Repos (CachyOS, Manjaro, Garuda)
-            else if id.contains("cachyos") || id.contains("manjaro") || id.contains("garuda") {
+            if id.contains("cachyos")
+                || id.contains("manjaro")
+                || id.contains("garuda")
+                || id.contains("endeavour")
+            {
                 100
-            }
-            // Tier 2: Official Repos (core, extra, multilib)
-            else {
+            } else if matches!(
+                id.as_str(),
+                "core" | "extra" | "community" | "multilib" | "official"
+            ) {
                 90
+            } else if id.contains("chaotic") {
+                70
+            } else {
+                80
             }
         }
-        // Tier 3: AUR (Community) - Preferred over Sandboxed
-        "aur" => 80,
-        // Tier 4: Flatpak (Sandboxed)
-        "flatpak" => 70,
+        "aur" => 60,
+        "flatpak" => 50,
         _ => 0,
     }
 }
 
+fn source_rank_for_default(s: &PackageSource) -> i32 {
+    let id = s.id.to_lowercase();
+    match s.source_type.as_str() {
+        "repo" => {
+            if id.contains("cachyos")
+                || id.contains("manjaro")
+                || id.contains("garuda")
+                || id.contains("endeavour")
+            {
+                60
+            } else if matches!(
+                id.as_str(),
+                "core" | "extra" | "community" | "multilib" | "official"
+            ) {
+                50
+            } else if id.contains("chaotic") {
+                35
+            } else {
+                40
+            }
+        }
+        "aur" => 30,
+        "flatpak" => 20,
+        "local" => 10,
+        _ => 0,
+    }
+}
+
+fn metadata_quality_score(pkg: &Package) -> i32 {
+    let icon_score = match pkg.icon.as_deref() {
+        Some(icon) if icon.starts_with("http") || icon.starts_with("data:") => 5,
+        Some(icon) if !icon.trim().is_empty() => 3,
+        _ => 0,
+    };
+    let screenshots_score = if pkg.screenshots.as_ref().map(|shots| !shots.is_empty()).unwrap_or(false) {
+        4
+    } else {
+        0
+    };
+    let maintainer_score = if pkg.maintainer.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+        3
+    } else {
+        0
+    };
+    let long_desc_score = if pkg
+        .long_description
+        .as_ref()
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false)
+    {
+        4
+    } else {
+        0
+    };
+    let title_score = if pkg
+        .display_name
+        .as_ref()
+        .map(|name| !name.trim().is_empty() && !name.contains('.'))
+        .unwrap_or(false)
+    {
+        2
+    } else {
+        0
+    };
+    icon_score + screenshots_score + maintainer_score + long_desc_score + title_score
+}
+
+fn maintainer_fallback_for_source(source: &PackageSource) -> Option<String> {
+    let id = source.id.to_lowercase();
+    match source.source_type.as_str() {
+        "repo" => {
+            if id.contains("cachyos") {
+                Some("CachyOS Packaging Team".to_string())
+            } else if id.contains("chaotic") {
+                Some("Chaotic-AUR Team".to_string())
+            } else if id.contains("manjaro") || id.contains("garuda") || id.contains("endeavour") {
+                Some("Distribution Packaging Team".to_string())
+            } else {
+                Some("Arch Linux Packager".to_string())
+            }
+        }
+        "aur" => None,
+        "flatpak" => None,
+        _ => None,
+    }
+}
+
+fn best_presentation_variant(pkg: &Package) -> Package {
+    let candidates = pkg
+        .alternatives
+        .clone()
+        .unwrap_or_else(|| vec![pkg.clone()]);
+
+    let mut best = candidates[0].clone();
+    let mut best_score = (
+        metadata_quality_score(&best),
+        if best.installed { 1 } else { 0 },
+        source_rank_for_default(&best.source),
+    );
+
+    for candidate in candidates.into_iter().skip(1) {
+        let score = (
+            metadata_quality_score(&candidate),
+            if candidate.installed { 1 } else { 0 },
+            source_rank_for_default(&candidate.source),
+        );
+        if score > best_score {
+            best = candidate;
+            best_score = score;
+        }
+    }
+
+    best
+}
+
+fn best_default_variant(pkg: &Package) -> Package {
+    let candidates = pkg
+        .alternatives
+        .clone()
+        .unwrap_or_else(|| vec![pkg.clone()]);
+
+    let mut best = candidates[0].clone();
+    let mut best_score = (
+        if best.installed { 1 } else { 0 },
+        source_rank_for_default(&best.source),
+        metadata_quality_score(&best),
+    );
+
+    for candidate in candidates.into_iter().skip(1) {
+        let score = (
+            if candidate.installed { 1 } else { 0 },
+            source_rank_for_default(&candidate.source),
+            metadata_quality_score(&candidate),
+        );
+        if score > best_score {
+            best = candidate;
+            best_score = score;
+        }
+    }
+
+    best
+}
+
+fn apply_display_winner(pkg: &mut Package) {
+    let presentation = best_presentation_variant(pkg);
+    let default_variant = best_default_variant(pkg);
+    log::debug!(
+        "[CANONICAL] group={} variants={} source_winner={} presentation_from={} quality={}",
+        if pkg.canonical_id.is_empty() {
+            utils::canonical_merge_key(&pkg.name, pkg.app_id.as_deref())
+        } else {
+            pkg.canonical_id.clone()
+        },
+        pkg.alternatives.as_ref().map(|alts| alts.len()).unwrap_or(1),
+        default_variant.source.id,
+        presentation.source.id,
+        metadata_quality_score(&presentation)
+    );
+
+    pkg.source = default_variant.source.clone();
+    if !default_variant.version.trim().is_empty() {
+        pkg.version = default_variant.version.clone();
+    }
+    if default_variant.maintainer.is_some() {
+        pkg.maintainer = default_variant.maintainer.clone();
+    } else if pkg.maintainer.is_none() {
+        pkg.maintainer = maintainer_fallback_for_source(&default_variant.source);
+    }
+    if default_variant.license.is_some() {
+        pkg.license = default_variant.license.clone();
+    }
+    if default_variant.url.is_some() {
+        pkg.url = default_variant.url.clone();
+    }
+
+    if presentation
+        .display_name
+        .as_ref()
+        .map(|name| !name.trim().is_empty())
+        .unwrap_or(false)
+    {
+        pkg.display_name = presentation.display_name.clone();
+    }
+    if presentation
+        .display_title
+        .as_ref()
+        .map(|name| !name.trim().is_empty())
+        .unwrap_or(false)
+    {
+        pkg.display_title = presentation.display_title.clone();
+    }
+    if presentation
+        .icon
+        .as_ref()
+        .map(|icon| !icon.trim().is_empty())
+        .unwrap_or(false)
+    {
+        pkg.icon = presentation.icon.clone();
+    }
+    if presentation
+        .screenshots
+        .as_ref()
+        .map(|shots| !shots.is_empty())
+        .unwrap_or(false)
+    {
+        pkg.screenshots = presentation.screenshots.clone();
+    }
+    if presentation
+        .long_description
+        .as_ref()
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false)
+    {
+        pkg.long_description = presentation.long_description.clone();
+    }
+    if presentation
+        .description
+        .trim()
+        .len()
+        > pkg.description.trim().len()
+    {
+        pkg.description = presentation.description.clone();
+    }
+    if presentation.app_id.is_some() {
+        pkg.app_id = presentation.app_id.clone();
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // state refs + items + flags
 pub async fn fetch_and_merge_packages_by_names_impl(
     state_meta: &metadata::MetadataState,
     state_chaotic: &chaotic_api::ChaoticApiClient,
@@ -543,7 +902,7 @@ pub async fn fetch_and_merge_packages_by_names_impl(
     include_flatpak: bool,
     include_aur: bool,
     include_chaotic: bool,
-    _installed_lookup: bool,
+    installed_lookup: bool,
 ) -> Result<Vec<models::Package>, String> {
     state_meta.wait_until_ready().await;
     let mut packages = Vec::new();
@@ -554,8 +913,14 @@ pub async fn fetch_and_merge_packages_by_names_impl(
 
     // 0. REGISTRY-FIRST RESOLUTION: Ask the DB for known repo names for these IDs.
     // This stops the "guessing game" (e.g. telegram -> telegram-desktop) if the user has ever seen the app before.
+    let mut registry_lookup_keys: Vec<String> = items
+        .iter()
+        .map(|(name, app_id_opt)| utils::canonical_merge_key(name, app_id_opt.as_deref()))
+        .collect();
+    registry_lookup_keys.sort();
+    registry_lookup_keys.dedup();
     let registry_map = state_registry
-        .get_repo_names_for_canonical_ids(&names)
+        .get_repo_names_for_canonical_ids(&registry_lookup_keys)
         .unwrap_or_default();
     log::debug!(
         "[AGGREGATION] Registry resolution complete ({} mapped)",
@@ -566,8 +931,9 @@ pub async fn fetch_and_merge_packages_by_names_impl(
     let mut expanded_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut canonical_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (name, app_id_opt) in &items {
+        let key = utils::canonical_merge_key(name, app_id_opt.as_deref());
         // If Registry knows this ID, use its authoritative mapping first
-        if let Some(known_names) = registry_map.get(name) {
+        if let Some(known_names) = registry_map.get(&key) {
             for kn in known_names {
                 expanded_set.insert(kn.clone());
             }
@@ -575,7 +941,8 @@ pub async fn fetch_and_merge_packages_by_names_impl(
 
         expanded_set.insert(name.clone());
         expanded_set.insert(name.to_lowercase());
-        let key = utils::canonical_merge_key(name, app_id_opt.as_deref());
+        let search_base = utils::canonical_search_base(name, app_id_opt.as_deref());
+
         canonical_keys.insert(key.clone());
 
         if let Some(app_id) = app_id_opt {
@@ -583,11 +950,13 @@ pub async fn fetch_and_merge_packages_by_names_impl(
                 expanded_set.insert(mapped.clone());
             }
             expanded_set.insert(key);
+            expanded_set.insert(search_base);
         } else {
             expanded_set.insert(key);
+            expanded_set.insert(search_base);
             expanded_set.insert(utils::strip_package_suffix(&name.to_lowercase()).to_string());
             if name.contains('.') {
-                expanded_set.insert(utils::canonical_merge_key(name, Some(name)));
+                expanded_set.insert(utils::canonical_search_base(name, Some(name)));
             }
         }
 
@@ -633,19 +1002,39 @@ pub async fn fetch_and_merge_packages_by_names_impl(
     );
 
     // Run repo (ALPM), Chaotic, and Flatpak in parallel to cut latency (Essentials/Trending/Categories).
-    let chaotic_allowed = crate::distro_context::DistroContext::new().is_chaotic_compatible();
+    let chaotic_allowed = crate::distro_context::DistroContext::new().is_chaotic_compatible()
+        || state_repo.is_advanced_mode().await;
     let chaotic_enabled = chaotic_allowed && include_chaotic;
 
+    // Discovery/browse should honor source toggles.
+    // Installed lookup remains unfiltered so installed apps can still resolve details
+    // even when a discovery source is hidden.
+    let enabled_repo_names = if installed_lookup {
+        Vec::new()
+    } else {
+        state_repo.get_enabled_repo_names().await
+    };
+
     let for_repo_clone = for_repo.clone();
+    let enabled_repo_names_clone = enabled_repo_names.clone();
     let repo_handle = tokio::task::spawn_blocking(move || {
-        crate::alpm_read::get_packages_batch(&for_repo_clone, &[])
+        crate::alpm_read::get_packages_batch(&for_repo_clone, &enabled_repo_names_clone)
     });
 
     let chaotic_future = async {
         if chaotic_enabled {
-            state_chaotic
-                .get_packages_batch(expanded_names.clone())
-                .await
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(4),
+                state_chaotic.get_packages_batch(expanded_names.clone()),
+            )
+            .await
+            {
+                Ok(map) => map,
+                Err(_) => {
+                    log::warn!("[AGGREGATION] Chaotic batch fetch timed out. Continuing without Chaotic variants.");
+                    std::collections::HashMap::new()
+                }
+            }
         } else {
             std::collections::HashMap::new()
         }
@@ -655,29 +1044,60 @@ pub async fn fetch_and_merge_packages_by_names_impl(
         if !include_flatpak {
             return Vec::new();
         }
-        let tasks = names.iter().cloned().map(|name| {
+        #[allow(clippy::redundant_iter_cloned)] // .cloned() needed so async move block owns (String, Option<String>)
+        let tasks = items.iter().cloned().map(|(name, app_id_opt)| {
             let flathub_client = state_flathub;
             async move {
                 let mut hits = Vec::new();
-                let base = utils::strip_package_suffix(&name.to_lowercase()).to_string();
-                if let Some(res) = flathub_client.search_flathub(&base).await {
-                    hits.extend(res);
-                }
-                if let Some(app_id) = crate::flathub_api::get_flathub_app_id(&base) {
-                    if let Some(res) = flathub_client.search_flathub(&app_id).await {
+                let target_key = utils::canonical_merge_key(&name, app_id_opt.as_deref());
+
+                // 1. Exact App ID search if provided
+                if let Some(app_id) = &app_id_opt {
+                    if let Some(res) = flathub_client.search_flathub(app_id).await {
                         for hit in res {
-                            if hit.app_id == app_id {
+                            if hit.app_id == *app_id {
                                 hits.push(hit);
                                 break;
                             }
                         }
                     }
                 }
+
+                let base = utils::strip_package_suffix(&name.to_lowercase()).to_string();
+                if let Some(res) = flathub_client.search_flathub(&base).await {
+                    for hit in res {
+                        let hit_key = utils::canonical_merge_key(&hit.app_id, Some(&hit.app_id));
+                        if hit_key == target_key {
+                            hits.push(hit);
+                        }
+                    }
+                }
+                if let Some(mapped_id) = crate::flathub_api::get_flathub_app_id(&base) {
+                    if Some(&mapped_id) != app_id_opt.as_ref() {
+                        if let Some(res) = flathub_client.search_flathub(&mapped_id).await {
+                            for hit in res {
+                                if hit.app_id == mapped_id {
+                                    hits.push(hit);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 if name.contains('.') {
                     let canonical = utils::canonical_merge_key(&name, Some(&name));
-                    if !canonical.is_empty() && canonical != base {
+                    if !canonical.is_empty()
+                        && canonical != base
+                        && Some(&canonical) != app_id_opt.as_ref()
+                    {
                         if let Some(res) = flathub_client.search_flathub(&canonical).await {
-                            hits.extend(res);
+                            for hit in res {
+                                let hit_key =
+                                    utils::canonical_merge_key(&hit.app_id, Some(&hit.app_id));
+                                if hit_key == target_key {
+                                    hits.push(hit);
+                                }
+                            }
                         }
                     }
                 }
@@ -693,11 +1113,15 @@ pub async fn fetch_and_merge_packages_by_names_impl(
         // v0.2.41: Enrich Flatpak hits with real versions if possible
         let mut flatpak_hits = Vec::new();
         if !flatpak_hits_raw.is_empty() {
-            let app_ids: Vec<String> = flatpak_hits_raw.iter().map(|h| h.app_id.clone()).collect();
-            let versions = state_flathub
-                .get_remote_versions_batch(&app_ids)
-                .await
-                .unwrap_or_default();
+            let versions = if installed_lookup {
+                std::collections::HashMap::new()
+            } else {
+                let app_ids: Vec<String> = flatpak_hits_raw.iter().map(|h| h.app_id.clone()).collect();
+                state_flathub
+                    .get_remote_versions_batch(&app_ids)
+                    .await
+                    .unwrap_or_default()
+            };
 
             for mut hit in flatpak_hits_raw {
                 // IRON CORE ENFORCEMENT for Flatpak
@@ -771,7 +1195,7 @@ pub async fn fetch_and_merge_packages_by_names_impl(
         }
     }
 
-    // SSOT ENFORCEMENT: Use shared pipeline
+    // SSOT ENFORCEMENT: Local enrichment before canonical merge.
     if let Ok(loader) = state_meta.loader.lock() {
         enrich_with_local_metadata(&mut repo_pkgs, &loader);
     }
@@ -809,7 +1233,7 @@ pub async fn fetch_and_merge_packages_by_names_impl(
                 .and_then(|m| m.license.clone())
                 .map(|l| vec![l]),
             url: p.metadata.as_ref().and_then(|m| m.url.clone()),
-            installed: crate::alpm_read::is_package_installed(&name),
+            installed: crate::utils::is_package_or_alias_installed(&name),
             last_modified: None,
             first_submitted: None,
             out_of_date: None,
@@ -895,8 +1319,7 @@ pub async fn fetch_and_merge_packages_by_names_impl(
             })
             .collect();
 
-        // Merge repo+chaotic + AUR + Flatpak
-        packages = merge_search_results(
+        packages = build_package_view_models_v2(
             packages,
             aur_all,
             flatpak_hits,
@@ -904,7 +1327,7 @@ pub async fn fetch_and_merge_packages_by_names_impl(
             &installed_flatpaks,
         );
     } else {
-        packages = merge_search_results(
+        packages = build_package_view_models_v2(
             packages,
             vec![],
             flatpak_hits,
@@ -913,15 +1336,11 @@ pub async fn fetch_and_merge_packages_by_names_impl(
         );
     }
 
-    // Canonical-key dedup
-    packages = utils::deduplicate_by_canonical_key(packages);
-    packages = utils::merge_and_deduplicate(Vec::new(), packages);
-
     // 4. Global Metadata Enrichment: Fix icons/names via Flathub API Fallback
     // This fixes the "Missing Icon in Category View" for local packages.
     enrich_packages_metadata(&mut packages, state_flathub).await;
 
-    // 5. Final Deduplication Merge
+    // 5. Re-normalize source slots after metadata enrichment.
     packages = deduplicate_and_merge_packages(packages);
 
     // 5b. Final Local Enrichment (Ensures Flatpaks get enriched if they match local AppStream IDs)
@@ -939,10 +1358,11 @@ pub async fn fetch_and_merge_packages_by_names_impl(
 }
 
 pub async fn enrich_packages_metadata(
-    packages: &mut Vec<models::Package>,
+    packages: &mut [models::Package],
     state_flathub: &FlathubApiClient,
 ) {
     let mut packages_to_enrich = Vec::new();
+    let mut seen_enrichment_keys = std::collections::HashSet::new();
     for (i, pkg) in packages.iter().enumerate() {
         if packages_to_enrich.len() >= ENRICH_CAP {
             break;
@@ -950,21 +1370,20 @@ pub async fn enrich_packages_metadata(
 
         // Trigger enrichment if:
         // 1. app_id is missing or weak (no dot)
-        // 2. OR screenshots are missing/empty
-        // 3. OR icon is missing
+        // 2. OR icon is missing
         let is_weak_id = pkg
             .app_id
             .as_ref()
             .map(|id| !id.contains('.'))
             .unwrap_or(true);
-        let has_no_screenshots = pkg
-            .screenshots
-            .as_ref()
-            .map(|s| s.is_empty())
-            .unwrap_or(true);
         let has_no_icon = pkg.icon.is_none();
+        let has_weak_description =
+            pkg.description.is_empty() || pkg.description.eq_ignore_ascii_case(&pkg.name);
+        let enrichment_key = utils::canonical_search_base(&pkg.name, pkg.app_id.as_deref());
 
-        if is_weak_id || has_no_screenshots || has_no_icon {
+        if (has_no_icon || (is_weak_id && has_weak_description))
+            && seen_enrichment_keys.insert(enrichment_key)
+        {
             packages_to_enrich.push((i, pkg.name.clone()));
         }
     }
@@ -995,7 +1414,7 @@ pub async fn enrich_packages_metadata(
 
     let stream_start = std::time::Instant::now();
     while let Some((idx, meta_opt)) = stream.next().await {
-        if stream_start.elapsed().as_secs() > 10 {
+        if stream_start.elapsed().as_secs() > 8 {
             log::warn!("[AGGREGATION] Global enrichment timeout reached. Aborting remaining.");
             break;
         }
@@ -1033,20 +1452,21 @@ pub async fn enrich_packages_metadata(
             let full_meta = crate::flathub_api::flathub_to_app_metadata(&fm, pkg_name);
             let p = &mut packages[idx];
 
-            p.app_id = Some(full_meta.app_id.clone());
             let enriched_key = utils::canonical_merge_key(&p.name, Some(&full_meta.app_id));
 
-            // If the enriched key is different but we already have a canonical_id,
-            // we MUST stick to our identity to prevent UI flickering.
-            if p.canonical_id.is_empty() {
-                p.canonical_id = enriched_key.clone();
-            }
+            // Never rewrite identity from fuzzy enrichment; only upgrade metadata on trusted match.
+            if trusted {
+                p.app_id = Some(full_meta.app_id.clone());
+                if p.canonical_id.is_empty() {
+                    p.canonical_id = enriched_key.clone();
+                }
 
-            p.display_name = Some(
-                utils::get_preferred_display_name(&enriched_key)
-                    .map(String::from)
-                    .unwrap_or_else(|| full_meta.name.clone()),
-            );
+                p.display_name = Some(
+                    utils::get_preferred_display_name(&enriched_key)
+                        .map(String::from)
+                        .unwrap_or_else(|| full_meta.name.clone()),
+                );
+            }
 
             // Only set icon when match is trusted to avoid wrong logos (generic names matching different Flathub apps).
             if trusted {
@@ -1066,25 +1486,15 @@ pub async fn enrich_packages_metadata(
                     .as_deref()
                     .map(utils::strip_html)
                     .unwrap_or_else(|| p.description.clone());
+                if p.long_description.is_none() || p.long_description.as_deref().unwrap_or("").is_empty() {
+                    p.long_description = full_meta.description.clone();
+                }
                 p.maintainer = full_meta.maintainer.or(p.maintainer.clone());
                 p.license = full_meta.license.map(|l| vec![l]).or(p.license.clone());
                 if !full_meta.screenshots.is_empty() {
                     p.screenshots = Some(full_meta.screenshots);
                 }
             }
-
-            // Populate Available Sources (always add Flathub when we have a match)
-            let flatpak_source =
-                models::PackageSource::new("flatpak", "flathub", "latest", "Flatpak (Sandboxed)");
-            let mut sources = if let Some(s) = p.available_sources.clone() {
-                s
-            } else {
-                vec![p.source.clone()]
-            };
-            if !sources.iter().any(|s| s.id == "flathub") {
-                sources.push(flatpak_source);
-            }
-            p.available_sources = Some(sources);
         }
     }
 }
@@ -1095,27 +1505,28 @@ pub fn deduplicate_and_merge_packages(packages: Vec<models::Package>) -> Vec<mod
     let mut unique_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut deduped_pkgs: Vec<models::Package> = Vec::new();
 
-    for mut p in packages {
+    for p in packages {
         let key = utils::canonical_merge_key(&p.name, p.app_id.as_deref());
 
         if let Some(&idx) = unique_map.get(&key) {
             let existing = &mut deduped_pkgs[idx];
 
-            // Merge sources
+            // 1. Merge sources into a separate list first to avoid borrow conflicts
             let mut merged_sources = existing
                 .available_sources
                 .clone()
                 .unwrap_or_else(|| vec![existing.source.clone()]);
-            let p_sources = p
+            let incoming_sources = p
                 .available_sources
                 .clone()
                 .unwrap_or_else(|| vec![p.source.clone()]);
 
-            for src in p_sources {
-                if !merged_sources
-                    .iter()
-                    .any(|s| s.id == src.id && s.source_type == src.source_type)
-                {
+            for src in incoming_sources {
+                if let Some(existing_src) = merged_sources.iter_mut().find(|s| same_source_slot(s, &src)) {
+                    if src.version > existing_src.version {
+                        *existing_src = src;
+                    }
+                } else {
                     merged_sources.push(src);
                 }
             }
@@ -1143,114 +1554,76 @@ pub fn deduplicate_and_merge_packages(packages: Vec<models::Package>) -> Vec<mod
             }
             existing.installed_sources = Some(inst_sources);
 
-            // Priority: Prefer the Installed instance as the base (preserves local data/paths)
-            // But MERGE the rich metadata (icons, display names, screenshots, long descriptions) from the other if yours is generic.
-            if p.installed {
-                // p is installed (e.g. AUR). existing might be Flatpak with better metadata.
-                // Pull rich metadata from existing into p before p overwrites existing.
+            // Collect all original packages as alternatives for rich source-specific metadata
+            let mut alternatives = existing.alternatives.clone().unwrap_or_else(|| {
+                // If alternatives was empty, the existing package is the first alternative
+                vec![existing.clone()]
+            });
 
-                // Icon: if p has none, take existing
-                if p.icon.is_none() || p.icon.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
-                    p.icon = existing.icon.clone();
-                }
+            // Avoid duplicate alternatives if we already merged this exact variant before
+            // (shouldn't happen with the new deduplication in merge_search_results but safe)
+            if !alternatives.iter().any(|a| {
+                a.source.id == p.source.id
+                    && a.source.source_type == p.source.source_type
+                    && a.version == p.version
+                    && a.name == p.name
+            }) {
+                alternatives.push(p.clone());
+            }
+            existing.alternatives = Some(alternatives);
 
-                // Display Name: if existing has one and p doesn't (or p's is just the ID), take existing
-                if let Some(nice) = &existing.display_name {
-                    if !nice.is_empty() {
-                        p.display_name = Some(nice.clone());
-                    }
-                }
+            // Installed state is a boolean summary, not source provenance.
+            // Never swap the base package purely because another variant is installed:
+            // for same-name packages across repos (official/cachyos/chaotic), that causes
+            // source-label flapping and false "installed from chaotic" presentation.
+            existing.installed = existing.installed || p.installed;
 
-                // Description
-                if p.description.is_empty() && !existing.description.is_empty() {
-                    p.description = existing.description.clone();
-                }
-
-                // App ID logic: if p has none, take existing
-                if p.app_id.is_none() {
-                    p.app_id = existing.app_id.clone();
-                }
-
-                // Screenshots: if p has none or empty, take existing
-                if p.screenshots.as_ref().map(|s| s.is_empty()).unwrap_or(true)
-                    && !existing
-                        .screenshots
-                        .as_ref()
-                        .map(|s| s.is_empty())
-                        .unwrap_or(true)
-                {
-                    p.screenshots = existing.screenshots.clone();
-                }
-
-                // Long Description: if p has none or empty, take existing
-                if p.long_description
-                    .as_ref()
-                    .map(|s| s.is_empty())
-                    .unwrap_or(true)
-                    && !existing
-                        .long_description
-                        .as_ref()
-                        .map(|s| s.is_empty())
-                        .unwrap_or(true)
-                {
-                    p.long_description = existing.long_description.clone();
-                }
-
-                *existing = p;
-            } else {
-                // p is not installed. Existing might be.
-                // Upgrade existing's skin from p.
-                if existing.icon.is_none()
-                    || existing.icon.as_ref().map(|s| s.is_empty()).unwrap_or(true)
-                {
-                    existing.icon = p.icon.clone();
-                }
-                // Fix: Also adopt description if existing is empty/generic
-                if existing.description.is_empty()
-                    || (existing.description.len() < 20 && p.description.len() > 20)
-                {
+            // Metadata merge is additive: fill missing/weak fields from the incoming variant.
+            if existing.icon.is_none() || existing.icon.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+                existing.icon = p.icon.clone();
+            }
+            if existing.app_id.is_none() && p.app_id.is_some() {
+                existing.app_id = p.app_id.clone();
+            }
+            if (existing.description.is_empty()
+                || (existing.description.len() < 20 && p.description.len() > existing.description.len()))
+                && !p.description.is_empty() {
                     existing.description = p.description.clone();
                 }
-
-                // Screenshots
-                if (existing
-                    .screenshots
-                    .as_ref()
-                    .map(|s| s.is_empty())
-                    .unwrap_or(true))
-                    && !p.screenshots.as_ref().map(|s| s.is_empty()).unwrap_or(true)
-                {
-                    existing.screenshots = p.screenshots.clone();
-                }
-
-                // Long Description
-                if (existing
+            if existing
+                .screenshots
+                .as_ref()
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+                && !p.screenshots.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+            {
+                existing.screenshots = p.screenshots.clone();
+            }
+            if existing
+                .long_description
+                .as_ref()
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+                && !p
                     .long_description
                     .as_ref()
                     .map(|s| s.is_empty())
-                    .unwrap_or(true))
-                    && !p
-                        .long_description
-                        .as_ref()
-                        .map(|s| s.is_empty())
-                        .unwrap_or(true)
-                {
-                    existing.long_description = p.long_description.clone();
-                }
-
-                if (existing
+                    .unwrap_or(true)
+            {
+                existing.long_description = p.long_description.clone();
+            }
+            if (existing
+                .display_name
+                .as_ref()
+                .map(|s| s.contains('-') || s.contains('.'))
+                .unwrap_or(true))
+                && !p
                     .display_name
                     .as_ref()
                     .map(|s| s.contains('-') || s.contains('.'))
-                    .unwrap_or(true))
-                    && !p
-                        .display_name
-                        .as_ref()
-                        .map(|s| s.contains('-') || s.contains('.'))
-                        .unwrap_or(true)
-                {
-                    existing.display_name = p.display_name.clone();
-                }
+                    .unwrap_or(true)
+            {
+                existing.display_name = p.display_name.clone();
             }
 
             existing.available_sources = Some(merged_sources);
@@ -1267,11 +1640,15 @@ pub fn deduplicate_and_merge_packages(packages: Vec<models::Package>) -> Vec<mod
                 p.installed_sources = Some(vec![]);
             }
             unique_map.insert(key, deduped_pkgs.len());
+            // Initialize alternatives with itself so the primary source's metadata is discoverable
+            p.alternatives = Some(vec![p.clone()]);
             deduped_pkgs.push(p);
         }
     }
     // Apply preferred display names (e.g. "heroic" -> "Heroic Game Launcher") so Search and Categories show full names
     for pkg in &mut deduped_pkgs {
+        apply_display_winner(pkg);
+        normalize_sources_for_package(pkg);
         let key = if pkg.canonical_id.is_empty() {
             utils::canonical_merge_key(&pkg.name, pkg.app_id.as_deref())
         } else {
@@ -1280,12 +1657,15 @@ pub fn deduplicate_and_merge_packages(packages: Vec<models::Package>) -> Vec<mod
         if let Some(preferred) = utils::get_preferred_display_name(&key) {
             pkg.display_name = Some(preferred.to_string());
         }
+        if pkg.maintainer.is_none() {
+            pkg.maintainer = maintainer_fallback_for_source(&pkg.source);
+        }
     }
     deduped_pkgs
 }
 
 /// Fetches ratings for a batch of packages using their App IDs.
-pub async fn enrich_packages_ratings(packages: &mut Vec<models::Package>) {
+pub async fn enrich_packages_ratings(packages: &mut [models::Package]) {
     if packages.is_empty() {
         return;
     }

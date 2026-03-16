@@ -4,10 +4,16 @@
 
 use crate::distro_context::DistroContext;
 use feed_rs::parser;
+use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::io::Cursor;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::State;
+
+static FEED_WARNING_CACHE: Lazy<Mutex<std::collections::HashMap<String, Instant>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+const FEED_WARNING_TTL: Duration = Duration::from_secs(600);
 
 /// news category for grouping in the UI.
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -72,7 +78,7 @@ fn feed_specs_for_distro(distro_id: &str) -> Vec<FeedSpec> {
         }
         "cachyos" => {
             specs.push(FeedSpec {
-                url: "https://forum.cachyos.org/atom/t/announcement",
+                url: "https://discuss.cachyos.org/c/announcements.rss",
                 label: "CachyOS",
             });
             specs.push(FeedSpec {
@@ -89,6 +95,25 @@ fn feed_specs_for_distro(distro_id: &str) -> Vec<FeedSpec> {
     }
 
     specs
+}
+
+fn log_feed_warning_once(url: &str, message: impl FnOnce() -> String) {
+    let Ok(mut cache) = FEED_WARNING_CACHE.lock() else {
+        log::warn!("{}", message());
+        return;
+    };
+
+    let now = Instant::now();
+    cache.retain(|_, last_seen| now.duration_since(*last_seen) < FEED_WARNING_TTL);
+
+    if let Some(last_seen) = cache.get(url) {
+        if now.duration_since(*last_seen) < FEED_WARNING_TTL {
+            return;
+        }
+    }
+
+    cache.insert(url.to_string(), now);
+    log::warn!("{}", message());
 }
 
 fn is_critical_title(title: &str) -> bool {
@@ -109,11 +134,12 @@ async fn fetch_one_feed(client: &reqwest::Client, url: &str, label: &str) -> Vec
     {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            log::warn!("News feed {} returned status {}", url, r.status());
+            let status = r.status();
+            log_feed_warning_once(url, || format!("News feed {} returned status {}", url, status));
             return vec![];
         }
         Err(e) => {
-            log::warn!("News feed {} failed: {}", url, e);
+            log_feed_warning_once(url, || format!("News feed {} failed: {}", url, e));
             return vec![];
         }
     };
@@ -121,7 +147,7 @@ async fn fetch_one_feed(client: &reqwest::Client, url: &str, label: &str) -> Vec
     let bytes = match resp.bytes().await {
         Ok(b) => b,
         Err(e) => {
-            log::warn!("News feed {} body read failed: {}", url, e);
+            log_feed_warning_once(url, || format!("News feed {} body read failed: {}", url, e));
             return vec![];
         }
     };
@@ -129,7 +155,7 @@ async fn fetch_one_feed(client: &reqwest::Client, url: &str, label: &str) -> Vec
     let feed = match parser::parse(Cursor::new(bytes.as_ref())) {
         Ok(f) => f,
         Err(e) => {
-            log::warn!("News feed {} parse failed: {}", url, e);
+            log_feed_warning_once(url, || format!("News feed {} parse failed: {}", url, e));
             return vec![];
         }
     };

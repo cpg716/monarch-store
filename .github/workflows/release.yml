@@ -1,3 +1,4 @@
+# Release: build GTK-only MonARCH Store (monarch-gtk) and publish draft release.
 name: Release
 on:
   push:
@@ -6,62 +7,43 @@ on:
   workflow_dispatch:
 
 jobs:
-  publish-tauri:
+  release-gtk:
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [ubuntu-22.04] # Focused on Linux for now as it's an Arch store
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: ubuntu-22.04
     container:
       image: ghcr.io/cpg716/monarch-store-builder:latest
-      options: --user root # Ensure we have permission to install if needed, though mostly pre-installed
+      options: --user root
 
     steps:
       - uses: actions/checkout@v4
-      
-      # Fix git safe directory issue in container
+
       - name: Git Safe Directory
-        run: git config --global --add safe.directory /__w/monarch-store/monarch-store
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: setup node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          
-      - name: install Rust stable
-        run: rustup default stable 
+      - name: Install Rust stable
+        run: rustup default stable
 
-      - name: install system dependencies
+      - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y xdg-utils librsvg2-dev libwebkit2gtk-4.1-dev
-          # Ensure pkg-config can find both our custom libalpm and system libs
+          apt-get install -y xdg-utils librsvg2-dev libwebkit2gtk-4.1-dev libgtk-4-dev libadwaita-1-dev
           echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
 
-      - name: install frontend dependencies
-        run: npm install
-
-      - name: build frontend
-        run: npm run build
-      
-      - name: build monarch-helper
+      - name: Build monarch-helper
         run: |
           cd src-tauri
-          # Container has PKG_CONFIG_PATH set in Dockerfile ENV, so this just works
           cargo build --release -p monarch-helper
 
-      - name: disable tauri build hook
+      - name: Build monarch-gtk
         run: |
-          sed -i 's/npm run build/true/' src-tauri/monarch-gui/tauri.conf.json
+          cd src-tauri
+          cargo build --release -p monarch-gtk
 
       - name: Prepare release body
         id: release_body
         run: |
           TAG="${{ github.ref_name }}"
-          # Extract section for this tag from RELEASE_NOTES.md (from "## TAG" until next "## ")
           if section=$(awk -v tag="$TAG" '/^## / { if (found) exit; if ($0 ~ tag) found=1 } found { print }' RELEASE_NOTES.md) && [ -n "$section" ]; then
             body="Release **${TAG}**
 
@@ -76,20 +58,53 @@ jobs:
           echo "$body" >> "$GITHUB_OUTPUT"
           echo "${delimiter}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and upload
-        uses: tauri-apps/tauri-action@v0
+      - name: Create release tarball
+        run: |
+          TAG="${{ github.ref_name }}"
+          PREFIX="monarch-store-${TAG}-linux-x86_64"
+          mkdir -p "$PREFIX/usr/bin" "$PREFIX/usr/share/applications" "$PREFIX/usr/share/metainfo" \
+            "$PREFIX/usr/share/icons/hicolor/128x128/apps" "$PREFIX/usr/share/icons/hicolor/32x32/apps" \
+            "$PREFIX/usr/share/icons/hicolor/64x64/apps" "$PREFIX/usr/share/icons/hicolor/512x512/apps" \
+            "$PREFIX/usr/share/polkit-1/actions" "$PREFIX/usr/share/polkit-1/rules.d" \
+            "$PREFIX/usr/lib/monarch-store" "$PREFIX/usr/share/licenses/monarch-store"
+          install -m755 src-tauri/target/release/monarch-gtk "$PREFIX/usr/bin/monarch-store"
+          install -m755 src-tauri/target/release/monarch-helper "$PREFIX/usr/lib/monarch-store/monarch-helper"
+          [ -f src-tauri/scripts/monarch-wrapper ] && install -m755 src-tauri/scripts/monarch-wrapper "$PREFIX/usr/lib/monarch-store/monarch-wrapper"
+          install -m644 src-tauri/monarch-store.desktop "$PREFIX/usr/share/applications/"
+          install -m644 src-tauri/monarch-store.metainfo.xml "$PREFIX/usr/share/metainfo/"
+          install -m644 src-tauri/monarch-gui/icons/128x128.png "$PREFIX/usr/share/icons/hicolor/128x128/apps/monarch-store.png" 2>/dev/null || true
+          install -m644 src-tauri/monarch-gui/icons/32x32.png "$PREFIX/usr/share/icons/hicolor/32x32/apps/monarch-store.png" 2>/dev/null || true
+          install -m644 src-tauri/monarch-gui/icons/64x64.png "$PREFIX/usr/share/icons/hicolor/64x64/apps/monarch-store.png" 2>/dev/null || true
+          install -m644 src-tauri/monarch-gui/icons/icon.png "$PREFIX/usr/share/icons/hicolor/512x512/apps/monarch-store.png" 2>/dev/null || true
+          install -m644 src-tauri/monarch-gui/com.monarch.store.policy "$PREFIX/usr/share/polkit-1/actions/" 2>/dev/null || true
+          [ -d src-tauri/rules ] && install -m644 src-tauri/rules/10-monarch-store.rules "$PREFIX/usr/share/polkit-1/rules.d/" 2>/dev/null || true
+          install -m644 LICENSE "$PREFIX/usr/share/licenses/monarch-store/LICENSE"
+          tar czf "${PREFIX}.tar.gz" "$PREFIX"
+          echo "tarball=${PREFIX}.tar.gz" >> $GITHUB_ENV
+
+      - name: Build AppImage
+        run: |
+          TAG="${{ github.ref_name }}"
+          PREFIX="monarch-store-${TAG}-linux-x86_64"
+          APPDIR="${PREFIX}.AppDir"
+          cp -r "$PREFIX" "$APPDIR"
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+          chmod +x appimagetool
+          APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool "$APPDIR" "MonARCH_Store_${TAG}_x86_64.AppImage"
+          echo "appimage=MonARCH_Store_${TAG}_x86_64.AppImage" >> $GITHUB_ENV
+
+      - name: Create draft release and upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_KEY_PASSWORD }}
-          APPIMAGE_EXTRACT_AND_RUN: 1
-          # Pass hardened environment variables into the action sub-shell
-          RUSTFLAGS: ""
-        with:
-          projectPath: './src-tauri/monarch-gui'
-          args: --verbose
-          tagName: ${{ github.ref_name }}
-          releaseName: 'MonARCH Store ${{ github.ref_name }}'
-          releaseBody: ${{ steps.release_body.outputs.body }}
-          releaseDraft: true
-          prerelease: true
+          RELEASE_BODY: ${{ steps.release_body.outputs.body }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          tarball="${{ env.tarball }}"
+          appimage="${{ env.appimage }}"
+          echo "$RELEASE_BODY" > /tmp/release_notes.md
+          gh release create "$TAG" --draft --title "MonARCH Store $TAG" --notes-file /tmp/release_notes.md --prerelease 2>/dev/null || true
+          gh release upload "$TAG" "$tarball" --clobber
+          if [ -n "$appimage" ] && [ -f "$appimage" ]; then
+            gh release upload "$TAG" "$appimage" --clobber
+          fi
+          echo "Draft release created/updated: $TAG"

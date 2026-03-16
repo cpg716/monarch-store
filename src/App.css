@@ -24,15 +24,20 @@
   font-weight: 400;
 
   color-scheme: light dark;
+  --system-accent: #3b82f6;
+  --system-bg: #f8fafc;
+  --monarch-purple: #7c3aed;
+  --monarch-gold: #f59e0b;
 
   /* Enhanced Light Mode - Clean, Modern, High Contrast */
-  --app-bg: #f8fafc;
+  --app-bg: var(--system-bg);
   --app-fg: #0f172a;
   --app-sidebar: #f1f5f9;
   --app-card: #ffffff;
   --app-border: #cbd5e1;
   --app-muted: #64748b;
-  --app-accent: #3b82f6;
+  --app-accent: color-mix(in srgb, var(--system-accent) 82%, var(--monarch-purple) 18%);
+  --app-accent-glow: color-mix(in srgb, var(--system-accent) 72%, var(--monarch-gold) 28%);
   /* Light mode specific utilities */
   --app-subtle-bg: rgba(0, 0, 0, 0.04);
   --app-hover-bg: rgba(0, 0, 0, 0.08);
@@ -59,12 +64,13 @@
 
 /* Explicit Theme Overrides */
 .theme-light {
-  --app-bg: #f8fafc;
+  --app-bg: var(--system-bg);
   --app-fg: #0f172a;
   --app-sidebar: #e2e8f0;
   --app-card: #ffffff;
   --app-border: rgba(0, 0, 0, 0.15);
   --app-muted: #64748b;
+  --app-accent: color-mix(in srgb, var(--system-accent) 82%, var(--monarch-purple) 18%);
   --app-subtle-bg: rgba(0, 0, 0, 0.04);
   --app-hover-bg: rgba(0, 0, 0, 0.08);
 }
@@ -76,6 +82,7 @@
   --app-card: #252525;
   --app-border: rgba(255, 255, 255, 0.1);
   --app-muted: #a1a1a1;
+  --app-accent: color-mix(in srgb, var(--system-accent) 78%, var(--monarch-purple) 22%);
   --app-subtle-bg: rgba(255, 255, 255, 0.05);
   --app-hover-bg: rgba(255, 255, 255, 0.1);
 }
@@ -264,7 +271,7 @@
 }
 
 .btn-accent {
-  background: var(--app-accent);
+  background: linear-gradient(135deg, var(--app-accent), var(--app-accent-glow));
   color: #fff;
   transition: filter 0.2s ease;
 }

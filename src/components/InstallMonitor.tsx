@@ -220,7 +220,10 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                     break;
                 case 'install-finalizing':
                     // Prevent hanging progress bar; indicate background housekeeping
-                    setProgressStatusThrottled(99, evt.message || 'Finishing up housekeeping...');
+                    setProgressStatusThrottled(
+                        99,
+                        evt.message || 'Finalizing installation. Housekeeping may continue briefly in background...'
+                    );
                     break;
                 case 'progress':
                     if (evt.percent !== undefined) {
@@ -442,14 +445,14 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                 case 'ForceRefreshDb':
                 case 'RefreshMirrors':
                     setLogs(prev => [...prev, logEntry('Forcing database refresh...')]);
-                    unwrap(await commands.triggerRepoSync(null));
+                    unwrap(await commands.triggerRepoSync(null, pwd ?? null));
                     setLogs(prev => [...prev, logEntry('✓ Databases refreshed')]);
                     break;
 
                 case 'CleanCache':
-                    setLogs(prev => [...prev, logEntry('Clearing package cache...')]);
-                    unwrap(await commands.clearCache());
-                    setLogs(prev => [...prev, logEntry('✓ Cache cleared')]);
+                    setLogs(prev => [...prev, logEntry('Clearing metadata caches...')]);
+                    unwrap(await commands.clearMetadataCaches());
+                    setLogs(prev => [...prev, logEntry('✓ Metadata caches cleared')]);
                     break;
 
                 case 'FlatpakReinstall':
@@ -1015,9 +1018,9 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                 <div className="bg-blue-500/10 border border-blue-500/20 p-5 rounded-2xl flex gap-4 items-start">
                                     <ShieldCheck className="text-blue-500 shrink-0 mt-1" size={24} />
                                     <div>
-                                        <h4 className="font-bold text-blue-500 mb-1 text-sm">One-Click Install Ready</h4>
+                                        <h4 className="font-bold text-blue-500 mb-1 text-sm">One-Click Authentication Ready</h4>
                                         <p className="text-xs text-app-muted">
-                                            If authorized, this will proceed instantly. Otherwise, the system will prompt you for a single secure authorization.
+                                            If MonARCH is already unlocked for this session, this can continue immediately. Otherwise, you can authorize once here or use the system prompt.
                                         </p>
                                     </div>
                                 </div>
@@ -1088,7 +1091,13 @@ export default function InstallMonitor({ pkg, onClose, mode = 'install', onSucce
                                         {mode !== 'uninstall' && (
                                             <button
                                                 onClick={() => {
-                                                    commands.launchApp({ pkg_name: pkg.name }).then(unwrap).catch((e) => errorService.reportError(e as Error | string));
+                                                    commands.launchPackage({
+                                                        package_name: pkg.name,
+                                                        app_id: null,
+                                                        desktop_entry: null,
+                                                        launch_target: null,
+                                                        source: pkg.source as any,
+                                                    }).then(unwrap).catch((e) => errorService.reportError(e as Error | string));
                                                     onClose();
                                                 }}
                                                 className="w-full py-3 rounded-xl text-sm font-semibold text-app-fg hover:bg-app-hover border border-app-border transition-colors flex items-center justify-center gap-1.5"

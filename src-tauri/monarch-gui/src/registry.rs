@@ -5,6 +5,68 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
+const CATALOG_SCHEMA_VERSION: &str = "2";
+
+fn source_rank(src: &PackageSource) -> i32 {
+    let id = src.id.to_lowercase();
+    match src.source_type.as_str() {
+        "repo" => {
+            if id.contains("cachyos")
+                || id.contains("manjaro")
+                || id.contains("garuda")
+                || id.contains("endeavour")
+            {
+                400
+            } else if matches!(
+                id.as_str(),
+                "core" | "extra" | "community" | "multilib" | "official"
+            ) {
+                350
+            } else if id.contains("chaotic") {
+                275
+            } else {
+                300
+            }
+        }
+        "aur" => 250,
+        "flatpak" => 200,
+        _ => 0,
+    }
+}
+
+fn pick_primary_source(sources: &[PackageSource]) -> Option<PackageSource> {
+    let mut iter = sources.iter();
+    let first = iter.next()?;
+    let mut best = first.clone();
+    let mut best_rank = source_rank(&best);
+    for src in iter {
+        let rank = source_rank(src);
+        if rank > best_rank {
+            best = src.clone();
+            best_rank = rank;
+        }
+    }
+    Some(best)
+}
+
+fn assign_display_source(pkg: &mut Package) {
+    if let Some(srcs) = &pkg.available_sources {
+        if pkg.installed {
+            if let Some(installed_source) =
+                crate::utils::installed_source_for_package(&pkg.name, pkg.app_id.as_deref())
+            {
+                pkg.source = installed_source;
+                return;
+            }
+        }
+        if let Some(primary) = pick_primary_source(srcs) {
+            pkg.source = primary;
+        }
+    }
+
+    crate::utils::apply_package_ui_defaults(pkg);
+}
+
 /// RegistryState wraps the RegistryManager for Tauri state management.
 pub struct RegistryState {
     pub manager: RegistryManager,
@@ -77,6 +139,47 @@ pub struct RegistryManager {
 }
 
 impl RegistryManager {
+    fn ensure_catalog_schema(conn: &Connection) -> Result<(), String> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS registry_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let current: Option<String> = conn
+            .query_row(
+                "SELECT value FROM registry_meta WHERE key='catalog_schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        if current.as_deref() != Some(CATALOG_SCHEMA_VERSION) {
+            log::warn!(
+                "[REGISTRY] Schema version changed ({:?} -> {}). Rebuilding catalog tables.",
+                current,
+                CATALOG_SCHEMA_VERSION
+            );
+            conn.execute("DELETE FROM package_sources", [])
+                .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM package_categories", [])
+                .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM packages", [])
+                .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO registry_meta(key, value) VALUES('catalog_schema_version', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![CATALOG_SCHEMA_VERSION],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub fn new(update_tx: mpsc::Sender<RegistryUpdate>) -> Self {
         let path = Self::get_db_path();
 
@@ -169,6 +272,10 @@ impl RegistryManager {
             [],
         );
 
+        if let Err(e) = Self::ensure_catalog_schema(&conn) {
+            log::error!("[REGISTRY] Failed to verify schema version: {}", e);
+        }
+
         Self {
             conn: Mutex::new(conn),
             update_tx,
@@ -219,9 +326,18 @@ impl RegistryManager {
                         screenshots
                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                     ON CONFLICT(canonical_id) DO UPDATE SET
+                        name = excluded.name,
                         display_name = CASE WHEN excluded.display_name IS NOT NULL AND excluded.display_name != '' THEN excluded.display_name ELSE display_name END,
                         description = CASE WHEN excluded.description != '' THEN excluded.description ELSE description END,
+                        version = CASE WHEN excluded.version != '' THEN excluded.version ELSE version END,
+                        app_id = CASE WHEN excluded.app_id IS NOT NULL AND excluded.app_id != '' THEN excluded.app_id ELSE app_id END,
                         icon = CASE WHEN excluded.icon IS NOT NULL AND excluded.icon != '' THEN excluded.icon ELSE icon END,
+                        installed = excluded.installed,
+                        last_modified = COALESCE(excluded.last_modified, last_modified),
+                        maintainer = CASE WHEN excluded.maintainer IS NOT NULL AND excluded.maintainer != '' THEN excluded.maintainer ELSE maintainer END,
+                        license = CASE WHEN excluded.license IS NOT NULL AND excluded.license != '' THEN excluded.license ELSE license END,
+                        url = CASE WHEN excluded.url IS NOT NULL AND excluded.url != '' THEN excluded.url ELSE url END,
+                        is_featured = COALESCE(excluded.is_featured, is_featured),
                         long_description = CASE WHEN excluded.long_description IS NOT NULL AND excluded.long_description != '' THEN excluded.long_description ELSE long_description END,
                         screenshots = CASE WHEN excluded.screenshots IS NOT NULL AND excluded.screenshots != '' THEN excluded.screenshots ELSE screenshots END,
                         last_updated = excluded.last_updated",
@@ -272,22 +388,35 @@ impl RegistryManager {
                         ])
                         .map_err(|e| e.to_string())?;
 
-                    if let Some(sources) = &pkg.available_sources {
-                        stmt_del_src
-                            .execute(params![canon_id])
-                            .map_err(|e| e.to_string())?;
-                        for src in sources {
-                            stmt_ins_src
-                                .execute(params![
-                                    canon_id,
-                                    src.source_type,
-                                    src.id,
-                                    src.version,
-                                    src.label,
-                                    src.package_name
-                                ])
-                                .map_err(|e| e.to_string())?;
+                    stmt_del_src
+                        .execute(params![canon_id])
+                        .map_err(|e| e.to_string())?;
+
+                    let mut seen_slots = std::collections::HashSet::new();
+                    let sources = pkg
+                        .available_sources
+                        .clone()
+                        .unwrap_or_else(|| vec![pkg.source.clone()]);
+                    for src in sources {
+                        let slot = format!(
+                            "{}|{}|{}",
+                            src.source_type,
+                            src.id,
+                            src.package_name.clone().unwrap_or_default()
+                        );
+                        if !seen_slots.insert(slot) {
+                            continue;
                         }
+                        stmt_ins_src
+                            .execute(params![
+                                canon_id,
+                                src.source_type,
+                                src.id,
+                                src.version,
+                                src.label,
+                                src.package_name
+                            ])
+                            .map_err(|e| e.to_string())?;
                     }
 
                     // Notify actor of changed package - Only for small total batches to avoid bridge flood
@@ -308,9 +437,162 @@ impl RegistryManager {
         Ok(())
     }
 
+    pub fn bulk_upsert_packages_with_categories(
+        &self,
+        entries: &[(Package, Vec<String>)],
+    ) -> Result<(), String> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn_guard = self.conn.lock().map_err(|e| e.to_string())?;
+        let chunks = entries.chunks(500);
+
+        for chunk in chunks {
+            let tx = conn_guard
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+
+            {
+                let mut stmt_pkg = tx.prepare_cached(
+                    "INSERT INTO packages (
+                        canonical_id, name, display_name, description, version,
+                        app_id, icon, installed, last_modified, maintainer,
+                        license, url, is_featured, last_updated, long_description,
+                        screenshots
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                    ON CONFLICT(canonical_id) DO UPDATE SET
+                        name = excluded.name,
+                        display_name = CASE WHEN excluded.display_name IS NOT NULL AND excluded.display_name != '' THEN excluded.display_name ELSE display_name END,
+                        description = CASE WHEN excluded.description != '' THEN excluded.description ELSE description END,
+                        version = CASE WHEN excluded.version != '' THEN excluded.version ELSE version END,
+                        app_id = CASE WHEN excluded.app_id IS NOT NULL AND excluded.app_id != '' THEN excluded.app_id ELSE app_id END,
+                        icon = CASE WHEN excluded.icon IS NOT NULL AND excluded.icon != '' THEN excluded.icon ELSE icon END,
+                        installed = excluded.installed,
+                        last_modified = COALESCE(excluded.last_modified, last_modified),
+                        maintainer = CASE WHEN excluded.maintainer IS NOT NULL AND excluded.maintainer != '' THEN excluded.maintainer ELSE maintainer END,
+                        license = CASE WHEN excluded.license IS NOT NULL AND excluded.license != '' THEN excluded.license ELSE license END,
+                        url = CASE WHEN excluded.url IS NOT NULL AND excluded.url != '' THEN excluded.url ELSE url END,
+                        is_featured = COALESCE(excluded.is_featured, is_featured),
+                        long_description = CASE WHEN excluded.long_description IS NOT NULL AND excluded.long_description != '' THEN excluded.long_description ELSE long_description END,
+                        screenshots = CASE WHEN excluded.screenshots IS NOT NULL AND excluded.screenshots != '' THEN excluded.screenshots ELSE screenshots END,
+                        last_updated = excluded.last_updated",
+                ).map_err(|e| e.to_string())?;
+
+                let mut stmt_del_src = tx
+                    .prepare_cached("DELETE FROM package_sources WHERE canonical_id = ?1")
+                    .map_err(|e| e.to_string())?;
+
+                let mut stmt_ins_src = tx.prepare_cached(
+                    "INSERT INTO package_sources (canonical_id, source_type, source_id, version, label, package_name)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+                ).map_err(|e| e.to_string())?;
+
+                let mut stmt_del_cat = tx
+                    .prepare_cached("DELETE FROM package_categories WHERE canonical_id = ?1")
+                    .map_err(|e| e.to_string())?;
+
+                let mut stmt_ins_cat = tx
+                    .prepare_cached(
+                        "INSERT INTO package_categories (canonical_id, category) VALUES (?1, ?2)",
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                let now = chrono::Utc::now().timestamp();
+
+                for (pkg, categories) in chunk {
+                    let canon_id = if pkg.canonical_id.is_empty() {
+                        crate::utils::canonical_merge_key(&pkg.name, pkg.app_id.as_deref())
+                    } else {
+                        pkg.canonical_id.clone()
+                    };
+
+                    if canon_id.is_empty() {
+                        continue;
+                    }
+
+                    stmt_pkg
+                        .execute(params![
+                            canon_id,
+                            pkg.name,
+                            pkg.display_name,
+                            pkg.description,
+                            pkg.version,
+                            pkg.app_id,
+                            pkg.icon,
+                            pkg.installed,
+                            pkg.last_modified,
+                            pkg.maintainer,
+                            pkg.license.as_ref().map(|l| l.join(",")),
+                            pkg.url,
+                            pkg.is_featured,
+                            now,
+                            pkg.long_description,
+                            pkg.screenshots
+                                .as_ref()
+                                .and_then(|s| serde_json::to_string(s).ok())
+                        ])
+                        .map_err(|e| e.to_string())?;
+
+                    stmt_del_src
+                        .execute(params![canon_id])
+                        .map_err(|e| e.to_string())?;
+
+                    let mut seen_slots = std::collections::HashSet::new();
+                    let sources = pkg
+                        .available_sources
+                        .clone()
+                        .unwrap_or_else(|| vec![pkg.source.clone()]);
+                    for src in sources {
+                        let slot = format!(
+                            "{}|{}|{}",
+                            src.source_type,
+                            src.id,
+                            src.package_name.clone().unwrap_or_default()
+                        );
+                        if !seen_slots.insert(slot) {
+                            continue;
+                        }
+                        stmt_ins_src
+                            .execute(params![
+                                canon_id,
+                                src.source_type,
+                                src.id,
+                                src.version,
+                                src.label,
+                                src.package_name
+                            ])
+                            .map_err(|e| e.to_string())?;
+                    }
+
+                    stmt_del_cat
+                        .execute(params![canon_id])
+                        .map_err(|e| e.to_string())?;
+                    for cat in categories {
+                        stmt_ins_cat
+                            .execute(params![canon_id, cat.to_lowercase()])
+                            .map_err(|e| e.to_string())?;
+                    }
+
+                    if entries.len() <= 20 {
+                        let _ = self.update_tx.try_send(RegistryUpdate::Package(canon_id));
+                    }
+                }
+            }
+
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+
+        if entries.len() > 20 {
+            let _ = self.update_tx.try_send(RegistryUpdate::Bulk);
+        }
+
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn upsert_package(&self, pkg: &Package) -> Result<(), String> {
-        self.bulk_upsert_packages(&[pkg.clone()])
+        self.bulk_upsert_packages(std::slice::from_ref(pkg))
     }
 
     /// Specialized bulk sync for AppStream data which includes categories.
@@ -573,7 +855,12 @@ impl RegistryManager {
     ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT canonical_id, name FROM packages WHERE canonical_id = ?1")
+            .prepare(
+                "SELECT ps.canonical_id, COALESCE(ps.package_name, p.name) AS package_name
+                 FROM packages p
+                 LEFT JOIN package_sources ps ON p.canonical_id = ps.canonical_id
+                 WHERE p.canonical_id = ?1",
+            )
             .map_err(|e| e.to_string())?;
 
         let mut map: std::collections::HashMap<String, Vec<String>> =
@@ -659,6 +946,7 @@ impl RegistryManager {
                 .map_err(|e| e.to_string())?;
 
             pkg.available_sources = Some(sources);
+            assign_display_source(&mut pkg);
             Ok(Some(pkg))
         } else {
             Ok(None)
@@ -737,6 +1025,7 @@ impl RegistryManager {
                     .map_err(|e| e.to_string())?;
 
                 pkg.available_sources = Some(sources);
+                assign_display_source(&mut pkg);
                 packages.push(pkg);
             }
         }
@@ -822,6 +1111,7 @@ impl RegistryManager {
                 .map_err(|e| e.to_string())?;
 
             pkg.available_sources = Some(sources);
+            assign_display_source(&mut pkg);
             pkgs.push(pkg);
         }
         Ok(pkgs)

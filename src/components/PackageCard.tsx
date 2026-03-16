@@ -1,299 +1,281 @@
-import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
-import { Download, Heart, Zap, Settings } from 'lucide-react';
-import { motion } from 'framer-motion';
-import { useFavorites } from '../hooks/useFavorites';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Download, Heart, Play, RefreshCw, Settings2, Trash2 } from 'lucide-react';
 import { clsx } from 'clsx';
+import { useFavorites } from '../hooks/useFavorites';
 import { resolveIconUrl } from '../utils/iconHelper';
 import RepoBadge from './RepoBadge';
 import PackageCardSkeleton from './PackageCardSkeleton';
 import { useAppStore } from '../store/internal_store';
+import { getPackageListKey } from '../utils/packageKey';
+import { toPackageSource } from '../utils/repoHelper';
+import { getSourceBrand } from '../utils/sourceBrand';
+import {
+    getPackageDisplayTitle,
+    getPackagePrimaryActionLabel,
+    getPackageSourceLabel,
+    getPackageSourceSummary,
+} from '../utils/packagePresentation';
 
 import type { Package, PackageSource } from '../services/bindings';
-import { getBestSource, getSourceTier, toPackageSource } from '../utils/repoHelper';
-import { useDistro } from '../hooks/useDistro';
 import archLogo from '../assets/arch-logo.png';
-
-
 
 interface PackageCardProps {
     pkg?: Package;
     pkgId?: string;
     onClick: (pkg: Package) => void;
+    onPrimaryAction?: (pkg: Package) => void;
+    onSecondaryAction?: (pkg: Package) => void;
+    secondaryActionLabel?: string;
     skipMetadataFetch?: boolean;
     setupRequired?: boolean;
     onConfigureSource?: () => void;
+    viewMode?: 'browse' | 'installed' | 'update';
 }
 
-/* ─── Pure display card ───────────────────────────────────── */
+function getVisibleSources(pkg: Package, flags: { flatpak: boolean; aur: boolean; chaotic: boolean }): PackageSource[] {
+    const raw = (pkg.available_sources && pkg.available_sources.length > 0)
+        ? pkg.available_sources
+        : [pkg.source, ...(pkg.alternatives || []).map((alt) => alt.source)];
 
+    const seen = new Set<string>();
+    return raw
+        .map((source) => toPackageSource(source))
+        .filter((source) => {
+            if (source.source_type === 'flatpak' && !flags.flatpak) return false;
+            if (source.source_type === 'aur' && !flags.aur) return false;
+            if (source.id === 'chaotic-aur' && !flags.chaotic) return false;
+            const key = `${source.source_type}:${source.id}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
 
+function getStateSummary(pkg: Package, setupRequired: boolean, visibleSources: PackageSource[]): string {
+    if (setupRequired) return 'Setup required before this source can be used';
+    if (pkg.installed) return 'Installed on this system';
+    const fallback = visibleSources.length > 1
+        ? `Using ${visibleSources[0]?.label || 'this source'} by default • ${visibleSources.length - 1} more source${visibleSources.length - 1 === 1 ? '' : 's'} available`
+        : pkg.is_optimized
+            ? `Optimized for ${visibleSources[0]?.label || 'your distro'}`
+            : visibleSources[0]?.label || 'Available now';
+    return getPackageSourceSummary(pkg, fallback);
+}
 
 const PackageCardInner: React.FC<PackageCardProps & { pkg: Package }> = ({
     pkg,
     onClick,
+    onPrimaryAction,
+    onSecondaryAction,
     setupRequired = false,
     onConfigureSource,
+    secondaryActionLabel = 'Remove',
+    viewMode = 'browse',
 }) => {
-    const { distro } = useDistro();
-    const distroId = typeof distro?.id === 'string' ? distro.id : (distro?.id as any)?.unknown ?? '';
-
-    /* ── Derive best source from pre-enriched available_sources ── */
-    const effectiveSources: PackageSource[] = useMemo(() => {
-        const raw = (pkg.available_sources && pkg.available_sources.length > 0)
-            ? pkg.available_sources
-            : [pkg.source, ...(pkg.alternatives || []).map((a) => a.source)];
-        const sources = raw.map(s => toPackageSource(s));
-        const seen = new Set<string>();
-        return sources.filter((s) => {
-            const key = `${s.source_type}:${s.id}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        }).sort((a, b) => getSourceTier(b, distroId) - getSourceTier(a, distroId));
-    }, [pkg.available_sources, pkg.source, pkg.alternatives, distroId]);
-
-    const bestSource = getBestSource(effectiveSources, distroId) ?? toPackageSource(pkg.source);
-    const additionalCount = Math.max(0, effectiveSources.length - 1);
-
-    /* ── Icon: read from pre-enriched pkg.icon (no per-card fetch) ── */
-    const iconUrl = resolveIconUrl(pkg.icon || null);
-    const [imgError, setImgError] = useState(false);
-    useEffect(() => { setImgError(false); }, [iconUrl]);
-
-    /* ── Rating: Restored ── */
-    const rating = pkg.rating;
-    const ratingAvg = rating && rating.total > 0
-        ? ((rating.star1 + rating.star2 * 2 + rating.star3 * 3 + rating.star4 * 4 + rating.star5 * 5) / rating.total)
-        : 0;
-
-    /* ── Favorites (lightweight local-only hook) ── */
+    const isFlatpakEnabled = useAppStore((s) => s.isFlatpakEnabled);
+    const isAurEnabled = useAppStore((s) => s.isAurEnabled);
+    const isChaoticEnabled = useAppStore((s) => s.isChaoticEnabled);
     const { toggleFavorite, isFavorite } = useFavorites();
-    const isFav = isFavorite(pkg.name);
-
-    /* ── Display name ── */
-    const displayName = pkg.display_name || pkg.name;
-    const showPkgName = pkg.display_name && pkg.display_name.toLowerCase() !== pkg.name.toLowerCase();
-
-    /* ── Intersection Observer: defer rendering until near viewport ── */
     const cardRef = useRef<HTMLDivElement>(null);
     const [isVisible, setIsVisible] = useState(false);
+    const [imgError, setImgError] = useState(false);
+
+    const visibleSources = useMemo(
+        () => getVisibleSources(pkg, { flatpak: isFlatpakEnabled, aur: isAurEnabled, chaotic: isChaoticEnabled }),
+        [pkg, isFlatpakEnabled, isAurEnabled, isChaoticEnabled]
+    );
+    const badgeSource = pkg.installed ? toPackageSource(pkg.source) : (visibleSources[0] ?? toPackageSource(pkg.source));
+    const sourceBrand = getSourceBrand(badgeSource, '');
+    const displayName = getPackageDisplayTitle(pkg);
+    const favoriteId = getPackageListKey(pkg);
+    const isFav = isFavorite(favoriteId);
+    const iconUrl = resolveIconUrl(pkg.icon || null);
+    const stateSummary = getStateSummary(pkg, setupRequired, visibleSources);
+    const summaryText = pkg.description?.trim() || 'No description available yet.';
+    const primaryLabel = viewMode === 'installed'
+        ? 'Launch'
+        : viewMode === 'update'
+            ? 'Update'
+            : getPackagePrimaryActionLabel(pkg, { setupRequired });
+    const PrimaryIcon = setupRequired
+        ? Settings2
+        : viewMode === 'installed'
+            ? Play
+            : viewMode === 'update'
+                ? RefreshCw
+                : Download;
 
     useEffect(() => {
-        const el = cardRef.current;
-        if (!el) return;
+        setImgError(false);
+    }, [iconUrl]);
+
+    useEffect(() => {
+        const node = cardRef.current;
+        if (!node) return;
         const observer = new IntersectionObserver(
-            ([entry]) => { if (entry.isIntersecting) { setIsVisible(true); observer.disconnect(); } },
-            { rootMargin: '200px' }
+            ([entry]) => {
+                if (entry.isIntersecting) {
+                    setIsVisible(true);
+                    observer.disconnect();
+                }
+            },
+            { rootMargin: '160px' }
         );
-        observer.observe(el);
+        observer.observe(node);
         return () => observer.disconnect();
     }, []);
 
-    const syncRegistry = useAppStore((s) => s.syncRegistry);
-
-    const handleMouseEnter = useCallback(() => {
-        // Prefetch details on hover for instant feel
-        syncRegistry([pkg.name]);
-    }, [pkg.name, syncRegistry]);
-
-    const handleClick = useCallback(() => onClick(pkg), [onClick, pkg]);
-    const handleFavorite = useCallback((e: React.MouseEvent) => {
-        e.stopPropagation();
-        toggleFavorite(pkg.name);
-    }, [toggleFavorite, pkg.name]);
-    const handleConfigure = useCallback((e: React.MouseEvent) => {
-        e.stopPropagation();
-        onConfigureSource?.();
-    }, [onConfigureSource]);
+    if (!pkg?.name) return null;
 
     return (
-        <motion.div
+        <div
             ref={cardRef}
-            onClick={handleClick}
-            onMouseEnter={handleMouseEnter}
-            layout
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.98 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-            className="group relative bg-app-card dark:bg-black/20 border border-app-border rounded-2xl p-5 hover:bg-app-card/80 dark:hover:bg-black/40 transition-all duration-300 hover:border-blue-300/50 dark:hover:border-white/10 hover:-translate-y-1 hover:shadow-xl dark:hover:shadow-2xl shadow-sm dark:shadow-none cursor-pointer overflow-hidden flex flex-col h-full min-w-[260px] max-w-full backdrop-blur-md card-gpu"
+            onClick={() => onClick(pkg)}
+            className="group flex h-full min-h-[208px] cursor-pointer flex-col rounded-xl border border-app-border bg-app-card px-4 py-4 transition-colors hover:border-blue-500/30 hover:bg-app-card/90"
         >
             {!isVisible ? (
-                /* Matches PackageCardSkeleton exactly to prevent layout shift */
-                <div className="flex flex-col gap-3 animate-pulse h-[180px]">
-                    <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-xl bg-slate-200/50 dark:bg-white/5 shrink-0" />
-                        <div className="flex-1 space-y-2">
-                            <div className="h-4 bg-slate-200/50 dark:bg-white/5 rounded w-3/4" />
-                            <div className="h-3 bg-slate-200/50 dark:bg-white/5 rounded w-1/3" />
-                        </div>
-                    </div>
-                    <div className="space-y-2 mb-auto">
-                        <div className="h-3 bg-slate-200/50 dark:bg-white/5 rounded w-full" />
-                        <div className="h-3 bg-slate-200/50 dark:bg-white/5 rounded w-[90%]" />
-                    </div>
-                    <div className="pt-3 border-t border-app-border/50 flex items-center justify-between">
-                        <div className="h-5 w-12 bg-slate-200/50 dark:bg-white/5 rounded-lg" />
-                        <div className="w-8 h-8 bg-slate-200/50 dark:bg-white/5 rounded-xl" />
-                    </div>
-                </div>
+                <PackageCardSkeleton />
             ) : (
                 <>
-                    {/* ── Header: Icon + Name + Best Source Badge ── */}
-                    <div className="flex items-start gap-3 mb-3">
-                        <div className={clsx(
-                            "w-12 h-12 rounded-xl flex items-center justify-center shrink-0 overflow-hidden transition-colors",
-                            "text-slate-800 dark:text-white",
-                            (!iconUrl || imgError)
-                                ? "bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 p-1.5"
-                                : "bg-transparent"
-                        )}>
+                    <div className="flex items-start gap-3">
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/5 bg-black/20 p-1.5">
                             {iconUrl && !imgError ? (
                                 <img
                                     src={iconUrl}
                                     alt={displayName}
-                                    className="w-full h-full object-contain p-0.5 drop-shadow-md"
+                                    className="h-full w-full object-contain"
                                     loading="lazy"
                                     onError={() => setImgError(true)}
                                 />
                             ) : (
                                 <img
-                                    src={archLogo}
-                                    className="w-full h-full object-contain opacity-80 grayscale group-hover:grayscale-0 transition-all dark:invert"
-                                    alt="Arch Linux"
+                                    src={sourceBrand.logoAsset || archLogo}
+                                    alt={sourceBrand.altText || 'Application'}
+                                    className="h-full w-full object-contain opacity-70"
                                 />
                             )}
                         </div>
 
-                        <div className="flex-1 min-w-0">
-                            <h3
-                                className="font-bold text-base leading-tight text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors line-clamp-1 break-words"
-                                title={displayName}
-                            >
-                                {displayName}
-                            </h3>
-                            {showPkgName && (
-                                <span className="text-[10px] text-slate-500 dark:text-white/50 font-mono opacity-80 block truncate mt-0.5">
-                                    {pkg.name}
-                                </span>
-                            )}
+                        <div className="min-w-0 flex-1">
+                            <div className="min-w-0">
+                                <h3 className="line-clamp-2 text-base font-bold leading-6 text-white">{displayName}</h3>
+                                <p className="mt-0.5 truncate text-xs font-medium text-app-muted">
+                                    {pkg.display_name && pkg.display_name.toLowerCase() !== pkg.name.toLowerCase()
+                                        ? pkg.name
+                                        : getPackageSourceLabel(badgeSource)}
+                                </p>
+                            </div>
+                            <div className="mt-2">
+                                <RepoBadge source={badgeSource} compact />
+                            </div>
                         </div>
-
-                        {/* Best source badge — top-right */}
-                        <RepoBadge source={bestSource} compact />
                     </div>
 
-                    {/* ── Description ── */}
-                    <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-2 mb-auto min-h-[3rem] leading-relaxed">
-                        {pkg.description}
+                    <p className="mt-3 line-clamp-2 min-h-[2.5rem] text-sm leading-6 text-slate-300">
+                        {summaryText}
                     </p>
 
-                    {/* ── Footer: Rating + Sources + Actions ── */}
-                    <div className="flex items-center justify-between mt-3 pt-3 border-t border-app-border/50 gap-2">
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
-                            {/* Star rating (Removed in Iron Core Purge) */}
-                            {rating && rating.total > 0 && (
-                                <div className="flex items-center gap-1 bg-yellow-100 dark:bg-yellow-400/5 px-1.5 py-0.5 rounded-lg text-[10px] font-black text-yellow-600 dark:text-yellow-500 border border-yellow-200 dark:border-yellow-400/10 shrink-0">
-                                    <span className="leading-none">★</span>
-                                    <span className="tracking-tight">{ratingAvg.toFixed(1)}</span>
-                                    <span className="text-[8px] opacity-70 font-medium">({rating.total})</span>
-                                </div>
+                    <div className="mt-3 flex min-h-[1.25rem] items-center">
+                        <span
+                            className={clsx(
+                                'text-xs font-medium',
+                                setupRequired && 'text-amber-400',
+                                pkg.installed && 'text-emerald-400',
+                                !setupRequired && !pkg.installed && 'text-slate-400'
                             )}
-
-                            {/* Optimized badge */}
-                            {pkg.is_optimized && (
-                                <div className="badge-hover px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-amber-700 dark:text-amber-400 text-[9px] font-bold uppercase tracking-wider flex items-center gap-0.5 shrink-0">
-                                    <Zap size={9} fill="currentColor" /> Opt
-                                </div>
-                            )}
-
-                            {/* Installed badge */}
-                            {pkg.installed && (
-                                <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 shrink-0">
-                                    Installed
-                                </span>
-                            )}
-
-                            {/* Setup Required badge */}
-                            {setupRequired && (
-                                <span className="px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/25 shrink-0">
-                                    Setup
-                                </span>
-                            )}
-
-                            {/* +N sources pill */}
-                            {additionalCount > 0 && (
-                                <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-blue-100 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20 shrink-0">
-                                    +{additionalCount} {additionalCount === 1 ? 'source' : 'sources'}
-                                </span>
-                            )}
+                        >
+                            {stateSummary}
+                        </span>
+                    </div>
+                    {visibleSources.length > 1 && !pkg.installed && (
+                        <div className="mt-2 text-[11px] font-medium text-app-muted">
+                            Compare sources in details before installing.
                         </div>
+                    )}
 
-                        {/* Action buttons */}
-                        <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="mt-auto flex items-center justify-between gap-2 border-t border-white/5 pt-4">
+                        <div className="flex items-center gap-2">
                             <button
-                                onClick={handleFavorite}
+                                type="button"
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    if (setupRequired) {
+                                        onConfigureSource?.();
+                                        return;
+                                    }
+                                    if (onPrimaryAction) {
+                                        onPrimaryAction(pkg);
+                                        return;
+                                    }
+                                    onClick(pkg);
+                                }}
                                 className={clsx(
-                                    "p-2 rounded-xl transition-all border border-transparent active:scale-90",
-                                    isFav
-                                        ? "text-red-600 dark:text-red-500 bg-red-100 dark:bg-red-500/10 border-red-200 dark:border-red-500/20"
-                                        : "text-slate-400 dark:text-white/50 bg-white dark:bg-white/5 hover:bg-red-500 hover:text-white"
+                                    'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition-colors',
+                                    setupRequired
+                                        ? 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/25'
+                                        : pkg.installed
+                                            ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                                            : 'bg-blue-600 text-white hover:bg-blue-500'
                                 )}
-                                title={isFav ? "Remove from favorites" : "Add to favorites"}
-                                aria-label={isFav ? "Remove from favorites" : "Add to favorites"}
                             >
-                                <Heart size={14} fill={isFav ? "currentColor" : "none"} />
+                                <PrimaryIcon size={14} />
+                                {primaryLabel}
                             </button>
 
-                            {setupRequired ? (
+                            {onSecondaryAction && (
                                 <button
-                                    onClick={handleConfigure}
-                                    className="p-2 rounded-xl bg-amber-500/80 hover:bg-amber-500 text-white transition-all active:scale-90 font-semibold flex items-center gap-1 text-[10px]"
-                                    aria-label="Configure Source"
-                                    title="Configure Chaotic-AUR in Settings"
+                                    type="button"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        onSecondaryAction(pkg);
+                                    }}
+                                    className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition-colors bg-red-500/10 text-red-300 hover:bg-red-500/20"
                                 >
-                                    <Settings size={13} />
-                                </button>
-                            ) : (
-                                <button
-                                    className="p-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-all active:scale-90 shadow-blue-900/20"
-                                    aria-label="Install"
-                                >
-                                    <Download size={14} />
+                                    <Trash2 size={14} />
+                                    {secondaryActionLabel}
                                 </button>
                             )}
                         </div>
+
+                        {!onSecondaryAction && (
+                            <button
+                                type="button"
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    toggleFavorite(favoriteId);
+                                }}
+                                className={clsx(
+                                    'rounded-lg border p-2 transition-colors',
+                                    isFav
+                                        ? 'border-red-500/30 bg-red-500/10 text-red-400'
+                                        : 'border-white/5 bg-black/20 text-app-muted hover:border-white/10 hover:text-white'
+                                )}
+                                aria-label={isFav ? 'Remove from favorites' : 'Add to favorites'}
+                                title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+                            >
+                                <Heart size={14} className={isFav ? 'fill-current' : ''} />
+                            </button>
+                        )}
                     </div>
                 </>
             )}
-
-            {/* Glow effect */}
-            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-500" />
-        </motion.div>
+        </div>
     );
 };
 
-const PackageCardInnerMemo = React.memo(PackageCardInner);
-
-/** PackageCard: pass pkgId to read from global registry, or pkg for direct data. */
 const PackageCard: React.FC<PackageCardProps> = (props) => {
-    const { pkg: pkgProp, pkgId, onClick } = props;
-    const registryPkg = pkgId != null ? useAppStore((s) => s.packageRegistry[pkgId]) : undefined;
+    const { pkg: pkgProp, pkgId } = props;
+    const registryPkg = pkgId ? useAppStore((s) => s.packageRegistry[pkgId]) : undefined;
+    const pkg = useMemo(() => {
+        if (registryPkg) return registryPkg;
+        if (pkgProp) return pkgProp;
+        return undefined;
+    }, [registryPkg, pkgProp]);
 
-    // PRIORITY FIX: Prefer Registry Package if available, as it contains async updates (Ratings, etc.)
-    // upsertPackages() merges search results into registry, so registry is always equal or better.
-    const pkg = registryPkg ?? pkgProp;
+    if (pkgId && !pkg) return <PackageCardSkeleton />;
+    if (!pkg) return null;
 
-    if (pkgId != null && pkg == null) return <PackageCardSkeleton />;
-    if (pkg == null) return null;
-
-    return (
-        <PackageCardInnerMemo
-            {...props}
-            pkg={pkg}
-            onClick={onClick}
-        />
-    );
+    return <PackageCardInner {...props} pkg={pkg} />;
 };
 
-export default PackageCard;
+export default React.memo(PackageCard);

@@ -1,13 +1,10 @@
-import { useState, useEffect, useMemo } from 'react';
-import { commands, Package as BackendPackage } from '../services/bindings';
-import { unwrap } from '../utils/specta';
-import PackageCard from './PackageCard';
+import { useMemo } from 'react';
 import type { Package } from '../services/bindings';
 import PackageCardSkeleton from './PackageCardSkeleton';
-import { useErrorService } from '../context/ErrorContext';
 import { useChaoticStatus, isOnlyChaoticSource } from '../hooks/useChaoticStatus';
-import { useSettings } from '../hooks/useSettings';
 import { useAppStore } from '../store/internal_store';
+import PackageCardList from './PackageCardList';
+import { usePackageCardList } from '../hooks/usePackageCardList';
 
 
 interface EssentialsSectionProps {
@@ -22,6 +19,8 @@ interface EssentialsSectionProps {
     hideHeader?: boolean;
     /** When true, do not fetch; show skeletons until filterIds arrive. */
     loading?: boolean;
+    /** Render directly from the latest backend payload if the registry cache path is cold. */
+    preloadedPackages?: Package[];
 }
 
 export default function EssentialsSection({
@@ -33,13 +32,10 @@ export default function EssentialsSection({
     variant = 'grid',
     onOpenSettings,
     hideHeader = false,
-    loading: externalLoading = false
+    loading: externalLoading = false,
+    preloadedPackages = [],
 }: EssentialsSectionProps) {
-    const errorService = useErrorService();
     const { enabled: chaoticEnabled } = useChaoticStatus();
-    const { isFlatpakEnabled } = useSettings();
-    const upsertPackages = useAppStore((s) => s.upsertPackages);
-    const setEssentialsIds = useAppStore((s) => s.setEssentialsIds);
     const packageRegistry = useAppStore((s) => s.packageRegistry);
 
     // Derived state
@@ -49,10 +45,17 @@ export default function EssentialsSection({
         const effectiveLimit = limit ?? DEFAULT_MAX_ITEMS;
         return filterIds.slice(0, effectiveLimit);
     }, [filterIds, limit]);
-
-
-
-
+    const { ids: dedupedVisibleIds } = usePackageCardList({
+        source: { mode: 'ids', ids: visibleIds },
+        packageRegistry,
+        sort: 'preserve',
+    });
+    const { packages: directVisiblePackages } = usePackageCardList({
+        source: { mode: 'packages', packages: preloadedPackages.slice(0, limit ?? 80) },
+        packageRegistry,
+        sort: 'preserve',
+    });
+    const shouldRenderDirect = directVisiblePackages.length > 0;
 
     const showSeeAll = limit != null && onSeeAll != null && filterIds.length > limit;
 
@@ -68,7 +71,7 @@ export default function EssentialsSection({
                 )}
                 {isScroll ? (
                     <div className="relative group/scroll max-w-7xl mx-auto">
-                        <div className="flex gap-6 overflow-x-auto pb-6 scrollbar-hide snap-x" style={{ maskImage: 'linear-gradient(to right, black 85%, transparent 100%)', WebkitMaskImage: 'linear-gradient(to right, black 85%, transparent 100%)' }}>
+                        <div className="flex gap-6 overflow-x-auto pb-6 scrollbar-hide snap-x">
                             {[...Array(skeletonCount)].map((_, i) => (
                                 <div key={i} className="snap-start flex-shrink-0 w-[280px]">
                                     <PackageCardSkeleton />
@@ -87,10 +90,12 @@ export default function EssentialsSection({
         );
     }
 
-    if (filterIds.length === 0 && !loading) {
-        // Strict Mode: If no essentials, show nothing or a specific empty state.
-        // DO NOT Fallback to Trending.
-        return null;
+    if (filterIds.length === 0 && !loading && !shouldRenderDirect) {
+        return (
+            <section>
+                <p className="text-app-muted text-sm py-6">No essentials available right now. Discovery is still warming up.</p>
+            </section>
+        );
     }
 
     const isScroll = variant === 'scroll';
@@ -109,52 +114,29 @@ export default function EssentialsSection({
             )}
 
             {isScroll ? (
-                <div className="relative group/scroll max-w-7xl mx-auto">
-                    <div className="flex gap-6 overflow-x-auto pb-6 scrollbar-hide snap-x relative z-0" style={{ maskImage: 'linear-gradient(to right, black 85%, transparent 100%)', WebkitMaskImage: 'linear-gradient(to right, black 85%, transparent 100%)' }}>
-                        {visibleIds.map((id) => {
-                            const pkg = packageRegistry[id];
-                            return (
-                                <div key={id} className="snap-start flex-shrink-0 w-[280px]">
-                                    <PackageCard
-                                        pkgId={id}
-                                        onClick={(p) => onSelectPackage(p)}
-
-                                        setupRequired={pkg ? isOnlyChaoticSource(pkg) && !chaoticEnabled : false}
-                                        onConfigureSource={onOpenSettings}
-                                        skipMetadataFetch={!!pkg?.icon}
-                                    />
-                                </div>
-                            );
-                        })}
-                        {showSeeAll && (
-                            <div className="snap-start flex-shrink-0 w-[280px] flex">
-                                <button onClick={onSeeAll} className="w-full h-full bg-app-card/30 border-2 border-dashed border-app-border rounded-2xl flex flex-col items-center justify-center gap-4 group transition-all min-h-[200px] accent-hover-outline">
-                                    <div className="w-12 h-12 rounded-full bg-app-subtle flex items-center justify-center transition-opacity group-hover:opacity-90">
-                                        <span className="text-2xl">→</span>
-                                    </div>
-                                    <span className="font-bold text-app-fg transition-opacity group-hover:opacity-90">View All</span>
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                </div>
+                <PackageCardList
+                    source={shouldRenderDirect
+                        ? { mode: 'packages', packages: directVisiblePackages }
+                        : { mode: 'ids', ids: dedupedVisibleIds }}
+                    onSelectPackage={onSelectPackage}
+                    variant="scroll"
+                    onSeeAll={onSeeAll}
+                    showViewAllCard={showSeeAll}
+                    setupRequiredResolver={(pkg) => isOnlyChaoticSource(pkg) && !chaoticEnabled}
+                    onConfigureSource={onOpenSettings}
+                    surfaceName="EssentialsSection"
+                />
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-7xl mx-auto w-full">
-                    {visibleIds.map((id) => {
-                        const pkg = packageRegistry[id];
-                        return (
-                            <PackageCard
-                                key={id}
-                                pkgId={id}
-                                onClick={(p) => onSelectPackage(p)}
-
-                                setupRequired={pkg ? isOnlyChaoticSource(pkg) && !chaoticEnabled : false}
-                                onConfigureSource={onOpenSettings}
-                                skipMetadataFetch={!!pkg?.icon}
-                            />
-                        );
-                    })}
-                </div>
+                <PackageCardList
+                    source={shouldRenderDirect
+                        ? { mode: 'packages', packages: directVisiblePackages }
+                        : { mode: 'ids', ids: dedupedVisibleIds }}
+                    onSelectPackage={onSelectPackage}
+                    variant="grid"
+                    setupRequiredResolver={(pkg) => isOnlyChaoticSource(pkg) && !chaoticEnabled}
+                    onConfigureSource={onOpenSettings}
+                    surfaceName="EssentialsSection"
+                />
             )}
         </section>
     );

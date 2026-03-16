@@ -1,183 +1,114 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { Search, Trash2, Play, HardDrive, Calendar, Package as PackageIcon, Loader2 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { clsx } from 'clsx';
-import { commands, InstalledPackage, Package as BackendPackage } from '../services/bindings';
+import { Search, Loader2, Package as PackageIcon } from 'lucide-react';
+import { commands, type Package } from '../services/bindings';
 import { unwrap } from '../utils/specta';
-import ConfirmationModal from '../components/ConfirmationModal';
-import { useToast } from '../context/ToastContext';
 import { useErrorService } from '../context/ErrorContext';
-import { useSessionPassword } from '../context/useSessionPassword';
+import PackageCard from '../components/PackageCard';
+import { formatBytes } from '../utils/display';
 import { useAppStore } from '../store/internal_store';
-import { useSettings } from '../hooks/useSettings';
-import type { Package } from '../services/bindings';
+import { getPackageListKey } from '../utils/packageKey';
 
-// using types from bindings.ts instead
+function describeError(error: unknown): string {
+    if (error instanceof Error) return `${error.name}: ${error.message}`;
+    try {
+        return JSON.stringify(error);
+    } catch {
+        return String(error);
+    }
+}
 
-// Helper component for Icon
-import archLogo from '../assets/arch-logo.png';
-import { resolveIconUrl } from '../utils/iconHelper';
-
-const AppIcon = ({ appName, appIcon }: { appName: string; appIcon: string | null }) => {
-    const [icon, setIcon] = useState<string | null>(appIcon);
-
-    useEffect(() => {
-        // Optimizing "The Storm": Disable client-side fetch loop entirely.
-        // We rely on the backend batch fetch.
-        if (appIcon) {
-            setIcon(appIcon);
-        } else {
-            setIcon(null);
-        }
-    }, [appName, appIcon]);
-
-    const displayIcon = resolveIconUrl(icon) || archLogo;
-
-    return <img src={displayIcon} alt={appName} className={clsx("w-full h-full object-contain", !icon && "opacity-50 grayscale")} />;
-};
-
-export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (pkg: Package) => void }) {
+export default function InstalledPage({
+    onSelectPackage,
+    onUninstallPackage,
+}: {
+    onSelectPackage: (pkg: Package) => void;
+    onUninstallPackage: (pkg: Package) => void;
+}) {
     const [searchQuery, setSearchQuery] = useState('');
-    const [apps, setApps] = useState<InstalledPackage[]>([]);
+    const [packages, setPackages] = useState<Package[]>([]);
     const [loading, setLoading] = useState(true);
-    const [totalSize, setTotalSize] = useState('Calculating...');
-
-    const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; id: string; name: string } | null>(null);
-    const { success } = useToast();
     const errorService = useErrorService();
-    const { requestSessionPassword } = useSessionPassword();
-    const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
-    const setLastInstallTarget = useAppStore((s) => s.setLastInstallTarget);
-    const { isFlatpakEnabled, isAurEnabled, isChaoticEnabled } = useSettings();
+    const upsertPackages = useAppStore((s) => s.upsertPackages);
 
     const fetchInstalled = useCallback(async () => {
         setLoading(true);
         try {
-            const packages = unwrap(await commands.getInstalledPackages());
-            setApps(packages);
-
-            // Aggregate total installed size from backend-provided per-package size strings
-            let totalMiB = 0;
-            for (const p of packages) {
-                if (!p.size) continue;
-                const match = p.size.match(/([\d.]+)\s*(KiB|MiB|GiB|B)/i);
-                if (match) {
-                    const val = parseFloat(match[1]);
-                    const unit = match[2].toLowerCase();
-                    if (unit === 'gib') totalMiB += val * 1024;
-                    else if (unit === 'mib') totalMiB += val;
-                    else if (unit === 'kib') totalMiB += val / 1024;
-                    else totalMiB += val / (1024 * 1024);
-                }
-            }
-            setTotalSize(totalMiB >= 1024 ? `${(totalMiB / 1024).toFixed(1)} GiB used` : `${totalMiB.toFixed(0)} MiB used`);
-        } catch (e) {
-            errorService.reportError(e as Error | string);
+            const nextPackages = unwrap(await commands.getInstalledCatalog());
+            setPackages(nextPackages);
+            upsertPackages(nextPackages);
+        } catch (error) {
+            errorService.reportError(describeError(error));
         } finally {
             setLoading(false);
         }
-    }, [errorService]);
+    }, [errorService, upsertPackages]);
 
-    // Fetch installed packages on mount
     useEffect(() => {
-        fetchInstalled();
+        void fetchInstalled();
     }, [fetchInstalled]);
 
-    // Refetch when an install/uninstall completes so the list stays in sync (e.g. uninstall from details page)
     useEffect(() => {
         const unlisten = listen<string>('install-complete', (event) => {
-            if (event.payload === 'success') fetchInstalled();
+            if (event.payload === 'success') {
+                void fetchInstalled();
+            }
         });
+
         return () => {
-            unlisten.then((f) => f()).catch(() => { });
+            unlisten.then((fn) => fn()).catch(() => undefined);
         };
     }, [fetchInstalled]);
 
-    const filteredApps = apps.filter(app =>
-        app.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        app.description.toLowerCase().includes(searchQuery.toLowerCase())
-    );
+    const filteredPackages = useMemo(() => {
+        const query = searchQuery.trim().toLowerCase();
+        if (!query) return packages;
+        return packages.filter((pkg) => {
+            const display = `${pkg.display_name || ''} ${pkg.display_title || ''} ${pkg.name} ${pkg.description}`.toLowerCase();
+            return display.includes(query);
+        });
+    }, [packages, searchQuery]);
 
-    const handleUninstall = (id: string, name: string) => {
-        setConfirmModal({ isOpen: true, id, name });
-    };
+    const totalSizeBytes = useMemo(() => (
+        packages.reduce((sum, pkg) => {
+            const size = Number(pkg.installed_size_bytes ?? pkg.installed_size ?? 0);
+            return sum + (Number.isFinite(size) ? size : 0);
+        }, 0)
+    ), [packages]);
 
-    const performUninstall = async () => {
-        if (!confirmModal) return;
-        const { id, name } = confirmModal;
-
+    const handleLaunch = useCallback(async (pkg: Package) => {
         try {
-            setLastInstallTarget({ name: id, mode: 'uninstall' });
-            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-            await commands.uninstallPackage(id, null, pwd).then(unwrap);
-            setApps((prev) => prev.filter((a) => a.name !== id));
-            setConfirmModal(null);
-            success(`${name} uninstalled successfully`);
-        } catch (e) {
-            errorService.reportError(e as Error | string);
+            await commands.launchPackage({
+                package_name: pkg.name,
+                app_id: pkg.app_id ?? null,
+                desktop_entry: null,
+                launch_target: pkg.launch_target ?? null,
+                source: pkg.source,
+            }).then(unwrap);
+        } catch (error) {
+            errorService.reportError(describeError(error));
         }
-    };
-
-    const handleLaunch = async (id: string) => {
-        try {
-            await commands.launchApp({ pkg_name: id });
-        } catch (e) {
-            errorService.reportError(e as Error | string);
-        }
-    };
-
-    const handleNavigation = async (app: InstalledPackage) => {
-        try {
-            // Resolve package for details: include all sources (Flatpak/AUR/Chaotic) so installed app opens correctly even when sources are off
-            const results = unwrap(await commands.getPackagesByNames([app.name], {
-                flatpak_enabled: isFlatpakEnabled,
-                aur_enabled: isAurEnabled,
-                chaotic_enabled: isChaoticEnabled,
-                for_installed_lookup: true
-            }, null));
-            if (results && results.length > 0) {
-                onSelectPackage(results[0] as any);
-            } else {
-                // Search as fallback (same: include all sources for installed app resolution)
-                const searchResults = unwrap(await commands.searchPackages(app.name, {
-                    flatpak_enabled: isFlatpakEnabled,
-                    aur_enabled: isAurEnabled,
-                    chaotic_enabled: isChaoticEnabled,
-                    for_installed_lookup: true
-                }));
-                const exactMatch = searchResults.find(p => p.name.toLowerCase() === app.name.toLowerCase());
-                if (exactMatch) {
-                    onSelectPackage(exactMatch as any);
-                } else if (searchResults.length > 0) {
-                    onSelectPackage(searchResults[0] as any);
-                }
-            }
-        } catch (e) {
-            errorService.reportError(e as Error | string);
-        }
-    };
+    }, [errorService]);
 
     return (
         <div className="h-full flex flex-col bg-app-bg animate-in slide-in-from-right duration-300 transition-colors">
-            {/* Header — ~30% tighter */}
             <div className="px-5 pt-5 pb-4 sticky top-0 bg-app-bg/95 backdrop-blur-3xl z-20 border-b border-black/5 dark:border-white/5 transition-colors shadow-sm dark:shadow-2xl dark:shadow-black/20">
                 <div className="flex items-end justify-between mb-4">
                     <div className="min-w-0">
-                        <h1 className="text-2xl lg:text-3xl font-black flex items-center gap-2 text-slate-900 dark:text-white tracking-tight leading-none mb-1">
+                        <h1 className="text-2xl lg:text-3xl font-black text-slate-900 dark:text-white tracking-tight leading-none mb-1">
                             Installed
                         </h1>
                         <p className="text-sm text-slate-500 dark:text-app-muted font-medium truncate">
-                            {loading ? 'Thinking...' : `${apps.length} packages • ${totalSize}`}
+                            {loading ? 'Scanning installed applications…' : `${packages.length} packages${packages.length ? ` • ${formatBytes(totalSizeBytes)}` : ''}`}
                         </p>
                     </div>
                 </div>
 
                 <div className="relative group mt-3">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-app-muted group-focus-within:text-accent transition-colors" size={18} />
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-app-muted" size={18} />
                     <input
                         type="text"
-                        placeholder="Filter installed apps..."
+                        placeholder="Search installed apps by name or description..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         className="w-full bg-white dark:bg-black/20 border border-black/5 dark:border-white/10 rounded-xl py-2.5 pl-10 pr-3 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-white/20 text-sm shadow-inner"
@@ -185,93 +116,34 @@ export default function InstalledPage({ onSelectPackage }: { onSelectPackage: (p
                 </div>
             </div>
 
-            {/* Content List */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-5 custom-scrollbar min-h-0">
                 {loading ? (
                     <div className="flex flex-col items-center justify-center py-20 text-app-muted gap-4">
                         <Loader2 size={36} className="animate-spin text-blue-500" />
-                        <p className="text-base font-medium">Loading library...</p>
+                        <p className="text-base font-medium">Loading installed catalog...</p>
                     </div>
-                ) : filteredApps.length === 0 ? (
+                ) : filteredPackages.length === 0 ? (
                     <div className="text-center text-app-muted mt-20">
                         <PackageIcon size={48} className="mx-auto mb-4 opacity-20" />
-                        <p className="text-xl font-bold text-slate-900 dark:text-white mb-1">No applications found</p>
+                        <p className="text-xl font-bold text-slate-900 dark:text-white mb-1">No installed applications found</p>
                         <p className="text-sm opacity-60">Try a different search term</p>
                     </div>
                 ) : (
-                    <div className="space-y-2 max-w-4xl mx-auto">
-                        <AnimatePresence>
-                            {filteredApps.map((app, idx) => (
-                                <motion.div
-                                    key={typeof app.name === 'string' ? app.name : `app-${idx}`}
-                                    initial={{ opacity: 0, y: 8 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    exit={{ opacity: 0, height: 0 }}
-                                    onClick={() => handleNavigation(app)}
-                                    className="group bg-white dark:bg-app-card border border-black/5 dark:border-white/5 hover:border-black/10 dark:hover:border-white/20 rounded-xl transition-all overflow-hidden relative shadow-sm dark:shadow-md hover:shadow-lg hover:-translate-y-0.5 backdrop-blur-sm p-3 flex items-center gap-3 md:gap-4 cursor-pointer min-w-0"
-                                >
-                                    {/* Icon */}
-                                    <div className="w-11 h-11 rounded-xl bg-slate-50 dark:bg-black/20 border border-black/5 dark:border-white/5 flex items-center justify-center shrink-0 overflow-hidden relative shadow-inner p-1.5">
-                                        <AppIcon appName={app.name} appIcon={app.icon} />
-                                    </div>
-
-                                    {/* Info — min-w-0 so text truncates instead of overflowing */}
-                                    <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
-                                        <div className="flex items-center gap-2 min-w-0">
-                                            <h3 className="font-bold text-base text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors truncate">
-                                                {app.name.split(/[-.]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ')}
-                                            </h3>
-                                            <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-white/10 text-[10px] font-mono text-slate-500 dark:text-white/60 border border-black/5 dark:border-white/5 shrink-0">
-                                                {app.version}
-                                            </span>
-                                        </div>
-                                        <p className="text-slate-500 dark:text-app-muted text-xs font-medium line-clamp-2 min-w-0">
-                                            {app.description || "No description available"}
-                                        </p>
-                                    </div>
-
-                                    {/* Meta Stats — compact */}
-                                    <div className="hidden sm:flex flex-col gap-1 items-end min-w-[100px] shrink-0">
-                                        <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 dark:text-app-muted/80 bg-slate-50 dark:bg-black/20 px-2 py-1 rounded border border-black/5 dark:border-white/5">
-                                            {app.size || "—"} <HardDrive size={10} className="text-blue-500 shrink-0" />
-                                        </div>
-                                        <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 dark:text-app-muted/80 bg-slate-50 dark:bg-black/20 px-2 py-1 rounded border border-black/5 dark:border-white/5">
-                                            {(app.install_date || "N/A").split(' ')[0]} <Calendar size={10} className="text-purple-500 shrink-0" />
-                                        </div>
-                                    </div>
-
-                                    {/* Actions */}
-                                    <div className="flex items-center gap-1.5 pl-3 border-l border-black/5 dark:border-white/5 shrink-0">
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); handleLaunch(app.name); }}
-                                            className="h-8 px-3 rounded-lg btn-accent hover:opacity-90 font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-md active:scale-95 border border-white/10"
-                                        >
-                                            <Play size={14} fill="currentColor" /> Launch
-                                        </button>
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); handleUninstall(app.name, app.name); }}
-                                            className="h-8 w-8 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 dark:text-red-400 border border-red-500/10 hover:border-red-500/30 transition-all flex items-center justify-center active:scale-95 shrink-0"
-                                            title="Uninstall"
-                                        >
-                                            <Trash2 size={14} />
-                                        </button>
-                                    </div>
-                                </motion.div>
-                            ))}
-                        </AnimatePresence>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 max-w-7xl mx-auto">
+                        {filteredPackages.map((pkg) => (
+                            <PackageCard
+                                key={getPackageListKey(pkg)}
+                                pkg={pkg}
+                                viewMode="installed"
+                                onClick={onSelectPackage}
+                                onPrimaryAction={handleLaunch}
+                                onSecondaryAction={onUninstallPackage}
+                                secondaryActionLabel="Uninstall"
+                            />
+                        ))}
                     </div>
                 )}
             </div>
-
-            <ConfirmationModal
-                isOpen={!!confirmModal?.isOpen}
-                onClose={() => setConfirmModal(null)}
-                onConfirm={performUninstall}
-                title={`Uninstall ${confirmModal?.name}?`}
-                message={`Are you sure you want to remove ${confirmModal?.name}? This action cannot be undone.`}
-                confirmLabel="Uninstall"
-                variant="danger"
-            />
         </div>
     );
 }

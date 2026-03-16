@@ -1,115 +1,104 @@
-# Testing Guide for MonARCH Store
+# MonARCH Store Testing Guide
 
-**Current version: v0.4.7-alpha
-Last doc update: 2026-02-21
+**Current frontend:** GTK  
+**Last updated:** 2026-03-09
 
-## ⚠️ Important: What Tests Actually Prove
+This guide describes the current validation path for MonARCH Store as a GTK-first product over Iron Core.
 
-### ✅ Unit Tests (What We Have)
-These tests verify **command serialization/parsing**:
-- Commands serialize to valid JSON ✅
-- Raw strings are rejected ✅  
-- JSON format matches helper expectations ✅
-- File/env var formats are correct ✅
+## Primary commands
 
-**These catch the "raw string bug" but DO NOT test actual installs/updates.** Full system upgrade uses `SafeUpdateTransaction` in the helper; no separate unit tests for it yet.
-
-### ❌ What's Missing (Full Integration Tests)
-To **actually prove** install/update works, we need:
-- Real helper execution with root privileges
-- Actual pacman/ALPM transactions
-- Real package database sync
-- End-to-end GUI → Helper → pacman flow
-- Error handling in real scenarios
-
-## Quick Test Commands
-
-### Test Command Serialization (No Build Required)
-```bash
-# Test helper command parsing (catches JSON bugs immediately)
-cd src-tauri/monarch-helper
-cargo test command_tests
-
-# Test GUI command serialization
-cd src-tauri/monarch-gui
-cargo test helper_client::tests
-```
-
-### Test Actual Helper Execution (Requires Root)
-```bash
-cd src-tauri/monarch-helper
-./tests/test_install_flow.sh
-```
-
-### Run All Tests
-```bash
-cd src-tauri
-cargo test
-```
-
-## What These Tests Catch
-
-### ✅ Command Serialization Tests
-- **Prevents**: Raw strings like "cachyos" being sent instead of JSON
-- **Verifies**: All HelperCommand variants serialize/deserialize correctly
-- **Checks**: File and env var formats match helper expectations
-
-### ✅ Integration Tests (Parsing Only)
-- **Location**: `src-tauri/monarch-helper/tests/integration_test.rs`
-- **Tests**: Full command roundtrip (GUI → JSON → Helper parsing)
-- **No Root Required**: Tests parsing logic without needing sudo
-- **Limitation**: Does NOT test actual package installation
-
-## Before Every Commit
-
-Run these tests to catch **serialization bugs** before building:
+Run all Rust commands from [src-tauri](/home/chris/Downloads/monarch-store/src-tauri).
 
 ```bash
-# 1. Test helper can parse commands
-cd src-tauri/monarch-helper && cargo test
-
-# 2. Test GUI serializes correctly  
-cd ../monarch-gui && cargo test helper_client::tests
-
-# 3. Run integration tests (parsing only)
-cd .. && cargo test --test integration_test
+cd src-tauri && cargo check
+cd src-tauri && cargo test -p monarch-core
+cd src-tauri && cargo run -p monarch-gtk
 ```
 
-## To Actually Test Install/Update
+Use these as the default validation sequence:
+1. `cargo check`
+2. `cargo test -p monarch-core`
+3. `cargo run -p monarch-gtk`
 
-You still need to:
-1. **Build the app**: `npm run tauri build` or `npm run tauri dev`
-2. **Run it manually**: Test install/update in the GUI
-3. **Check logs**: Look for errors in helper output
+## What must be true
 
-The unit tests catch **serialization bugs** (like the "cachyos" bug), but don't replace manual testing of the full feature.
+### Iron Core contract
+- GTK cards and details render backend-hydrated package models only
+- Search, Home, Categories, Installed, Updates, and Details all resolve through the same canonical package identity
+- Stable multi-source apps appear once, with merged source availability
+- Channel builds remain separate identities
 
-## Common Issues These Tests Prevent
+### Home and discovery parity
+- Essentials, Trending, Featured, and Categories are backend-fed
+- Home does not drift toward installed-only results
+- Category buttons open correct category result sets from backend taxonomy
+- Discovery obeys source toggles and `show_system_apps`
 
-1. **Raw String Bug**: Tests reject "cachyos" as a command ✅
-2. **JSON Format**: Ensures all commands are valid JSON objects ✅
-3. **Repo Names**: Verifies repo names serialize correctly in JSON structure ✅
-4. **Env Var Format**: Tests MONARCH_CMD_JSON format matches helper expectations ✅
+### Search parity
+- Search returns one canonical app listing per stable identity
+- Installed bias applies only to relevant search ranking, not generic discovery
+- Disabled sources are hidden from discovery/search but still remain valid in Installed/Updates
 
-## Adding New Tests
+### Detail parity
+- Details is the only action surface for install/open/remove/update state
+- Source selection updates visible payload and action state
+- Source-specific metadata reloads correctly
+- Installed-source truth is preserved
 
-When adding new HelperCommand variants:
-1. Add serialization test in `command_tests` module
-2. Add integration test in `tests/integration_test.rs`
-3. Verify it works with both file and env var passing
-4. **Still need to manually test** actual execution
+### Metadata and icon fidelity
+- Popular apps use real full-color app icons where trusted metadata exists
+- GTK does not prefer symbolic or monochrome theme placeholders over richer icons
+- Fallback presentation remains intentional when metadata is incomplete
 
-## Debugging Failed Tests
+## Automated backend checks
 
-If tests fail:
-1. Check the JSON output - is it valid JSON?
-2. Does it start with `{` and end with `}`?
-3. Is it a raw string or a proper JSON object?
-4. Compare with working command examples in tests
+`cargo test -p monarch-core` is the current backend release gate.
 
-## Summary
+The backend test suite should cover:
+- canonical merge and variant grouping
+- category/storefront query behavior
+- source-priority ordering
+- source-toggle visibility rules
+- icon selection precedence
+- detail payload selection by source identity
 
-**Unit tests = Serialization/parsing verification** ✅  
-**Full testing = Still requires manual GUI testing** ⚠️
+## Manual GTK checks
 
-The tests are a **safety net** that catches bugs early, but they don't replace testing the actual feature in the app.
+Run:
+
+```bash
+cd src-tauri && cargo run -p monarch-gtk
+```
+
+Then validate:
+
+### Home
+- Featured, Essentials, Trending, and Categories show real user-facing apps
+- cards use compact Flathub-style composition
+- category buttons open populated category result pages
+
+### Search
+- blank search state is useful and backend-driven
+- typed search uses screenshot-style cards only in search
+- source badges are ordered and consistent
+
+### Details
+- install/remove/open state is correct
+- source selection visibly reloads details
+- screenshots and long description appear when backend data exists
+
+### Library and Updates
+- installed apps remain visible even if discovery source toggles are off
+- updates remain visible for installed apps across sources
+
+### Settings, Onboarding, News
+- source toggles persist
+- `show_system_apps` changes discovery/search scope only
+- onboarding and settings copy reflect GTK product behavior
+- news/update/advisory surfaces remain functional
+
+## Legacy Tauri note
+
+`npm run tauri dev` is not the primary product validation path anymore. Use it only when comparing legacy behavior or checking historical/reference code paths.
+
+GTK is the current frontend under test.

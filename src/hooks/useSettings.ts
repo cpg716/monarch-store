@@ -4,6 +4,7 @@ import { unwrap } from '../utils/specta';
 import { useAppStore, type AppState } from '../store/internal_store';
 import { useSessionPassword } from '../context/useSessionPassword';
 import { getErrorService } from '../context/getErrorService';
+import { debugError, debugWarn } from '../utils/debugLog';
 
 export interface Repository {
     id: string;
@@ -16,17 +17,24 @@ export function useSettings() {
     const { requestSessionPassword } = useSessionPassword();
 
     // Unified State from App Store
-    const {
-        isAurEnabled, setAurEnabled,
-        isFlatpakEnabled, setFlatpakEnabled,
-        oneClickEnabled, setOneClickEnabled,
-        reducePasswordPrompts, setReducePasswordPrompts,
-        verboseLogsEnabled, setVerboseLogsEnabled,
-        cleanBuild: cleanBuildEnabled, setCleanBuild: setCleanBuildEnabled,
-        updateNotificationsEnabled: notificationsEnabled, setUpdateNotificationsEnabled: updateNotifications,
-        parallelDownloads, setParallelDownloads,
-        isChaoticEnabled, setChaoticEnabled
-    } = useAppStore();
+    const isAurEnabled = useAppStore(s => s.isAurEnabled);
+    const setAurEnabled = useAppStore(s => s.setAurEnabled);
+    const isFlatpakEnabled = useAppStore(s => s.isFlatpakEnabled);
+    const setFlatpakEnabled = useAppStore(s => s.setFlatpakEnabled);
+    const oneClickEnabled = useAppStore(s => s.oneClickEnabled);
+    const setOneClickEnabled = useAppStore(s => s.setOneClickEnabled);
+    const advancedMode = useAppStore(s => s.advancedMode);
+    const setAdvancedMode = useAppStore(s => s.setAdvancedMode);
+    const verboseLogsEnabled = useAppStore(s => s.verboseLogsEnabled);
+    const setVerboseLogsEnabled = useAppStore(s => s.setVerboseLogsEnabled);
+    const cleanBuildEnabled = useAppStore(s => s.cleanBuild);
+    const setCleanBuildEnabled = useAppStore(s => s.setCleanBuild);
+    const notificationsEnabled = useAppStore(s => s.updateNotificationsEnabled);
+    const updateNotifications = useAppStore(s => s.setUpdateNotificationsEnabled);
+    const parallelDownloads = useAppStore(s => s.parallelDownloads);
+    const setParallelDownloads = useAppStore(s => s.setParallelDownloads);
+    const isChaoticEnabled = useAppStore(s => s.isChaoticEnabled);
+    const setChaoticEnabled = useAppStore(s => s.setChaoticEnabled);
 
     // 1. UI Preferences (Remaining local or combined)
     const [syncIntervalHours, setSyncIntervalHours] = useState<number>(3);
@@ -128,6 +136,14 @@ export function useSettings() {
                 });
             }
             setRepos(mapped);
+            const chaoticRepoRow = (backendRepos as any[]).find(
+                (r) => String(r.name).toLowerCase() === 'chaotic-aur'
+            );
+            const chaoticDiscoveryEnabled =
+                chaoticRepoRow != null
+                    ? Boolean(chaoticRepoRow.enabled)
+                    : (mapped.find(r => r.id === 'chaotic-aur')?.enabled ?? false);
+            useAppStore.setState({ isChaoticEnabled: chaoticDiscoveryEnabled });
 
             commands.getRepoCounts().then(unwrap).then(counts => {
                 const numericCounts: Record<string, number> = {};
@@ -144,12 +160,12 @@ export function useSettings() {
                     status: 'ONLINE'
                 });
             }).catch(e => {
-                console.warn("[useSettings] Failed to fetch infra stats", e);
+                debugWarn("[useSettings] Failed to fetch infra stats", e);
                 setInfraStats({ builders: 0, users: 0, status: 'ONLINE' });
             });
 
         } catch (e) {
-            console.error("[useSettings] Fatal error in fetchRepoState", e);
+            debugError("[useSettings] Fatal error in fetchRepoState", e);
         }
     };
 
@@ -171,7 +187,7 @@ export function useSettings() {
         try {
             await setFlatpakEnabled(enabled);
             if (enabled) {
-                const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
+                const pwd = await requestSessionPassword();
                 unwrap(await commands.prepareFlatpak(pwd ?? null));
             }
         } catch (e) {
@@ -185,14 +201,30 @@ export function useSettings() {
 
         const newEnabled = !repo.enabled;
         setRepos(prev => prev.map(r => r.id === id ? { ...r, enabled: newEnabled } : r));
+        if (id === 'chaotic-aur') {
+            useAppStore.setState({ isChaoticEnabled: newEnabled });
+        }
 
         try {
-            const pwd = newEnabled && reducePasswordPrompts ? await requestSessionPassword() : null;
+            const needsPrivilegedSetup = id !== 'chaotic-aur';
+            const pwd = needsPrivilegedSetup ? await requestSessionPassword() : null;
             unwrap(await commands.toggleRepoFamily(repo.name, newEnabled, null, pwd ?? null));
-            unwrap(await commands.triggerRepoSync(null));
-            fetchRepoState();
+            await fetchRepoState();
+
+            // Chaotic is a discovery-only toggle. Do not trigger a system sync for it.
+            if (id !== 'chaotic-aur') {
+                void commands
+                    .triggerRepoSync(null, pwd ?? null)
+                    .then(unwrap)
+                    .catch((e) => {
+                        getErrorService()?.reportWarning(e as Error | string);
+                    });
+            }
         } catch (e) {
             setRepos(prev => prev.map(r => r.id === id ? { ...r, enabled: !newEnabled } : r));
+            if (id === 'chaotic-aur') {
+                useAppStore.setState({ isChaoticEnabled: !newEnabled });
+            }
             getErrorService()?.reportError(e as Error | string);
         }
     };
@@ -212,7 +244,8 @@ export function useSettings() {
     const triggerManualSync = async () => {
         setIsSyncing(true);
         try {
-            unwrap(await commands.triggerRepoSync(syncIntervalHours.toString()));
+            const pwd = oneClickEnabled ? await requestSessionPassword() : null;
+            unwrap(await commands.triggerRepoSync(syncIntervalHours, pwd ?? null));
             fetchRepoState();
         } catch (e) {
             getErrorService()?.reportError(e as Error | string);
@@ -223,9 +256,10 @@ export function useSettings() {
 
     const updateOneClick = async (enabled: boolean) => {
         try {
+            const pwd = enabled ? null : await requestSessionPassword();
             await setOneClickEnabled(enabled);
-            const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-            unwrap(await commands.installMonarchPolicy(pwd ?? null));
+            const sessionPassword = enabled ? await requestSessionPassword() : pwd;
+            unwrap(await commands.installMonarchPolicy(sessionPassword ?? null));
         } catch (e) {
             getErrorService()?.reportError(e as Error | string);
         }
@@ -233,7 +267,7 @@ export function useSettings() {
 
     const toggleAdvancedMode = async (enabled: boolean) => {
         try {
-            await setReducePasswordPrompts(enabled);
+            await setAdvancedMode(enabled);
         } catch (e) {
             getErrorService()?.reportError(e as Error | string);
         }
@@ -281,9 +315,11 @@ export function useSettings() {
 
     const performHousekeeping = async () => {
         try {
-            unwrap(await commands.performHousekeeping(null));
+            const pwd = await requestSessionPassword();
+            unwrap(await commands.performHousekeeping(pwd ?? null));
         } catch (e) {
             getErrorService()?.reportError(e as Error | string);
+            throw e;
         }
     };
 
@@ -292,7 +328,7 @@ export function useSettings() {
         syncIntervalHours, updateSyncInterval,
         syncOnStartupEnabled, setSyncOnStartup,
         oneClickEnabled, updateOneClick,
-        advancedMode: reducePasswordPrompts, toggleAdvancedMode,
+        advancedMode, toggleAdvancedMode,
         telemetryEnabled, toggleTelemetry,
         isAurEnabled, toggleAur,
         isFlatpakEnabled, toggleFlatpak,

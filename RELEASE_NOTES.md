@@ -1,13 +1,29 @@
 # Release Notes
 
-**Current version:** v0.4.7-alpha  
-**Last doc update:** 2026-02-21
+**Current version:** v0.5.0-alpha  
+**Last doc update:** 2026-03-14
 
 ---
 
 # Monarch Store Release Notes
 
-## Latest (v0.4.7-alpha) — Rich Metadata & Enrichment Fixes
+## Latest (v0.5.0-alpha, 2026-03-14) — GTK-Only, Telemetry, and Reviews
+*   **GTK-only frontend:** `monarch-gtk` is now the sole supported UI; the Tauri/React frontend is removed from the active workspace and treated as legacy-only code.
+*   **Telemetry alignment:** GTK now sends `app_started`, `onboarding_completed`, `store_installed`, `install_package`, `uninstall_package`, and `review_submitted` events to Aptabase when telemetry is enabled, matching the Tauri semantics.
+*   **Supabase robustness:** Supabase review fetch/submit use both webpki and native system roots, clearer connect/timeout logging, explicit 503 (paused project) messaging, and an explicit `SUPABASE_DISABLED` escape hatch for offline or blocked environments.
+*   **Package details hardening:** Source dropdown list is updated in place (no model replacement) to avoid `gtk_box_append` assertions; `hero_action_row` is appended only once (Bazaar hero row); install/uninstall success paths update state and telemetry consistently.
+
+## v0.4.8-alpha (2026-02-27) — Catalog Stabilization & Source Truth
+*   **Deterministic merge pipeline:** Search, Trending, Essentials, Categories, and details seeds now route through one canonical builder (`build_package_view_models_v2`) for consistent identity and source lists.
+*   **Discovery source gating fixed:** Backend aggregation now respects enabled repo state when building discovery results (disabled Chaotic no longer leaks into cards/search/categories).
+*   **Installed-source accuracy:** Removed weak installed-source inference; ALPM/localdb + syncdb candidate matching now determines source provenance and avoids false "Chaotic installed" labels.
+*   **Distro-aware recommendation order hardened:** Source ordering is now consistent with product policy (`distro-native repo > Arch Official > Chaotic-AUR > Flatpak > AUR`) across backend ranking and UI selection.
+*   **Settings/source UX hardening:** Chaotic source controls now model "system-ready" vs "discovery-visible" separately, and the discovery toggle no longer rolls back when a background repo sync fails.
+*   **Updates UX hardening:** Added structured update completion + source-progress events, partial-success reporting, retry-failed workflows, and upfront one-click auth handling.
+*   **Host-adaptive theming:** Added typed host appearance bridge (`get_host_appearance`) and CSS variable mapping for system accent/background while keeping MonARCH premium styling.
+*   **Build/test gates:** `npm run build` and `cd src-tauri && cargo test -q` pass after the hardening set.
+
+## v0.4.8-alpha (2026-02-21) — Rich Metadata & Enrichment Fixes
 *   **Rich Metadata Merging (2026-02-21):** Enhanced the aggregation logic to correctly merge `screenshots` and `long_description` fields across Repo, Flatpak, and AUR variants. Installed packages now correctly inherit missing rich metadata from available alternative sources.
 *   **Flathub API Tuning:** Increased Flathub enrichment timeouts to 5 seconds and added logging to improve resilience and diagnosability of metadata fetching.
 *   **Registry Support:** Upgraded the `RegistryManager` with a schema migration to support `long_description` and `screenshots`, ensuring rich metadata is persisted locally.
@@ -23,7 +39,7 @@
 
 ## v0.4.5-alpha (2026-02-08) — Universal Data Engine & fixes
 *   **Version:** v0.4.5-alpha.
-*   **Universal Data Engine (2026-02-08):** Canonical merge key no longer uses a per-app alias list; multi-segment names use a generic **first-segment rule** (e.g. `heroic` and `heroic-games-launcher` → key `heroic`). One proper name per app via **preferred display name** map (Heroic Game Launcher, OBS Studio, Visual Studio Code) and fallback `to_pretty_name` after dedup. See `docs/UNIVERSAL_DATA_ENGINE.md`.
+*   **Universal Data Engine (2026-02-08, historical):** Removed per-app alias-list dependence and introduced generic canonical grouping. Note: this first-segment approach was later superseded by channel-aware canonical identity rules in v0.4.8 stabilization.
 *   **Fixes:** Essentials/Categories load race fixed (eviction protects newly upserted ids; CategoryView and TrendingSection retry on empty). Trending includes official repo packages (not AUR-only). Icon/base64 400 errors fixed in `resolveIconUrl`. Heroic (and similar) show as one card with one name everywhere.
 *   **Permissions (2026-02-08):** One-click ON uses **branded prompt** (app password dialog → `sudo -S`); one-click OFF uses **Polkit (pkexec)** so advanced users get the system auth dialog every time. All privileged commands pass `use_branded_auth` from `RepoManager::is_one_click_enabled()`. See `docs/RECENT_CHANGES.md` §8.
 *   **Distro detection (2026-02-08):** `ID=archlinux` treated as Arch; `ID_LIKE` parsed so Arch-based distros (e.g. ArcoLinux, Archcraft) get Arch-like capabilities. CachyOS, Manjaro, Garuda, EndeavourOS unchanged.

@@ -98,101 +98,158 @@ pub async fn fetch_repo_packages<C: RepoClient>(
     let bytes = if is_fresh {
         // Load from disk
         std::fs::read(&cache_path).map_err(|e| e.to_string())?
+    } else if mirror_url.trim().is_empty() {
+        if cache_path.exists() {
+            log::warn!(
+                "No concrete server URL available for {} from host repo discovery. Using stale cache only.",
+                repo_name
+            );
+            std::fs::read(&cache_path).map_err(|e| e.to_string())?
+        } else {
+            return Err(format!(
+                "No concrete server URL available for {} and no cached repo database exists",
+                repo_name
+            ));
+        }
     } else {
-        // Download with Fallback
-        let mut mirrors_to_try = vec![mirror_url.to_string()];
+    // Download with Fallback
+    let mut mirrors_to_try = vec![mirror_url.to_string()];
 
-        if mirror_url.contains("cachyos.org") || mirror_url.contains("soulharsh007.dev") {
-            // CachyOS Mirror Rotation
-            let alternates = [
-                "https://cdn77.cachyos.org",
-                "https://cdn.cachyos.org",
-                "https://us.cachyos.org",
-                "https://mirror.cachyos.org",
-                "https://at.cachyos.org",
-                "https://de-nue.soulharsh007.dev/cachyos",
-                "https://us-mnz.soulharsh007.dev/cachyos",
-                "https://mirror.lesviallon.fr/cachy",
-            ];
-            for alt in alternates {
-                if !mirror_url.starts_with(alt) {
-                    if let Some(path_index) = mirror_url.find("/repo/") {
-                        let path = &mirror_url[path_index..];
-                        mirrors_to_try.push(format!("{}{}", alt, path));
-                    }
-                }
-            }
-        } else if mirror_url.contains("manjaro") {
-            // Manjaro Mirror Rotation
-            let alternates = [
-                "https://mirror.easyname.at/manjaro",
-                "https://mirror.dkm.cz/manjaro",
-                "https://manjaro.lucassymons.net",
-                "https://ftp.gwdg.de/pub/linux/manjaro",
-                "https://mirror.init7.net/manjaro",
-            ];
-            for alt in alternates {
-                if !mirror_url.starts_with(alt) {
-                    if let Some(path_index) = mirror_url.find("/stable/") {
-                        let path = &mirror_url[path_index..];
-                        mirrors_to_try.push(format!("{}{}", alt, path));
-                    }
-                }
-            }
-        } else if mirror_url.contains("endeavouros") {
-            // EndeavourOS Mirror Rotation
-            let alternates = [
-                "https://mirror.moson.org/endeavouros",
-                "https://mirror.alpix.eu/endeavouros",
-                "https://ca.mirror.babylonix.io/endeavouros",
-                "https://mirror.jingk.ai/endeavouros",
-            ];
-            for alt in alternates {
-                if !mirror_url.starts_with(alt) {
-                    if let Some(path_index) = mirror_url.find("/repo/") {
-                        let path = &mirror_url[path_index..];
-                        mirrors_to_try.push(format!("{}{}", alt, path));
-                    }
+    if mirror_url.contains("cachyos.org") || mirror_url.contains("soulharsh007.dev") {
+        // CachyOS Mirror Rotation
+        let alternates = [
+            "https://cdn77.cachyos.org",
+            "https://cdn.cachyos.org",
+            "https://us.cachyos.org",
+            "https://mirror.cachyos.org",
+            "https://at.cachyos.org",
+            "https://de-nue.soulharsh007.dev/cachyos",
+            "https://us-mnz.soulharsh007.dev/cachyos",
+            "https://mirror.lesviallon.fr/cachy",
+        ];
+        for alt in alternates {
+            if !mirror_url.starts_with(alt) {
+                if let Some(path_index) = mirror_url.find("/repo/") {
+                    let path = &mirror_url[path_index..];
+                    mirrors_to_try.push(format!("{}{}", alt, path));
                 }
             }
         }
-
-        let mut accumulated_errors = Vec::new();
-        let mut success_data = None;
-
-        for url in &mirrors_to_try {
-            match client.fetch_bytes(url).await {
-                Ok(data) => {
-                    success_data = Some(data);
-                    break;
-                }
-                Err(e) => {
-                    let err = format!("Error from {}: {}", url, e);
-                    accumulated_errors.push(err);
+    } else if mirror_url.contains("chaotic.cx")
+        || mirror_url.contains("chaotic-aur")
+        || repo_name == "chaotic-aur"
+    {
+        // Chaotic-AUR Mirror Rotation
+        let alternates = [
+            "https://cdn-mirror.chaotic.cx",
+            "https://geo-mirror.chaotic.cx",
+            "https://br-mirror.chaotic.cx",
+            "https://ca-mirror.chaotic.cx",
+            "https://de-2-mirror.chaotic.cx",
+            "https://fr-mirror.chaotic.cx",
+            "https://in-mirror.chaotic.cx",
+            "https://kr-mirror.chaotic.cx",
+            "https://sg-mirror.chaotic.cx",
+            "https://us-mi-mirror.chaotic.cx",
+            "https://us-ut-mirror.chaotic.cx",
+        ];
+        for alt in alternates {
+            if !mirror_url.starts_with(alt) {
+                if let Some(path_index) = mirror_url.find("/chaotic-aur/") {
+                    let path = &mirror_url[path_index..];
+                    mirrors_to_try.push(format!("{}{}", alt, path));
                 }
             }
         }
-
-        match success_data {
-            Some(data) => {
-                // Save to cache
-                let _ = std::fs::write(&cache_path, &data);
-                data
+    } else if mirror_url.contains("manjaro") {
+        // Manjaro Mirror Rotation
+        let alternates = [
+            "https://mirror.easyname.at/manjaro",
+            "https://mirror.dkm.cz/manjaro",
+            "https://manjaro.lucassymons.net",
+            "https://ftp.gwdg.de/pub/linux/manjaro",
+            "https://mirror.init7.net/manjaro",
+        ];
+        for alt in alternates {
+            if !mirror_url.starts_with(alt) {
+                if let Some(path_index) = mirror_url.find("/stable/") {
+                    let path = &mirror_url[path_index..];
+                    mirrors_to_try.push(format!("{}{}", alt, path));
+                }
             }
-            Option::None => {
-                // FALLBACK: Try to use stale cache if download failed
-                if cache_path.exists() {
-                    log::warn!("Network sync failed for {}. Using stale cache.", repo_name);
-                    std::fs::read(&cache_path).map_err(|e| e.to_string())?
+        }
+    } else if mirror_url.contains("endeavouros") {
+        // EndeavourOS Mirror Rotation
+        let alternates = [
+            "https://mirror.moson.org/endeavouros",
+            "https://mirror.alpix.eu/endeavouros",
+            "https://ca.mirror.babylonix.io/endeavouros",
+            "https://mirror.jingk.ai/endeavouros",
+        ];
+        for alt in alternates {
+            if !mirror_url.starts_with(alt) {
+                if let Some(path_index) = mirror_url.find("/repo/") {
+                    let path = &mirror_url[path_index..];
+                    mirrors_to_try.push(format!("{}{}", alt, path));
+                }
+            }
+        }
+    }
+
+    let mut accumulated_errors = Vec::new();
+    let mut success_data = None;
+
+    for url in &mirrors_to_try {
+        match client.fetch_bytes(url).await {
+            Ok(data) => {
+                success_data = Some(data);
+                break;
+            }
+            Err(e) => {
+                let err = format!("Error from {}: {}", url, e);
+                accumulated_errors.push(err);
+            }
+        }
+    }
+
+    match success_data {
+        Some(data) => {
+            // Save to cache
+            let _ = std::fs::write(&cache_path, &data);
+            data
+        }
+        Option::None => {
+            // FALLBACK: Try to use stale cache if download failed
+            if cache_path.exists() {
+                let short_errors = accumulated_errors
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                let remaining_count = accumulated_errors.len().saturating_sub(3);
+                let remaining_suffix = if remaining_count > 0 {
+                    format!(" (+{} more)", remaining_count)
                 } else {
-                    return Err(format!(
-                        "All mirrors failed for {}. Errors: [{}]",
-                        repo_name,
-                        accumulated_errors.join("; ")
-                    ));
-                }
+                    String::new()
+                };
+                log::warn!(
+                    "Network sync failed for {}. Using stale cache. Attempted {} mirrors. Causes: {}{}",
+                    repo_name,
+                    mirrors_to_try.len(),
+                    short_errors,
+                    remaining_suffix
+                );
+                std::fs::read(&cache_path).map_err(|e| e.to_string())?
+            } else {
+                return Err(format!(
+                    "All mirrors failed for {}. Errors: [{}]",
+                    repo_name,
+                    accumulated_errors.join("; ")
+                ));
             }
         }
+    }
     };
 
     // Decompress bytes (bytes is Vec<u8> or Bytes)
@@ -324,10 +381,12 @@ fn parse_desc(content: &str, source: PackageSource) -> Option<Package> {
 // ----------------------
 
 #[cfg(test)]
+type MockResponseMap =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Result<Vec<u8>, String>>>>;
+
+#[cfg(test)]
 pub struct MockRepoClient {
-    pub responses: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<String, Result<Vec<u8>, String>>>,
-    >,
+    pub responses: MockResponseMap,
 }
 
 #[cfg(test)]

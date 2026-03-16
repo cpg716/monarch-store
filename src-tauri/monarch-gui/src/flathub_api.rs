@@ -9,6 +9,69 @@ use tokio::sync::Mutex as TokioMutex;
 pub static ACTIVE_FLATPAK_CHILD: Lazy<Arc<TokioMutex<Option<tokio::process::Child>>>> =
     Lazy::new(|| Arc::new(TokioMutex::new(None)));
 
+fn parse_human_size_to_bytes(input: &str) -> Option<u64> {
+    let cleaned = input
+        .replace('\u{a0}', " ")
+        .replace(',', "")
+        .trim()
+        .to_string();
+    let mut parts = cleaned.split_whitespace();
+    let value = parts.next()?.parse::<f64>().ok()?;
+    let unit = parts.next().unwrap_or("B").to_ascii_lowercase();
+    let multiplier = match unit.as_str() {
+        "b" | "bytes" => 1_f64,
+        "kb" => 1000_f64,
+        "mb" => 1000_f64.powi(2),
+        "gb" => 1000_f64.powi(3),
+        "tb" => 1000_f64.powi(4),
+        "kib" => 1024_f64,
+        "mib" => 1024_f64.powi(2),
+        "gib" => 1024_f64.powi(3),
+        "tib" => 1024_f64.powi(4),
+        _ => return None,
+    };
+    Some((value * multiplier).round() as u64)
+}
+
+pub async fn get_remote_app_sizes(
+    app_id: &str,
+    remote: &str,
+) -> Result<(Option<u64>, Option<u64>), String> {
+    let flatpak = flatpak_binary()?;
+    let output = tokio::process::Command::new(&flatpak)
+        .args(["remote-info", "--show-size", remote, app_id])
+        .output()
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                FLATPAK_NOT_INSTALLED_MSG.to_string()
+            } else {
+                format!("Failed to run flatpak remote-info: {}", e)
+            }
+        })?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut download_size = None;
+    let mut installed_size = None;
+
+    for line in stdout.lines() {
+        let lower = line.to_ascii_lowercase();
+        if let Some((_, value)) = line.split_once(':') {
+            if lower.contains("download") {
+                download_size = parse_human_size_to_bytes(value.trim()).or(download_size);
+            } else if lower.contains("installed") {
+                installed_size = parse_human_size_to_bytes(value.trim()).or(installed_size);
+            }
+        }
+    }
+
+    Ok((download_size, installed_size))
+}
+
 /// Abort the active Flatpak command if one is running.
 pub async fn abort_flatpak() -> Result<(), String> {
     let mut guard = ACTIVE_FLATPAK_CHILD.lock().await;
@@ -349,6 +412,7 @@ pub fn get_flathub_app_id(pkg_name: &str) -> Option<String> {
         ),
         ("heroic", "com.heroicgameslauncher.hgl"),
         ("figma-linux-bin", "io.github.Figma_Linux.figma_linux"),
+        ("heroic-games-launcher", "com.heroicgameslauncher.hgl"),
         ("heroic-games-launcher-bin", "com.heroicgameslauncher.hgl"),
         ("notion-app-enhanced", "notion.id"),
         ("telegram-desktop-bin", "org.telegram.desktop"),
@@ -540,7 +604,15 @@ impl FlathubApiClient {
                 let hit_norm = hit.name.to_lowercase().replace(&['-', '_', ' '][..], "");
                 let id_norm = hit.app_id.to_lowercase().replace(&['-', '_', ' '][..], "");
 
-                // check if one contains the other (robust for "heroic" vs "heroic-games-launcher")
+                // Proportionality guard: skip if the hit name is >3x longer than the query.
+                // This prevents 'steam' (5 chars) from matching 'Steam Metadata Editor' (19 chars).
+                // It still allows 'heroic' (6 chars) to match 'Heroic Games Launcher' (19 chars)
+                // because 'heroic' is the full product name, not just a prefix.
+                let len_ratio = hit_norm.len() as f32 / (query_norm.len() as f32).max(1.0);
+                if len_ratio > 3.0 {
+                    continue;
+                }
+
                 if hit_norm.contains(&query_norm)
                     || query_norm.contains(&hit_norm)
                     || id_norm.contains(&query_norm)
@@ -719,11 +791,16 @@ impl FlathubApiClient {
             Some(id)
         } else {
             // 3. Try Search (slower, fallback)
-            // Strip suffixes first for better search (brave-bin -> brave)
+            // Strip PACKAGING markers for better Flathub search (brave-bin → brave,
+            // chromium-stable → chromium, linux-lts → linux).
+            // Do NOT strip channel markers (-canary, -beta, -ptb) — those are separate products.
             let search_term = pkg_name
                 .trim_end_matches("-bin")
                 .trim_end_matches("-git")
-                .trim_end_matches("-nightly");
+                .trim_end_matches("-nightly")
+                .trim_end_matches("-stable")
+                .trim_end_matches("-lts")
+                .trim_end_matches("-appimage");
 
             self.search_find_id(search_term).await
         };

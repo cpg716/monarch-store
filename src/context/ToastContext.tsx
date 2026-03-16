@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, ReactNode, useMemo } from 'react';
 import { X, CheckCircle, AlertTriangle, Info, AlertCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -21,26 +21,25 @@ const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
     const [toasts, setToasts] = useState<Toast[]>([]);
-    const [counter, setCounter] = useState(0);
-
     const remove = useCallback((id: number) => {
         setToasts(prev => prev.filter(t => t.id !== id));
     }, []);
 
     const show = useCallback((message: string, type: ToastType = 'info') => {
-        const id = counter;
-        setCounter(c => c + 1);
+        const id = Date.now() + Math.random();
         setToasts(prev => [...prev, { id, message, type }]);
 
         // Auto dismiss
         setTimeout(() => remove(id), 5000);
-    }, [counter, remove]);
+    }, [remove]);
 
     const success = useCallback((msg: string) => show(msg, 'success'), [show]);
     const error = useCallback((msg: string) => show(msg, 'error'), [show]);
 
+    const contextValue = useMemo(() => ({ show, success, error }), [show, success, error]);
+
     return (
-        <ToastContext.Provider value={{ show, success, error }}>
+        <ToastContext.Provider value={contextValue}>
             {children}
             <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 pointer-events-none">
                 <AnimatePresence>

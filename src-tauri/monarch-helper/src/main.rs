@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 #[cfg(test)]
 mod command_tests {
     use super::HelperCommand;
-    use serde_json;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -118,7 +117,7 @@ mod command_tests {
         let contents = std::fs::read_to_string(file.path()).expect("Should read");
         assert_eq!(contents.trim(), json);
 
-        let parsed: HelperCommand = serde_json::from_str(&contents.trim()).expect("Should parse");
+        let parsed: HelperCommand = serde_json::from_str(contents.trim()).expect("Should parse");
         match parsed {
             HelperCommand::AlpmInstall { packages, .. } => {
                 assert_eq!(packages[0], "test-pkg");
@@ -163,6 +162,14 @@ pub enum HelperCommand {
     ExecuteBatch {
         manifest: transactions::TransactionManifest,
     },
+    /// Legacy: older helpers/apps send these instead of ExecuteBatch. We accept both.
+    Refresh,
+    InstallTargets {
+        targets: Vec<String>,
+    },
+    UninstallTargets {
+        targets: Vec<String>,
+    },
     CheckUpdatesSafe {
         enabled_repos: Vec<String>,
     },
@@ -182,6 +189,7 @@ pub enum HelperCommand {
     },
     /// Operation "Chaotic Good": Install Chaotic-AUR keyring and mirrorlist via pacman -U (no pacman.conf edit).
     PrepareChaoticComponents,
+    RefreshKeyring,
     AlpmCleanCache {
         keep_versions: u32,
     },
@@ -208,6 +216,32 @@ fn emit_progress(progress: u32, message: &str) {
     };
     if let Ok(json) = serde_json::to_string(&event) {
         progress::send_progress_line(json);
+    }
+}
+
+/// Launch orphan cleanup in a detached shell so ExecuteBatch can return immediately.
+/// This prevents the UI from looking stuck at 95-100% while housekeeping runs.
+fn spawn_background_orphan_cleanup() {
+    let script = r#"
+mkdir -p /var/log/monarch
+orphans="$(pacman -Qdtq 2>/dev/null)"
+if [ -n "${orphans}" ]; then
+  pacman -Rns --noconfirm ${orphans} >>/var/log/monarch/housekeeping.log 2>&1
+fi
+"#;
+
+    match std::process::Command::new("sh")
+        .args([
+            "-lc",
+            &format!(
+                "nohup sh -lc '{}' >/dev/null 2>&1 </dev/null &",
+                script.replace('\'', "'\\''")
+            ),
+        ])
+        .status()
+    {
+        Ok(_) => logger::info("Background orphan cleanup scheduled."),
+        Err(e) => logger::warn(&format!("Failed to schedule background orphan cleanup: {}", e)),
     }
 }
 
@@ -412,16 +446,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Question::Corrupted(mut q) => q.set_remove(true),
     });
 
-    alpm.set_question_cb((), |question, _: &mut ()| match question.question() {
-        alpm::Question::InstallIgnorepkg(mut q) => q.set_install(true),
-        alpm::Question::Replace(q) => q.set_replace(true),
-        alpm::Question::SelectProvider(mut q) => q.set_index(0),
-        alpm::Question::RemovePkgs(mut q) => q.set_skip(false),
-        alpm::Question::Conflict(mut q) => q.set_remove(false),
-        alpm::Question::Corrupted(mut q) => q.set_remove(true),
-        alpm::Question::ImportKey(mut q) => q.set_import(true),
-    });
-
     // BUGFIX: bypassing alpm-rs to handle NULL messages from libalpm directly.
     unsafe extern "C" fn safe_log_cb(
         _ctx: *mut std::ffi::c_void,
@@ -432,7 +456,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if fmt.is_null() {
             return;
         }
-        let level_rs = alpm::LogLevel::from_bits_truncate(level as u32);
+        let level_rs = alpm::LogLevel::from_bits_truncate(level);
         if level_rs.bits() >= alpm::LogLevel::WARNING.bits() {
             // We don't format the variadic args for now to keep it simple and safe.
             // Just logging the format string is usually enough for fatal ALPM errors.
@@ -1028,6 +1052,16 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
                 }
             }
         }
+        HelperCommand::RefreshKeyring => {
+            emit_progress(5, "Refreshing package signature keyrings...");
+            match self_healer::refresh_keyring() {
+                Ok(_) => emit_progress(100, "Security keyrings refreshed."),
+                Err(e) => {
+                    emit_classified_error(&e);
+                    emit_progress(0, &format!("Error: {}", e));
+                }
+            }
+        }
         HelperCommand::AlpmInstallFiles { paths } => {
             execute_with_healing(|| {
                 ensure_db_ready()?;
@@ -1073,152 +1107,150 @@ fn execute_command(cmd: HelperCommand, alpm: &mut Alpm) {
             }
             emit_progress(100, "Service restarted");
         }
+        HelperCommand::Refresh => {
+            if let Err(e) = ensure_db_ready() {
+                emit_classified_error("database is locked");
+                emit_progress(0, &e);
+                return;
+            }
+            let manifest = transactions::TransactionManifest {
+                refresh_db: true,
+                ..Default::default()
+            };
+            execute_batch_manifest(manifest, alpm);
+        }
+        HelperCommand::InstallTargets { targets } => {
+            if let Err(e) = ensure_db_ready() {
+                emit_classified_error("database is locked");
+                emit_progress(0, &e);
+                return;
+            }
+            let manifest = transactions::TransactionManifest {
+                install_targets: targets,
+                ..Default::default()
+            };
+            execute_batch_manifest(manifest, alpm);
+        }
+        HelperCommand::UninstallTargets { targets } => {
+            if let Err(e) = ensure_db_ready() {
+                emit_classified_error("database is locked");
+                emit_progress(0, &e);
+                return;
+            }
+            let manifest = transactions::TransactionManifest {
+                remove_targets: targets,
+                ..Default::default()
+            };
+            execute_batch_manifest(manifest, alpm);
+        }
         HelperCommand::ExecuteBatch { manifest } => {
-            // Operation "Silent Guard": Execute all steps under ONE lock acquisition
-
-            // 0a. Remove Stale Lock (Pre-transaction maintenance)
-            if manifest.remove_lock {
-                let _ = remove_lock(); // Special logic in remove_lock handles safety
+            if let Err(e) = ensure_db_ready() {
+                emit_classified_error("database is locked");
+                emit_progress(0, &e);
+                return;
             }
+            execute_batch_manifest(manifest, alpm);
+        }
+    }
+}
 
-            // 0b. Set Performance Options
-            if let Some(count) = manifest.parallel_downloads {
-                if count > 0 {
-                    alpm.set_parallel_downloads(count);
-                    logger::info(&format!("ParallelDownloads set to {} from manifest", count));
-                }
-            }
-
-            // 0b. Clear Cache (Maintenance)
-            if manifest.clear_cache {
-                let _ = clear_cache(alpm, 0); // Clear everything
-            }
-
-            // 1. Refresh DB
-            if manifest.refresh_db {
-                if let Err(e) = transactions::force_refresh_sync_dbs(alpm) {
-                    emit_progress(0, &format!("Error refreshing databases: {}", e));
-                    return;
-                }
-            }
-
-            // 2. System Upgrade
-            if manifest.update_system {
-                if let Err(e) = transactions::execute_alpm_upgrade(None, alpm) {
-                    emit_progress(0, &format!("Error upgrading system: {}", e));
-                    return;
-                }
-            }
-
-            // 3. Remove Targets
-            if !manifest.remove_targets.is_empty() {
-                // SUICIDE PREVENTION
-                for pkg in &manifest.remove_targets {
-                    if PROTECTED_PACKAGES.contains(&pkg.as_str()) {
-                        emit_progress(
-                            0,
-                            &format!("Error: '{}' is a protected package. Batch abort.", pkg),
-                        );
-                        return;
-                    }
-                }
-                if let Err(e) = transactions::execute_alpm_uninstall(
-                    manifest.remove_targets.clone(),
-                    true,
-                    alpm,
-                ) {
-                    emit_progress(0, &format!("Error removing packages: {}", e));
-                    return;
-                }
-            }
-
-            // Orphan cleanup moved to the end of the transaction
-
-            // 4. Install Targets (Repo + Local)
-            // Note: ALPM allows installing repo pkgs and local files in one transaction?
-            // The current helper functions are separate. We can call them sequentially since we hold the lock.
-            // The main() function holds the ALPM handle which implies the lock is held (if configured).
-            // Actually ALPM lock matches the handle lifetime or transaction lifetime.
-            // Our helper is short-lived process. One invocation = one ALPM instance = one lock.
-            // So calling these sequentially IS atomic regarding the lock.
-
-            let mut installed_anything = false;
-
-            if !manifest.install_targets.is_empty() {
-                // sync_first false because we handled it in step 1 if needed
-                // cpu strictness default (None)
-                if let Err(e) = transactions::execute_alpm_install(
-                    manifest.install_targets.clone(),
-                    false,
-                    manifest.cpu_optimization.clone(),
-                    manifest.target_repo.clone(),
-                    alpm,
-                ) {
-                    emit_progress(0, &format!("Error installing repo packages: {}", e));
-                    return;
-                }
-                installed_anything = true;
-            }
-
-            // 4b. Install Local Files (Built AUR packages)
-            if !manifest.local_paths.is_empty() {
-                if let Err(e) =
-                    transactions::execute_alpm_install_files(manifest.local_paths.clone(), alpm)
-                {
-                    emit_progress(0, &format!("Error installing local packages: {}", e));
-                    return;
-                }
-                installed_anything = true;
-            }
-
-            if !installed_anything
-                && !manifest.update_system
-                && !manifest.refresh_db
-                && manifest.remove_targets.is_empty()
-            {
-                emit_progress(100, "Transaction successful (No actions required)");
-            } else {
-                emit_progress(100, "Batch Transaction Complete");
-            }
-
-            // --- BACKGROUND TASKS: Run after 100% emission so the UI can wrap up ---
-
-            // Orphan cleanup (if requested)
-            if manifest.remove_orphans {
-                transactions::emit_progress_event(transactions::AlpmProgressEvent {
-                    event_type: "install-finalizing".to_string(),
-                    package: None,
-                    percent: Some(100),
-                    downloaded: None,
-                    total: None,
-                    message: "Running post-install housekeeping...".to_string(),
-                });
-
-                let orphans = transactions::find_orphans(alpm);
-                if !orphans.is_empty() {
-                    logger::info(&format!("Removing {} orphans...", orphans.len()));
-                    // Send a trace to the UI log but don't reset the progress bar
-                    transactions::emit_progress_event(transactions::AlpmProgressEvent {
-                        event_type: "log".to_string(),
-                        package: None,
-                        percent: None,
-                        downloaded: None,
-                        total: None,
-                        message: format!("Housekeeping: Removing {} orphans...", orphans.len()),
-                    });
-
-                    if let Err(e) = transactions::execute_alpm_uninstall(orphans, true, alpm) {
-                        logger::warn(&format!(
-                            "Error removing orphans during housekeeping: {}",
-                            e
-                        ));
-                    }
-                }
-
-                // Final completion signal after housekeeping
-                emit_progress(100, "Housekeeping Complete");
+/// Shared batch execution used by ExecuteBatch and legacy Refresh/InstallTargets/UninstallTargets.
+fn execute_batch_manifest(manifest: transactions::TransactionManifest, alpm: &mut Alpm) {
+    if manifest.remove_lock {
+        let _ = remove_lock();
+    }
+    if let Some(count) = manifest.parallel_downloads {
+        if count > 0 {
+            alpm.set_parallel_downloads(count);
+            logger::info(&format!("ParallelDownloads set to {} from manifest", count));
+        }
+    }
+    if manifest.clear_cache {
+        let _ = clear_cache(alpm, 0);
+    }
+    if manifest.refresh_db {
+        if let Err(e) = transactions::force_refresh_sync_dbs(alpm) {
+            emit_progress(0, &format!("Error refreshing databases: {}", e));
+            return;
+        }
+    }
+    if manifest.update_system {
+        let mut trans = safe_transaction::SafeUpdateTransaction::new(alpm);
+        if let Err(e) = trans.execute() {
+            emit_progress(0, &format!("Error upgrading system: {}", e));
+            return;
+        }
+    }
+    if !manifest.remove_targets.is_empty() {
+        for pkg in &manifest.remove_targets {
+            if PROTECTED_PACKAGES.contains(&pkg.as_str()) {
+                emit_progress(
+                    0,
+                    &format!("Error: '{}' is a protected package. Batch abort.", pkg),
+                );
+                return;
             }
         }
+        if let Err(e) = transactions::execute_alpm_uninstall(
+            manifest.remove_targets.clone(),
+            true,
+            alpm,
+        ) {
+            emit_progress(0, &format!("Error removing packages: {}", e));
+            return;
+        }
+    }
+    let mut installed_anything = false;
+    if !manifest.install_targets.is_empty() {
+        if let Err(e) = transactions::execute_alpm_install(
+            manifest.install_targets.clone(),
+            false,
+            manifest.cpu_optimization.clone(),
+            manifest.target_repo.clone(),
+            alpm,
+        ) {
+            emit_progress(0, &format!("Error installing repo packages: {}", e));
+            return;
+        }
+        installed_anything = true;
+    }
+    if !manifest.local_paths.is_empty() {
+        if let Err(e) =
+            transactions::execute_alpm_install_files(manifest.local_paths.clone(), alpm)
+        {
+            emit_progress(0, &format!("Error installing local packages: {}", e));
+            return;
+        }
+        installed_anything = true;
+    }
+    if !installed_anything
+        && !manifest.update_system
+        && !manifest.refresh_db
+        && manifest.remove_targets.is_empty()
+    {
+        emit_progress(100, "Transaction successful (No actions required)");
+    } else {
+        emit_progress(100, "Batch Transaction Complete");
+    }
+    if manifest.remove_orphans {
+        transactions::emit_progress_event(transactions::AlpmProgressEvent {
+            event_type: "install-finalizing".to_string(),
+            package: None,
+            percent: Some(100),
+            downloaded: None,
+            total: None,
+            message: "Finalizing: post-install housekeeping continues in background."
+                .to_string(),
+        });
+        spawn_background_orphan_cleanup();
+        transactions::emit_progress_event(transactions::AlpmProgressEvent {
+            event_type: "log".to_string(),
+            package: None,
+            percent: None,
+            downloaded: None,
+            total: None,
+            message: "Housekeeping scheduled in background.".to_string(),
+        });
     }
 }
 

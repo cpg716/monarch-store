@@ -4,19 +4,27 @@ import { unwrap } from '../utils/specta';
 import { LazyStore } from '@tauri-apps/plugin-store';
 import { getErrorService } from '../context/getErrorService';
 import { friendlyError } from '../utils/friendlyError';
-import { getPackageListKey } from '../utils/packageKey';
-import { toPackageSource } from '../utils/repoHelper';
+import { debugError, debugInfo, debugWarn } from '../utils/debugLog';
+import {
+    expandRatingLookupIds,
+    getKnownAppIdsForPackage,
+    getPackageListKey,
+    normalizeCanonicalId
+} from '../utils/packageKey';
 import type { Package } from '../services/bindings';
-import type { PackageSource } from '../services/bindings';
 
 const FAVORITES_STORE_PATH = 'favorites.json';
 const FAVORITES_STORAGE_KEY = 'favorites';
 const REGISTRY_MAX_SIZE = 5000;
 const favoritesStore = typeof window !== 'undefined' ? new LazyStore(FAVORITES_STORE_PATH) : null;
+let pendingUpdatesRequest: Promise<void> | null = null;
 
 
 const isDecodeError = (raw: string): boolean =>
     /error decoding response body|decoding response body|invalid json|unexpected end of|expected value/i.test(raw);
+
+const normalizeIdList = (ids: string[]): string[] =>
+    Array.from(new Set(ids.map((id) => normalizeCanonicalId(String(id ?? ''))).filter(Boolean)));
 /** Evict oldest entries not in protected set until size <= REGISTRY_MAX_SIZE. */
 function evictRegistry(
     registry: Record<string, Package>,
@@ -36,7 +44,7 @@ function evictRegistry(
 
     const next = { ...registry };
     for (const id of toRemove) delete next[id];
-    console.debug(`[REGISTRY] Evicted ${toRemove.length} packages. New size: ${Object.keys(next).length}`);
+    debugInfo(`[REGISTRY] Evicted ${toRemove.length} packages. New size: ${Object.keys(next).length}`);
     return next;
 }
 
@@ -132,6 +140,8 @@ export interface AppState {
     /** When true, user can enter password once in MonARCH (one dialog per session). Less secure than system prompt each time. */
     reducePasswordPrompts: boolean;
     setReducePasswordPrompts: (enabled: boolean) => void;
+    advancedMode: boolean;
+    setAdvancedMode: (enabled: boolean) => Promise<void>;
 
     /** Builder Settings */
     cleanBuild: boolean;
@@ -150,7 +160,8 @@ export interface AppState {
     setChaoticEnabled: (enabled: boolean) => Promise<void>;
 
     onboardingCompleted: boolean;
-    setOnboardingCompleted: (completed: boolean) => Promise<void>;
+    /** Sets onboarding completed; returns true if it was already completed (so caller can skip store_installed). */
+    setOnboardingCompleted: (completed: boolean) => Promise<boolean>;
 
     /** Theme Settings */
     themeMode: 'system' | 'light' | 'dark';
@@ -211,145 +222,107 @@ function matchesPackage(pkg: Package, nameOrId: string): boolean {
     return name === n || canonical === n || appId === n;
 }
 
-// --- Helpers ---
-function deepMergePackage(existing: Package | undefined, incoming: Package): { pkg: Package; changed: boolean } {
+function getCanonicalIdOrWarn(pkg: Package, surface: string): string {
+    const id = getPackageListKey(pkg);
+    if (!id) {
+        debugWarn(`[IRON-CORE] Package missing canonical_id from backend surface ${surface}:`, {
+            name: pkg.name,
+            app_id: pkg.app_id,
+            source: pkg.source,
+        });
+    }
+    return id;
+}
+
+function applyBackendPackage(existing: Package | undefined, incoming: Package): { pkg: Package; changed: boolean } {
     if (!existing) return { pkg: incoming, changed: true };
 
-    // Identity Check: If incoming and existing are identical, skip.
     if (JSON.stringify(existing) === JSON.stringify(incoming)) {
         return { pkg: existing, changed: false };
     }
 
-    const merged: Package = {
-        // Core Identity
-        name: incoming.name,
-        source: incoming.source, // allow source to shift (repo -> flatpak -> etc)
-        version: incoming.version,
-        installed: incoming.installed ?? existing.installed,
-        installed_sources: incoming.installed_sources || existing.installed_sources,
+    // Backend remains SSOT for identity/source/install state.
+    // But different backend surfaces return different payload richness.
+    // Preserve richer universal metadata from an existing backend payload when
+    // the incoming payload omits it, so a lightweight list fetch cannot erase
+    // details already hydrated from getFullPackageDetails.
+    const merged = { ...incoming };
 
-        // Identity Fallbacks
-        app_id: incoming.app_id || existing.app_id,
-        canonical_id: incoming.canonical_id || existing.canonical_id,
-        url: incoming.url || existing.url,
+    const incomingSources = incoming.available_sources || [incoming.source];
+    const existingSourceStillAvailable = incomingSources.some((src) =>
+        src.source_type === existing.source.source_type &&
+        src.id === existing.source.id &&
+        (src.package_name || '') === (existing.source.package_name || '')
+    );
 
-        // Display Metadata - Strict Preservation of "Golden Data"
-        display_name: (() => {
-            const oldDN = existing.display_name;
-            const newDN = incoming.display_name;
+    // Keep the already-published visible source identity stable for the session
+    // as long as that source variant still exists in the incoming backend payload.
+    if (existingSourceStillAvailable) {
+        merged.source = existing.source;
+        if (existing.source_summary) {
+            merged.source_summary = existing.source_summary;
+        }
+        if (existing.trust_level) {
+            merged.trust_level = existing.trust_level;
+        }
+        if (existing.security_summary) {
+            merged.security_summary = existing.security_summary;
+        }
+        if (existing.primary_action) {
+            merged.primary_action = existing.primary_action;
+        }
+        if (existing.primary_action_label) {
+            merged.primary_action_label = existing.primary_action_label;
+        }
+    }
 
-            // 1. Strict Null/Empty Check
-            if (!newDN) return oldDN;
-            if (!oldDN) return newDN;
+    if ((!incoming.icon || incoming.icon.length === 0) && existing.icon) {
+        merged.icon = existing.icon;
+    }
+    if ((!incoming.display_name || incoming.display_name.length === 0) && existing.display_name) {
+        merged.display_name = existing.display_name;
+    }
+    if ((!incoming.app_id || incoming.app_id.length === 0) && existing.app_id) {
+        merged.app_id = existing.app_id;
+    }
+    if ((!incoming.description || incoming.description.length === 0) && existing.description) {
+        merged.description = existing.description;
+    }
+    if (
+        (!incoming.long_description || incoming.long_description.length === 0) &&
+        existing.long_description
+    ) {
+        merged.long_description = existing.long_description;
+    }
+    if (
+        (!incoming.screenshots || incoming.screenshots.length === 0) &&
+        existing.screenshots &&
+        existing.screenshots.length > 0
+    ) {
+        merged.screenshots = existing.screenshots;
+    }
+    if ((!incoming.maintainer || incoming.maintainer.length === 0) && existing.maintainer) {
+        merged.maintainer = existing.maintainer;
+    }
+    if ((!incoming.license || incoming.license.length === 0) && existing.license) {
+        merged.license = existing.license;
+    }
 
-            // 2. GOLDEN RULE: Never overwrite Title Case with Lowercase
-            // (e.g. Keep "Calibre" if incoming is "calibre")
-            const oldHasUpper = /[A-Z]/.test(oldDN);
-            const newHasUpper = /[A-Z]/.test(newDN);
+    if (!incoming.rating && existing.rating) {
+        merged.rating = existing.rating;
+    }
 
-            if (oldHasUpper && !newHasUpper) {
-                // Incoming is inferior (lowercase only). Keep existing.
-                return oldDN;
-            }
+    // Preserve installed truth from a richer installed-catalog payload when a lighter
+    // backend surface (e.g. trending/search) omits or misclassifies installed state.
+    merged.installed = Boolean(incoming.installed || existing.installed);
+    if ((!incoming.installed_sources || incoming.installed_sources.length === 0) && existing.installed_sources) {
+        merged.installed_sources = existing.installed_sources;
+    }
+    if ((!incoming.launch_target || incoming.launch_target.length === 0) && existing.launch_target) {
+        merged.launch_target = existing.launch_target;
+    }
 
-            // 3. Length Heuristic: Prefer "Firefox Web Browser" over "Firefox"
-            if (newDN.length > oldDN.length && newHasUpper) return newDN;
-
-            // 4. Default: Updates are essentially equal in quality, take new to be safe
-            return newDN;
-        })(),
-
-        // Strict Deep Merge: Never overwrite valid longer description with shorter/empty
-        description: (() => {
-            const inc = incoming.description;
-            const ext = existing.description;
-            if (!inc) return ext || "";
-            if (!ext) return inc;
-            // Prefer the longer one, as it's likely more descriptive
-            return inc.length >= ext.length ? inc : ext;
-        })(),
-
-        long_description: (() => {
-            const inc = incoming.long_description;
-            const ext = existing.long_description;
-            if (!inc) return ext || "";
-            if (!ext) return inc;
-            return inc.length >= ext.length ? inc : ext;
-        })(),
-
-        // Icon Priority: HTTP (Remote) > Local
-        icon: (() => {
-            const newIcon = incoming.icon;
-            const oldIcon = existing.icon;
-
-            if (!newIcon) return oldIcon;
-            if (!oldIcon) return newIcon;
-
-            const newIsRemote = newIcon.startsWith('http');
-            const oldIsRemote = oldIcon.startsWith('http');
-
-            // If we have a remote icon, keep it! Don't let a local path overwrite it.
-            if (oldIsRemote && !newIsRemote) return oldIcon;
-
-            return newIcon;
-        })(),
-
-        // Collections (Merge unique)
-        screenshots: (incoming.screenshots?.length ?? 0) > 0 ? incoming.screenshots : existing.screenshots,
-        keywords: (incoming.keywords?.length ?? 0) > 0 ? incoming.keywords : existing.keywords,
-
-        // Metadata
-        maintainer: incoming.maintainer || existing.maintainer,
-        license: (incoming.license?.length ?? 0) > 0 ? incoming.license : existing.license,
-
-        // Tech
-        provides: (incoming.provides?.length ?? 0) > 0 ? incoming.provides : existing.provides,
-        depends: (incoming.depends?.length ?? 0) > 0 ? incoming.depends : existing.depends,
-        make_depends: (incoming.make_depends?.length ?? 0) > 0 ? incoming.make_depends : existing.make_depends,
-        alternatives: (incoming.alternatives?.length ?? 0) > 0 ? incoming.alternatives : existing.alternatives,
-
-        // Metrics
-        download_size: incoming.download_size ?? existing.download_size,
-        installed_size: incoming.installed_size ?? existing.installed_size,
-        last_modified: incoming.last_modified ?? existing.last_modified,
-        first_submitted: incoming.first_submitted ?? existing.first_submitted,
-        out_of_date: incoming.out_of_date ?? existing.out_of_date,
-        num_votes: incoming.num_votes ?? existing.num_votes,
-
-        // Flags
-        is_featured: incoming.is_featured ?? existing.is_featured,
-        is_optimized: incoming.is_optimized ?? existing.is_optimized,
-
-        // Rating Protection: Don't zero out valid ratings
-        rating: (() => {
-            // If incoming has valid data, use it
-            if (incoming.rating && incoming.rating.total > 0) return incoming.rating;
-            // If incoming is empty/null, keep existing
-            return existing.rating;
-        })(),
-
-        // Sources (Merged)
-        available_sources: (() => {
-            const seen = new Set<string>();
-            const mergedSources: PackageSource[] = [];
-            [...(incoming.available_sources || []), ...(existing?.available_sources || [])].forEach(s => {
-                const key = `${s.source_type}:${s.id}`;
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    mergedSources.push(s);
-                }
-            });
-            if (mergedSources.length > 0) return mergedSources;
-            // Fallback: Use incoming source if available_sources was empty
-            if (incoming.source) mergedSources.push(incoming.source);
-            return mergedSources.length > 0 ? mergedSources : null;
-        })()
-    };
-
-    // Optimization: check for equality again after merge to prevent blink-inducing state updates
-    const isDifferent = JSON.stringify(merged) !== JSON.stringify(existing);
-
-    return { pkg: isDifferent ? merged : existing, changed: isDifferent };
+    return { pkg: merged, changed: true };
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -365,6 +338,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     isFlatpakEnabled: true,
     isChaoticEnabled: false,
     oneClickEnabled: false,
+    advancedMode: false,
     metadataInitialized: false,
     syncingRegistryBulk: false,
 
@@ -377,11 +351,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
             for (const p of pkgs) {
                 if (!p) continue;
-                const id = getPackageListKey(p);
+                const id = getCanonicalIdOrWarn(p, 'upsertPackages');
                 if (!id) continue;
                 idsBeingUpserted.push(id);
 
-                const { pkg: merged, changed } = deepMergePackage(nextRegistry[id], p);
+                const { pkg: merged, changed } = applyBackendPackage(nextRegistry[id], p);
                 if (changed) {
                     nextRegistry[id] = merged;
                     anyChanged = true;
@@ -405,7 +379,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
     },
 
     hydrateSection: (section: 'trending' | 'essentials', pkgs: Package[]) => {
-        if (!pkgs) return;
+        if (!pkgs) {
+            // Never leave home sections in permanent skeleton mode.
+            set({ metadataInitialized: true });
+            return;
+        }
 
         // 1. Upsert packages first so they exist in registry
         set((state) => {
@@ -415,10 +393,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
             for (const p of pkgs) {
                 if (!p) continue;
-                const id = getPackageListKey(p);
+                const id = getCanonicalIdOrWarn(p, `hydrateSection:${section}`);
                 if (id) {
-                    newIds.push(id);
-                    const { pkg: merged, changed } = deepMergePackage(nextRegistry[id], p);
+                    // Prevent duplicates in the IDs array
+                    if (!newIds.includes(id)) {
+                        newIds.push(id);
+                    }
+                    const { pkg: merged, changed } = applyBackendPackage(nextRegistry[id], p);
                     if (changed) {
                         nextRegistry[id] = merged;
                         anyChanged = true;
@@ -447,16 +428,27 @@ export const useAppStore = create<AppState>()((set, get) => ({
             return {
                 packageRegistry: evictRegistry(nextRegistry, protectedIds),
                 [sectionKey]: newIds,
+                // Mark initialized even when section is empty to prevent infinite skeletons.
                 metadataInitialized: true,
                 loadingTrending: section === 'trending' ? false : state.loadingTrending,
                 error: section === 'trending' ? null : state.error
             };
         });
 
-        // 2. Fire-and-forget batch rating fetch (safe mode)
-        const appIds = pkgs.map(p => p.app_id).filter(id => !!id) as string[];
-        if (appIds.length > 0) {
-            get().fetchRatingsForPackages(appIds);
+        // 2. Fire-and-forget batch rating fetch.
+        // Collect EVERY possible lookup key: app_id takes priority (ODRS canonical),
+        // but fall back to pkg name so packages with no app_id still get rated.
+        const ratingLookupIds = Array.from(
+            new Set(
+                pkgs.flatMap(p => [
+                    p.app_id,
+                    // Also include name as fallback for ODRS matching
+                    p.name,
+                ].filter((id): id is string => !!id && id.length > 0))
+            )
+        );
+        if (ratingLookupIds.length > 0) {
+            get().fetchRatingsForPackages(ratingLookupIds);
         }
     },
 
@@ -464,7 +456,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
         if (!packageIds || packageIds.length === 0) return;
 
         // Filter valid IDs to avoid empty calls
-        const validIds = packageIds.filter(id => !!id && id.length > 0);
+        const validIds = expandRatingLookupIds(
+            packageIds.filter(id => !!id && id.length > 0)
+        );
         if (validIds.length === 0) return;
 
         try {
@@ -472,50 +466,53 @@ export const useAppStore = create<AppState>()((set, get) => ({
             const res = await commands.getAppRatingsBatch(validIds);
             const ratingsMap = unwrap(res);
 
-            // 2. Safely merge into EXISTING registry packages
-            // We use functional state update to ensure we have latest registry
+            if (Object.keys(ratingsMap).length === 0) return;
+
+            // 2. Build a fast lookup index from the ratings map
+            // ODRS keys are typically app_id (e.g. "org.mozilla.Firefox") or pkg name.
+            // We need case-insensitive matching in both directions.
+            const ratingsByNormalizedKey = new Map<string, typeof ratingsMap[string]>();
+            for (const [appId, rating] of Object.entries(ratingsMap)) {
+                ratingsByNormalizedKey.set(appId.toLowerCase(), rating);
+            }
+
+            // 3. Safely merge into EXISTING registry packages
             set((state) => {
                 const nextRegistry = { ...state.packageRegistry };
                 let anyChanged = false;
-                let matchCount = 0;
 
-                Object.entries(ratingsMap).forEach(([appId, rating]) => {
-                    const searchId = appId.toLowerCase();
-                    // Iterate registry.
-                    // PERF: This is O(N * M) where N=registry size, M=ratings count.
-                    // Registry size is usually <2000. Batch size M is usually <50. 
-                    // 100k iters is fine for JS.
-                    for (const key in nextRegistry) {
-                        const pkg = nextRegistry[key];
-                        // Robust match: Check app_id (case-insensitive) OR fallback to name exact match
-                        const matchesId = pkg.app_id && pkg.app_id.toLowerCase() === searchId;
-                        const matchesName = pkg.name === searchId;
+                for (const key in nextRegistry) {
+                    const pkg = nextRegistry[key];
+                    if (!pkg) continue;
 
-                        if (matchesId || matchesName) {
-                            // Only update if rating changed
-                            if (JSON.stringify(pkg.rating) !== JSON.stringify(rating)) {
-                                nextRegistry[key] = { ...pkg, rating };
-                                anyChanged = true;
-                                matchCount++;
-                            } else {
-                                // matched but no change
-                                matchCount++;
-                            }
+                    // Match against app_id (canonical) OR name (fallback)
+                    const lookupKeys = new Set<string>();
+                    if (pkg.app_id) lookupKeys.add(pkg.app_id.toLowerCase());
+                    if (pkg.name) lookupKeys.add(pkg.name.toLowerCase());
+                    for (const knownAppId of getKnownAppIdsForPackage(pkg)) {
+                        lookupKeys.add(knownAppId.toLowerCase());
+                    }
+
+                    let rating = null;
+                    for (const lookupKey of lookupKeys) {
+                        const candidate = ratingsByNormalizedKey.get(lookupKey);
+                        if (candidate) {
+                            rating = candidate;
+                            break;
                         }
                     }
-                });
 
-                if (anyChanged) {
-                    // console.debug(`[MonARCH] Applied ratings to ${matchCount} packages.`);
-                } else if (matchCount === 0 && Object.keys(ratingsMap).length > 0) {
-                    console.warn(`[MonARCH] Fetched ${Object.keys(ratingsMap).length} ratings but matched ZERO in registry! keys=${Object.keys(ratingsMap).join(',')}`);
+                    if (rating && JSON.stringify(pkg.rating) !== JSON.stringify(rating)) {
+                        nextRegistry[key] = { ...pkg, rating };
+                        anyChanged = true;
+                    }
                 }
 
                 return anyChanged ? { packageRegistry: nextRegistry } : state;
             });
 
         } catch (e) {
-            console.warn('[MonARCH] Batch rating fetch failed (safe ignore):', e);
+            debugWarn('[MonARCH] Batch rating fetch failed (safe ignore):', e);
         }
     },
 
@@ -526,24 +523,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
         if (!ids.length) return;
         // Protection against Bridge Flooding: if many IDs, do a Bulk Sync instead
         if (ids.length > 100) {
-            console.warn(`[REGISTRY] syncRegistry called with ${ids.length} IDs. Redirecting to Bulk Sync for performance.`);
+            debugWarn(`[REGISTRY] syncRegistry called with ${ids.length} IDs. Redirecting to Bulk Sync for performance.`);
             get().syncRegistryBulk();
             return;
         }
         try {
-            const { isFlatpakEnabled, isAurEnabled, isChaoticEnabled } = get();
-            // Fetch the fully joined metadata from the SQLite backend
-            const pkgs = unwrap(await commands.getPackagesByNames(ids, {
-                flatpak_enabled: isFlatpakEnabled,
-                aur_enabled: isAurEnabled,
-                chaotic_enabled: isChaoticEnabled,
-                for_installed_lookup: false
-            }, null));
-            if (pkgs && pkgs.length > 0) {
-                get().upsertPackages(pkgs);
-            }
+            // Fetch the fully joined metadata from the backend Registry by Canonical IDs
+            const canonicalPkgs = unwrap(await commands.getPackagesByCanonicalIds(ids));
+            if ((canonicalPkgs ?? []).length > 0) get().upsertPackages(canonicalPkgs ?? []);
         } catch (e) {
-            console.error('[REGISTRY] Throttled sync failed:', e);
+            debugError('[REGISTRY] Throttled sync failed:', e);
         }
     },
 
@@ -571,7 +560,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             return;
         }
 
-        console.debug(`[REGISTRY] Performing Bulk Sync for ${idList.length} relevant objects...`);
+        debugInfo(`[REGISTRY] Performing Bulk Sync for ${idList.length} relevant objects...`);
 
         // Fetch in chunks of 100 to avoid IPC limits or DB locks
         const CHUNK_SIZE = 100;
@@ -579,23 +568,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
             for (let i = 0; i < idList.length; i += CHUNK_SIZE) {
                 const chunk = idList.slice(i, i + CHUNK_SIZE);
                 try {
-                    const { isFlatpakEnabled, isAurEnabled, isChaoticEnabled } = get();
-                    const pkgs = unwrap(await commands.getPackagesByNames(chunk, {
-                        flatpak_enabled: isFlatpakEnabled,
-                        aur_enabled: isAurEnabled,
-                        chaotic_enabled: isChaoticEnabled,
-                        for_installed_lookup: false
-                    }, null));
-                    if (pkgs && pkgs.length > 0) {
-                        get().upsertPackages(pkgs);
-                    }
+                    // Fetch the fully joined metadata from the backend Registry by Canonical IDs
+                    const canonicalPkgs = unwrap(await commands.getPackagesByCanonicalIds(chunk));
+                    if ((canonicalPkgs ?? []).length > 0) get().upsertPackages(canonicalPkgs ?? []);
                 } catch (p) {
-                    console.error(`[REGISTRY] Bulk sync chunk ${i / CHUNK_SIZE} failed:`, p);
+                    debugError(`[REGISTRY] Bulk sync chunk ${i / CHUNK_SIZE} failed:`, p);
                 }
             }
         } finally {
             set({ syncingRegistryBulk: false });
-            console.debug(`[REGISTRY] Bulk sync completed.`);
+            debugInfo(`[REGISTRY] Bulk sync completed.`);
         }
     },
 
@@ -616,23 +598,24 @@ export const useAppStore = create<AppState>()((set, get) => ({
         });
     },
 
-    setActivePackageId: (id: string | null) => set({ activePackageId: id }),
-    setTrendingIds: (ids: string[]) => set({ trendingIds: ids }),
-    setEssentialsIds: (ids: string[]) => set({ essentialsIds: ids }),
+    setActivePackageId: (id: string | null) => set({ activePackageId: id ? normalizeCanonicalId(id) : null }),
+    setTrendingIds: (ids: string[]) => set({ trendingIds: normalizeIdList(ids) }),
+    setEssentialsIds: (ids: string[]) => set({ essentialsIds: normalizeIdList(ids) }),
     setCategoryIds: (category: string, ids: string[]) =>
-        set((state) => ({ categoryIds: { ...state.categoryIds, [category]: ids } })),
+        set((state) => ({ categoryIds: { ...state.categoryIds, [category]: normalizeIdList(ids) } })),
     appendCategoryIds: (category: string, ids: string[]) =>
         set((state) => {
             const current = state.categoryIds[category] ?? [];
-            return { categoryIds: { ...state.categoryIds, [category]: [...current, ...ids] } };
+            return { categoryIds: { ...state.categoryIds, [category]: normalizeIdList([...current, ...ids]) } };
         }),
-    setSearchResultIds: (ids: string[]) => set({ searchResultIds: ids }),
-    setFavorites: (ids: string[]) => set({ favorites: ids }),
+    setSearchResultIds: (ids: string[]) => set({ searchResultIds: normalizeIdList(ids) }),
+    setFavorites: (ids: string[]) => set({ favorites: normalizeIdList(ids) }),
     favoriteError: null,
     clearFavoriteError: () => set({ favoriteError: null }),
 
     toggleFavorite: async (idOrName: string) => {
-        const norm = idOrName.toLowerCase().trim();
+        const norm = normalizeCanonicalId(idOrName);
+        if (!norm) return;
         const current = get().favorites;
         const newFavorites = current.includes(norm)
             ? current.filter((f) => f.toLowerCase() !== norm)
@@ -652,15 +635,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
         try {
             const saved = await favoritesStore.get<string[]>(FAVORITES_STORAGE_KEY);
             const raw = saved ?? [];
-            const migrated = raw.map((s) => {
-                if (typeof s !== 'string') return '';
-                const trimmed = String(s).trim().toLowerCase();
-                return trimmed;
-            }).filter(Boolean);
+            const migrated = raw
+                .map((s) => (typeof s === 'string' ? normalizeCanonicalId(s) : ''))
+                .filter(Boolean);
             const unique = Array.from(new Set(migrated));
             set({ favorites: unique });
         } catch (e) {
-            console.error('Failed to load favorites from store', e);
+            debugError('Failed to load favorites from store', e);
         }
     },
 
@@ -689,7 +670,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setNotificationsEnabled(enabled));
             set({ updateNotificationsEnabled: enabled });
         } catch (e) {
-            console.error('[MonARCH] Failed to set notifications:', e);
+            debugError('[MonARCH] Failed to set notifications:', e);
         }
     },
     setPendingUpdates: (updates: { repo: number; aur: number; flatpak: number }) => {
@@ -699,35 +680,43 @@ export const useAppStore = create<AppState>()((set, get) => ({
         });
     },
     refreshPendingUpdates: async (includeAur?: boolean, includeFlatpak?: boolean) => {
-        try {
-            const updates = unwrap(await commands.checkUpdates(includeAur ?? true, includeFlatpak ?? true));
-            const breakdown = { repo: 0, aur: 0, flatpak: 0 };
-            for (const u of updates) {
-                // source is now PackageSource object
-                const srcType = u.source.source_type.toLowerCase();
-                if (srcType === 'repo') breakdown.repo++;
-                else if (srcType === 'aur') breakdown.aur++;
-                else if (srcType === 'flatpak') breakdown.flatpak++;
-            }
-            set({
-                pendingUpdates: { ...breakdown, total: updates.length },
-                lastUpdateCheck: Date.now()
-            });
-
-            // check system status too
-            const reboot = unwrap(await commands.checkRebootRequired());
-            const pacnew = unwrap(await commands.getPacnewWarnings());
-            let svcs: string[] = [];
-            try {
-                svcs = unwrap(await commands.checkServicesRestart());
-            } catch {
-                // Command may not be in capabilities; keep existing or empty
-            }
-            set({ rebootRequired: reboot, pacnewWarnings: pacnew, pendingServiceRestarts: svcs });
-        } catch (e) {
-            console.error('[MonARCH] Failed to refresh pending updates:', e);
-            // Don't report as error - this is a background check
+        if (pendingUpdatesRequest) {
+            return pendingUpdatesRequest;
         }
+        pendingUpdatesRequest = (async () => {
+            try {
+                const updates = unwrap(await commands.checkUpdates(includeAur ?? true, includeFlatpak ?? true));
+                const breakdown = { repo: 0, aur: 0, flatpak: 0 };
+                for (const u of updates) {
+                    // source is now PackageSource object
+                    const srcType = u.source.source_type.toLowerCase();
+                    if (srcType === 'repo') breakdown.repo++;
+                    else if (srcType === 'aur') breakdown.aur++;
+                    else if (srcType === 'flatpak') breakdown.flatpak++;
+                }
+                set({
+                    pendingUpdates: { ...breakdown, total: updates.length },
+                    lastUpdateCheck: Date.now()
+                });
+
+                // check system status too
+                const reboot = unwrap(await commands.checkRebootRequired());
+                const pacnew = unwrap(await commands.getPacnewWarnings());
+                let svcs: string[] = [];
+                try {
+                    svcs = unwrap(await commands.checkServicesRestart());
+                } catch {
+                    // Command may not be in capabilities; keep existing or empty
+                }
+                set({ rebootRequired: reboot, pacnewWarnings: pacnew, pendingServiceRestarts: svcs });
+            } catch (e) {
+                debugError('[MonARCH] Failed to refresh pending updates:', e);
+                // Don't report as error - this is a background check
+            } finally {
+                pendingUpdatesRequest = null;
+            }
+        })();
+        return pendingUpdatesRequest;
     },
 
     checkRebootStatus: async () => {
@@ -735,7 +724,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             const required = unwrap(await commands.checkRebootRequired());
             set({ rebootRequired: required });
         } catch (e) {
-            console.error('[MonARCH] Failed to check reboot status:', e);
+            debugError('[MonARCH] Failed to check reboot status:', e);
         }
     },
 
@@ -744,7 +733,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             const warnings = unwrap(await commands.getPacnewWarnings());
             set({ pacnewWarnings: warnings });
         } catch (e) {
-            console.error('[MonARCH] Failed to check pacnew status:', e);
+            debugError('[MonARCH] Failed to check pacnew status:', e);
         }
     },
 
@@ -754,17 +743,25 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setVerboseLogsEnabled(enabled));
             set({ verboseLogsEnabled: enabled });
         } catch (e) {
-            console.error('[MonARCH] Failed to set verbose logs:', e);
+            debugError('[MonARCH] Failed to set verbose logs:', e);
         }
     },
-    // Default true: one password per session (Apple Store–like). User can turn off in Settings for system prompt each time.
-    reducePasswordPrompts: true,
+    // One-click/silent-guard prompt behavior; kept in sync with oneClickEnabled.
+    reducePasswordPrompts: false,
     setReducePasswordPrompts: async (enabled: boolean) => {
         try {
-            unwrap(await commands.setAdvancedMode(enabled)); // Advanced mode in backend maps to reducePasswordPrompts
-            set({ reducePasswordPrompts: enabled });
+            unwrap(await commands.setOneClickEnabled(enabled));
+            set({ reducePasswordPrompts: enabled, oneClickEnabled: enabled });
         } catch (e) {
-            console.error('[MonARCH] Failed to set advanced mode:', e);
+            debugError('[MonARCH] Failed to set one-click mode:', e);
+        }
+    },
+    setAdvancedMode: async (enabled: boolean) => {
+        try {
+            unwrap(await commands.setAdvancedMode(enabled));
+            set({ advancedMode: enabled });
+        } catch (e) {
+            debugError('[MonARCH] Failed to set advanced mode:', e);
         }
     },
     cleanBuild: false,
@@ -773,7 +770,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setCleanBuildEnabled(enabled));
             set({ cleanBuild: enabled });
         } catch (e) {
-            console.error('[MonARCH] Failed to set clean build:', e);
+            debugError('[MonARCH] Failed to set clean build:', e);
         }
     },
     parallelDownloads: 5,
@@ -782,7 +779,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setParallelDownloads(count));
             set({ parallelDownloads: count });
         } catch (e) {
-            console.error('[MonARCH] Failed to set parallel downloads:', e);
+            debugError('[MonARCH] Failed to set parallel downloads:', e);
         }
     },
     setAurEnabled: async (enabled: boolean) => {
@@ -791,7 +788,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             if (enabled) unwrap(await commands.toggleRepo('aur', true, null));
             set({ isAurEnabled: enabled });
         } catch (e) {
-            console.error('[MonARCH] Failed to set AUR enabled:', e);
+            debugError('[MonARCH] Failed to set AUR enabled:', e);
         }
     },
     setFlatpakEnabled: async (enabled: boolean) => {
@@ -799,15 +796,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setFlatpakEnabled(enabled));
             set({ isFlatpakEnabled: enabled });
         } catch (e) {
-            console.error('[MonARCH] Failed to set Flatpak enabled:', e);
+            debugError('[MonARCH] Failed to set Flatpak enabled:', e);
         }
     },
     setOneClickEnabled: async (enabled: boolean) => {
         try {
             unwrap(await commands.setOneClickEnabled(enabled));
-            set({ oneClickEnabled: enabled });
+            set({ oneClickEnabled: enabled, reducePasswordPrompts: enabled });
         } catch (e) {
-            console.error('[MonARCH] Failed to set one-click enabled:', e);
+            debugError('[MonARCH] Failed to set one-click enabled:', e);
         }
     },
     setChaoticEnabled: async (enabled: boolean) => {
@@ -816,16 +813,18 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.toggleRepo('chaotic-aur', enabled, null));
             set({ isChaoticEnabled: enabled });
         } catch (e) {
-            console.error('[MonARCH] Failed to set Chaotic-AUR enabled:', e);
+            debugError('[MonARCH] Failed to set Chaotic-AUR enabled:', e);
         }
     },
     onboardingCompleted: false,
     setOnboardingCompleted: async (completed: boolean) => {
         try {
-            unwrap(await commands.setOnboardingCompleted(completed));
+            const wasAlreadyCompleted = unwrap(await commands.setOnboardingCompleted(completed));
             set({ onboardingCompleted: completed });
+            return wasAlreadyCompleted;
         } catch (e) {
-            console.error('[MonARCH] Failed to set onboarding completed:', e);
+            debugError('[MonARCH] Failed to set onboarding completed:', e);
+            return true; // assume already completed so we don't double-send
         }
     },
     themeMode: 'system',
@@ -835,7 +834,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         try {
             unwrap(await commands.setThemeMode(mode));
         } catch (e) {
-            console.error('[MonARCH] Failed to set theme mode:', e);
+            debugError('[MonARCH] Failed to set theme mode:', e);
             set({ themeMode: previous }); // Revert on failure
         }
     },
@@ -846,7 +845,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         try {
             unwrap(await commands.setAccentColor(color));
         } catch (e) {
-            console.error('[MonARCH] Failed to set accent color:', e);
+            debugError('[MonARCH] Failed to set accent color:', e);
             set({ accentColor: previous }); // Revert on failure
         }
     },
@@ -856,7 +855,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setDeclinedSystemSetup(declined));
             set({ declinedSystemSetup: declined });
         } catch (e) {
-            console.error('[MonARCH] Failed to set declined system setup:', e);
+            debugError('[MonARCH] Failed to set declined system setup:', e);
         }
     },
     isSidebarExpanded: true,
@@ -866,7 +865,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         try {
             unwrap(await commands.setSidebarExpanded(expanded));
         } catch (e) {
-            console.error('[MonARCH] Failed to set sidebar expanded:', e);
+            debugError('[MonARCH] Failed to set sidebar expanded:', e);
             set({ isSidebarExpanded: previous }); // Revert on failure
         }
     },
@@ -876,7 +875,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setAlphaNoticeDismissed(dismissed));
             set({ alphaNoticeDismissed: dismissed });
         } catch (e) {
-            console.error('[MonARCH] Failed to set alpha notice dismissed:', e);
+            debugError('[MonARCH] Failed to set alpha notice dismissed:', e);
         }
     },
     searchHistory: [],
@@ -885,7 +884,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setSearchHistory(history));
             set({ searchHistory: history });
         } catch (e) {
-            console.error('[MonARCH] Failed to set search history:', e);
+            debugError('[MonARCH] Failed to set search history:', e);
         }
     },
     readNewsIds: [],
@@ -894,7 +893,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setReadNewsIds(ids));
             set({ readNewsIds: ids });
         } catch (e) {
-            console.error('[MonARCH] Failed to set read news ids:', e);
+            debugError('[MonARCH] Failed to set read news ids:', e);
         }
     },
     activeTab: 'explore',
@@ -903,7 +902,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             unwrap(await commands.setActiveTab(tab));
             set({ activeTab: tab });
         } catch (e) {
-            console.error('[MonARCH] Failed to set active tab:', e);
+            debugError('[MonARCH] Failed to set active tab:', e);
         }
     },
     initializeSettings: async () => {
@@ -928,7 +927,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
             const tab = unwrap(await commands.getActiveTab());
 
             const repoStates = unwrap(await commands.getRepoStates());
-            const chaotic = repoStates.find(r => r.name.toLowerCase() === 'chaotic-aur')?.enabled ?? false;
+            const chaoticRepo = repoStates.find(
+                (r) => r.name.toLowerCase() === 'chaotic-aur'
+            );
+            // Preserve current toggle when backend repo list has no explicit chaotic row.
+            const chaotic = chaoticRepo ? chaoticRepo.enabled : get().isChaoticEnabled;
 
             set({
                 telemetryEnabled: telemetry,
@@ -936,7 +939,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
                 verboseLogsEnabled: verbose,
                 cleanBuild: clean,
                 parallelDownloads: parallel,
-                reducePasswordPrompts: advanced,
+                reducePasswordPrompts: oneClick,
+                advancedMode: advanced,
                 isAurEnabled: aur,
                 isFlatpakEnabled: flatpak,
                 isChaoticEnabled: chaotic,
@@ -951,9 +955,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
                 readNewsIds: readNews,
                 activeTab: tab,
             });
-            console.debug('[MonARCH] Settings initialized from backend.');
+            debugInfo('[MonARCH] Settings initialized from backend.');
         } catch (e) {
-            console.error('[MonARCH] Failed to initialize settings:', e);
+            debugError('[MonARCH] Failed to initialize settings:', e);
         }
     },
     fetchTrending: async () => {
@@ -971,7 +975,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             // setTrendingIds is handled by setTrendingPackages
         } catch (e) {
             const raw = e instanceof Error ? (e as Error).message : String(e);
-            console.error('[MonARCH] invoke failed: get_trending', raw);
+            debugError('[MonARCH] invoke failed: get_trending', raw);
             if (isDecodeError(raw)) {
                 set({ loadingTrending: false, trendingIds: [], error: null });
             } else {
@@ -987,7 +991,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             set({ infraStats: stats, loadingStats: false });
         } catch (e) {
             const raw = e instanceof Error ? (e as Error).message : String(e);
-            console.error('[MonARCH] invoke failed: get_infra_stats', raw);
+            debugError('[MonARCH] invoke failed: get_infra_stats', raw);
             if (isDecodeError(raw)) {
                 set({ infraStats: null, loadingStats: false });
             } else {
@@ -1002,7 +1006,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             set({ telemetryEnabled: enabled });
         } catch (e) {
             const raw = e instanceof Error ? (e as Error).message : String(e);
-            console.error('[MonARCH] invoke failed: is_telemetry_enabled', raw);
+            debugError('[MonARCH] invoke failed: is_telemetry_enabled', raw);
             if (isDecodeError(raw)) {
                 set({ telemetryEnabled: false });
             } else {

@@ -429,15 +429,22 @@ pub fn calculate_relevance(
 
     if score < 90 {
         if has_word(&pkg_name_lower) {
-            // "google-chrome" contains word "chrome" -> Boost over "chrome-gnome-shell" (starts with)?
-            // "chrome-gnome-shell" starts with "chrome" -> 50.
-            // "google-chrome" word match "chrome" -> 60.
             score = score.max(60);
         }
 
         if has_word(display_lower) {
-            // "Google Chrome" contains word "Chrome"
             score = score.max(55);
+        }
+    }
+
+    // 9. Official + Popularity Tie-Breaker
+    // Use smaller bonuses so they don't override strong textual matches (e.g. AUR Google Chrome should beat Repo utilities).
+    if matches_query {
+        if pkg.source.source_type == "repo" {
+            score += 5;
+        }
+        if is_popular {
+            score += 10;
         }
     }
 

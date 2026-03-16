@@ -1,0 +1,106 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running `/home/chris/Downloads/monarch-store/src-tauri/target/debug/monarch-gtk`
+
+(monarch-gtk:27272): Gtk-WARNING **: 22:42:15.283: Theme parser error: <data>:305:13-28: No property named "backdrop-filter"
+
+(monarch-gtk:27272): Gtk-WARNING **: 22:42:15.283: Theme parser error: <data>:419:13-28: No property named "backdrop-filter"
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x557daec01ea0 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557daebbeba0 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+error: app/org.kde.dolphin.desktop/x86_64/master not installed
+error: app/org.kde.dolphin.desktop/x86_64/master not installed
+error: app/org.kde.dolphin.desktop/x86_64/master not installed
+error: app/org.kde.dolphin.desktop/x86_64/master not installed
+Adwaita-WARNING: AdwBreakpointBin 0x557daec04b90 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x557dae8dde80 exceeds AdwBreakpointBin height: requested 757 px, 688 px available

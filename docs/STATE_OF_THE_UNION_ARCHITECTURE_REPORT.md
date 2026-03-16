@@ -1,24 +1,24 @@
-# MonARCH Store: STATE OF THE UNION ARCHITECTURE REPORT (v0.4.7-alpha)
-**Date:** 2026-02-21
-**Version:** v0.4.7-alpha
-**Scope:** Full codebase assimilation (Iron Core Purge, documentation, Rust backend, React frontend, configuration)
+# MonARCH Store: State of the Union Architecture Report
+**Date:** 2026-03-09
+**Version:** v0.4.8-alpha
+**Scope:** Current architecture snapshot for the GTK-first MonARCH product. Historical Tauri references below are reference-only.
 
 ---
 
 ## 1. System Summary
 
-MonARCH Store is a **Host-Adaptive, Universal** software center for Arch-based systems. It unifies **Official Repos**, **AUR**, and **Flatpak** under one interface while maintaining a **Dumb View** frontend that subscribes to a backend-hydrated registry.
+MonARCH Store is a **Host-Adaptive, Universal** software center for Arch-based systems. It unifies **Official Repos**, **AUR**, and **Flatpak** under one interface while maintaining a **Dumb View** GTK frontend over an Iron Core backend-hydrated registry.
 
-### Core Capabilities (v0.4.7-alpha)
+### Core Capabilities (v0.4.8-alpha)
 
 | Capability | Description |
 |------------|-------------|
 | **Universal Search** | Single search bar queries ALPM (repo), AUR (raur), and Flathub in parallel; results merged and deduplicated by canonical key. |
-| **Rich Metadata** | (v0.4.7) Secondary enrichment pass & multi-source merging (Screenshots, Long Descriptions). |
-| **Bulletproof ALPM** | (v0.4.7) FFI-safe callback isolation preventing signal 6/abort panics during heavy IO. |
+| **Rich Metadata** | (v0.4.8) Secondary enrichment pass & multi-source merging (Screenshots, Long Descriptions). |
+| **Bulletproof ALPM** | (v0.4.8) FFI-safe callback isolation preventing signal 6/abort panics during heavy IO. |
 | **Native AUR Builder** | User-level `makepkg` (libgit2 clone, `.SRCINFO` parse, GPG key import); built `.pkg.tar.zst` installed via monarch-helper. |
 | **Flatpak** | First-class install/remove/update via Flathub API and Flatpak CLI. |
-| **Host-Adaptive Repos** | Repositories discovered from ALPM/`pacman.conf`; only `chaotic-aur` is toggled via drop-in; Manjaro blocks chaotic-aur. |
+| **Host-Adaptive Repos** | Repositories discovered from ALPM/`pacman.conf`; discovery visibility is toggle-driven in app state; Manjaro blocks Chaotic by default. |
 | **Silent Guard** | Batch transactions (Refresh + Upgrade + Install/Remove) in one helper invocation; Polkit `auth_admin_keep` reduces password prompts. |
 | **Safe Guard** | Update-before-install; no silent full upgrade on stale DB; IgnorePkg/IgnoreGroup respected in helper. |
 | **Liquid UI** | Min window 800×600; responsive grids (1–4 cols); mobile bottom nav; stacked package details on narrow viewports. |
@@ -34,62 +34,37 @@ MonARCH Store is a **Host-Adaptive, Universal** software center for Arch-based s
 
 ## 2. Data Pipeline Map: Search Query Flow
 
-End-to-end path of a search from the React SearchBar to the Rust backend and back:
+End-to-end path of a search in the current GTK product:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│ FRONTEND (React)                                                                  │
+│ FRONTEND (GTK)                                                                    │
 ├─────────────────────────────────────────────────────────────────────────────────┤
-│  SearchBar.tsx                                                                    │
-│    value={searchQuery}  onChange={setSearchQuery}                                 │
-│         │                                                                          │
-│         ▼                                                                          │
-│  App.tsx: useEffect([searchQuery])                                                │
-│    300ms debounce → invoke('search_packages', { query: searchQuery })            │
-│    searchRequestIdRef guards stale responses → setPackages(results)               │
-│         │                                                                          │
-│         ▼                                                                          │
-│  SearchPage.tsx  (or inline when activeTab === 'search')                          │
-│    packages.map(pkg => <PackageCard pkg={pkg} onClick={setSelectedPackage} />)     │
+│  monarch-gtk controllers/pages request Home, Search, Details, Installed, and      │
+│  Updates payloads from monarch-core, then render those hydrated package models.   │
 └─────────────────────────────────────────────────────────────────────────────────┘
                                     │
-                                    │ Tauri IPC (invoke)
+                                    │ GTK/core command bridge
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│ BACKEND (monarch-gui, Rust)                                                      │
+│ BACKEND (monarch-core, Rust)                                                      │
 ├─────────────────────────────────────────────────────────────────────────────────┤
-│  commands/search.rs :: search_packages()                                         │
-│    1. if query.len() < 2 → return Ok(Vec::new())                                │
-│    2. tokio::join!(                                                               │
-│         repo_manager.get_packages_matching(&query, distro),  // ALPM read         │
-│         aur_api::search_aur(&query),                          // AUR RPC          │
-│         flathub.search_flathub(&query)                         // Flathub API      │
-│       )                                                                           │
-│    3. middleware::aggregation::merge_search_results(...)  ← THE MERGER            │
-│       - package_map keyed by utils::canonical_merge_key(name, app_id)            │
-│       - Order: Official inserted first, then Flatpak (merge into existing or new), │
-│         then AUR (merge or insert)                                                │
-│    4. Friendly labels: labels::get_friendly_label(source.id, distro_id_str)      │
-│    5. Relevance sort: calculate_relevance() + popular_apps boost                  │
-│    6. Ok(results)                                                                 │
+│  catalog/bootstrap/registry models produce canonical package identities, merged   │
+│  sources, storefront rails, category payloads, and detail payloads.               │
 └─────────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     │ Return Vec<Package>
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│ FRONTEND (React - 'Dumb View')                                                    │
+│ FRONTEND (GTK - 'Dumb View')                                                      │
 ├─────────────────────────────────────────────────────────────────────────────────┤
-│  PackageCard.tsx                                                                  │
-│    - Renders fully-hydrated `Package` object from `bindings.ts`                   │
-│    - No background metadata fetching (Legacy hooks DELETED)                       │
-│    - resolveIconUrl handles sanitized backend base64                              │
-│  PackageDetailsFresh.tsx (on click)                                               │
-│    - fetchMetadata(pkgName) → direct command call                                 │
-│    - source selector based on backend `available_sources`                         │
+│  package_card.rs renders hydrated `Package` payloads                              │
+│  package_detail.rs renders hydrated `FullPackageDetails` payloads                 │
+│  Source switching and card/detail composition remain backend-driven               │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Summary:** Search is triggered by `searchQuery` state; after 300ms debounce the frontend calls `search_packages`. The backend runs ALPM, AUR, and Flathub in parallel, then **merge_search_results** (the "Merger") deduplicates by **canonical_merge_key** (first-segment rule for multi-segment names + app_id via known map; see `docs/UNIVERSAL_DATA_ENGINE.md`). Official > Flatpak > AUR priority; each result carries **available_sources**. After dedup, one proper display name per app. The UI shows one card per logical app with a "best" source badge and optional "+N sources."
+**Summary:** GTK asks Iron Core for search/category/storefront/detail payloads. The backend aggregates ALPM, AUR, and Flathub data, deduplicates by canonical identity, orders sources deterministically, and returns backend-owned `available_sources` and detail facts.
 
 ---
 
@@ -105,11 +80,11 @@ End-to-end path of a search from the React SearchBar to the Rust backend and bac
 ### 3.2 Search Aggregation & the Merger (`middleware/aggregation.rs` + `utils.rs`)
 
 - **Parallel fetch:** `repo_manager.get_packages_matching`, `aur_api::search_aur`, `flathub.search_flathub` via `tokio::join!`.
-- **Merge (middleware/aggregation.rs :: merge_search_results):**
+- **Merge (middleware/aggregation.rs):**
   - **Official** first: key = `canonical_merge_key(&p.name, app_id)`; insert into `package_map`.
   - **Flatpak:** match by direct_key, canonical_key, strip_package_suffix, or flathub app_id mapping; if match → append Flatpak to existing `available_sources`; else insert new Package with source Flatpak.
   - **AUR:** key = `canonical_merge_key`; if key exists → append AUR to `available_sources`; else insert.
-- **Canonical key (`utils.rs`):** App_id path uses known map + **first-segment rule** when result is multi-segment; name path strips **VARIANT_SUFFIXES** then uses first segment for multi-segment names (e.g. `heroic-games-launcher` and `heroic` → key `heroic`). One proper display name per app via `preferred_display_name` or `to_pretty_name`. See `docs/UNIVERSAL_DATA_ENGINE.md`.
+- **Canonical key (`utils.rs`):** App-id mapping first; packaging suffixes stripped; channel suffixes (`-canary`, `-beta`, `-nightly`, `-ptb`, etc.) preserved as distinct identities.
 - **merge_and_deduplicate (utils.rs):** Used for get_packages_by_names, get_trending, category pagination. Groups by app_id or strip_package_suffix(name); priority swap so higher-priority source becomes primary and lower goes to `alternatives`.
 
 ### 3.3 Helper Client — "Silent Guard" (`helper_client.rs`)
@@ -131,7 +106,9 @@ End-to-end path of a search from the React SearchBar to the Rust backend and bac
 
 ---
 
-## 4. Component Hierarchy (Frontend)
+## 4. Legacy frontend hierarchy reference
+
+> Historical note: the section below documents the older Tauri/React frontend structure for parity reference. The active frontend is `monarch-gtk`, which renders the same Iron Core package models through GTK pages and controllers.
 
 | Component | Responsibility |
 |-----------|----------------|
@@ -141,16 +118,16 @@ End-to-end path of a search from the React SearchBar to the Rust backend and bac
 | **SearchBar** | Controlled input; 300ms debounce is in App.tsx useEffect. |
 | **SearchPage** | Renders search results (packages), loading state; grid of PackageCards. |
 | **HomePage** | HeroSection, CategoryGrid, TrendingSection, Essentials. |
-| **PackageCard** | Single package: icon (usePackageMetadata + resolveIconUrl), RepoBadge (best source), "+N sources", rating (usePackageRating), favorites, version/variant selector (ChevronDown, spacing to avoid edge clipping). When only source is Chaotic-AUR and not enabled: "Setup Required" badge and "Configure Source" (opens Settings) via useChaoticStatus. |
+| **PackageCard** | Single package card with backend-provided icon/metadata, deterministic best-source badge, and "+N sources". Includes fallback hydration by canonical ID/name if a card payload is briefly missing. |
 | **PackageDetailsFresh** | Detail view: variants/source selector (card primary always included; get_package_variants + available_sources; selection prefers card source). When selected source is Chaotic-AUR and not enabled: "Configure Source" (navigate to Settings). Install/uninstall, reviews, PKGBUILD, screenshots. **Stacked layout:** header/actions `flex-col lg:flex-row`; icon + text + actions stack on narrow viewports. |
 | **SourcesTab** | Host system (read-only), Chaotic-AUR "traffic light" (Active/Inactive/Blocked); inactive toggle runs prepare_chaotic_components and opens "Final Step" modal (edit pacman.conf snippet, Copy, Check Again). Flatpak/AUR toggles; useDistro + useSettings (isAurEnabled, isFlatpakEnabled, repos, toggleRepo, toggleAur, toggleFlatpak). |
-| **usePackageMetadata** | Fetches icon/AppStream by pkgName (and optional upstreamUrl); 5-min cache; invoke('get_metadata'). |
+| **internal_store.ts** | Frontend cache that stores backend-hydrated package records by canonical/list key; backend payload wins on merges to prevent stale source drift. |
 | **useSettings** | Repo state from get_repo_states; isAurEnabled, isFlatpakEnabled, toggleAur, toggleFlatpak, toggleRepo; sync with backend. |
 | **OnboardingModal** | Multi-step wizard: (1) Universal Welcome (distro, philosophy), (2) Source Manager (Flatpak, AUR, Chaotic-AUR toggles; Chaotic disabled on Manjaro), (3) Chaotic-AUR Setup conditional—"Install Keys & Mirrors" → "Final Step" modal (pacman.conf snippet, Copy, Check Again), (4) Security & Privacy (session password, Reduce prompts, Telemetry), (5) Theme (Light/Dark, accent), (6) Confirmation. Steps 4 or 5 depending on Chaotic compatibility; framer-motion transitions. |
 | **useChaoticStatus** | Hook: compatible, chaotic_in_alpm, enabled, isOnlyChaoticSource(pkg). Used by PackageCard and PackageDetailsFresh for "Configure Source" when Chaotic-only and not enabled. |
 | **RepoSelector** | AUR entries show pkg_name (e.g. "AUR (vlc-git)"); "Other repository" shows repo id in parentheses. isSameSource handles string vs object PackageSource for correct selection. |
 
-**Routing:** No React Router. App uses `activeTab` and `selectedPackage` / `selectedCategory` / `viewAll` to show: Onboarding, PackageDetails, CategoryView, ViewAll (essentials/trending), or main content (SearchPage, HomePage, InstalledPage, UpdatesPage, SettingsPage).
+**Routing:** Historical Tauri note: the legacy frontend used local state routing rather than React Router.
 
 ---
 
@@ -158,10 +135,10 @@ End-to-end path of a search from the React SearchBar to the Rust backend and bac
 
 | Item | Status | Notes |
 |------|--------|-------|
-| **Version sync** | ✅ | package.json, tauri.conf.json, monarch-gui/Cargo.toml, monarch-helper/Cargo.toml = **0.4.5-alpha**. |
+| **Version sync** | ✅ | package.json, tauri.conf.json, monarch-gui/Cargo.toml, monarch-helper/Cargo.toml = **0.4.8-alpha**. |
 | **Window constraints** | ✅ | tauri.conf.json: minWidth 800, minHeight 600. |
 | **CSP** | ✅ | connect-src includes api.archlinux.org, supabase, aptabase, chaotic, cachyos, raw.githubusercontent.com. |
-| **Permissions** | ✅ | Helper path /usr/lib/monarch-store/monarch-helper; command via file; capabilities/permissions for Tauri commands. |
+| **Permissions** | ✅ | Helper path /usr/lib/monarch-store/monarch-helper; command via file; capabilities/permissions for frontend/backend command surfaces. |
 | **Dockerfile** | ✅ | Ubuntu 22.04; ca-certificates; libalpm built from pacman v7.1.0; Node 20; Rust; libwebkit2gtk, librsvg, etc. |
 | **Tailwind** | ✅ | Tailwind 4 (@tailwindcss/postcss); no tailwind.config.js in repo (Tailwind 4 uses CSS-first config). |
 
@@ -194,7 +171,7 @@ End-to-end path of a search from the React SearchBar to the Rust backend and bac
 |------|--------|
 | **Flatpak in get_packages_by_names** | get_packages_by_names does repo + chaotic + AUR; no Flathub batch. Package details still get Flatpak via get_package_variants. Acceptable. |
 | **Error handling in merge_search_results** | unwrap_or_default on official_res, aur_res, flatpak_res; one failing source doesn’t kill search. Good. |
-| **usePackageMetadata skip** | skipMetadataFetch used by PackageCard to avoid double fetch when data is pre-filled; not all call sites pass it. Minor. |
+| **Card fallback hydration loops** | PackageCard can trigger canonical/name recovery when payloads are missing; ensure fallback remains deduped and bounded to avoid repeated bursts. |
 | **SourcesTab chaotic toggle** | toggleRepo(chaoticRepo.id) when chaotic not in pacman.conf may no-op; UI disables with tooltip "Not available in /etc/pacman.conf." Correct. |
 
 ### 6.4 Security / Protocol
@@ -214,7 +191,7 @@ End-to-end path of a search from the React SearchBar to the Rust backend and bac
 |-----|---------|
 | README.md | Product overview, features, install. |
 | ARCHITECTURE.md | Host-Adaptive, Unified Search, Iron Core, Liquid UI. |
-| RELEASE_NOTES.md | v0.4.5-alpha and prior changelogs. |
+| RELEASE_NOTES.md | v0.4.8-alpha and prior changelogs. |
 | CONTRIBUTING.md | PR rules, styleguides, repo safety (no pacman -Sy alone, SafeUpdateTransaction). |
 | docs/DEVELOPER.md | Single reference: setup, structure, helper protocol, versioning. |
 | docs/ERROR_SERVICE.md | ErrorService API, severity, ClassifiedError. |
@@ -228,9 +205,9 @@ End-to-end path of a search from the React SearchBar to the Rust backend and bac
 
 ---
 
-## 8. Milestone Archive: v0.4.7-alpha (Rich Metadata & Stability)
+## 8. Milestone Archive: v0.4.8-alpha (Stabilization & Source Truth)
 
-The v0.4.7-alpha release represents a significant hardening of the existing "Iron Core" architecture:
+The v0.4.8-alpha stabilization cycle hardens the existing "Iron Core" architecture:
 
 ### 8.1 FFI Stability (Bulletproof ALPM)
 - **Problem:** Frequent `signal 6 (SIGABRT)` panics during large transactions (e.g. `linux` kernel updates) caused by unsafe pointer access in ALPM progress callbacks.
@@ -243,5 +220,11 @@ The v0.4.7-alpha release represents a significant hardening of the existing "Iro
 ### 8.3 Registry Persistence
 - **Schema Migration:** Added `long_description` and `screenshots` columns to the local registry DB.
 - **Performance:** Optimized `bulk_upsert_packages` to prevent UI lockup while syncing 3000+ AppStream entries.
+
+### 8.4 Catalog and source-truth hardening
+- Unified catalog builder for discovery/search/details seed paths.
+- Deterministic source ordering across backend and frontend.
+- Installed-source classification moved to ALPM/localdb + syncdb matching to avoid false source labels.
+- Discovery source gating aligned with Settings toggles.
 
 **Report generated from full codebase review. Use for onboarding, audits, and planning.**

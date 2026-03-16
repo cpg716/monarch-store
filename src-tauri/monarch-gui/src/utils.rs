@@ -148,11 +148,144 @@ pub fn truncate_description_for_ui(s: &str, max_chars: usize) -> String {
 /// Strip HTML and truncate descriptions on a list of packages (for search, category, trending).
 const DESC_MAX_UI: usize = 200;
 
+fn package_primary_action(pkg: &crate::models::Package) -> (&'static str, &'static str) {
+    if pkg.installed {
+        ("launch", "Open")
+    } else {
+        ("install", "Install")
+    }
+}
+
+fn package_source_summary(pkg: &crate::models::Package) -> String {
+    if let Some(sources) = &pkg.available_sources {
+        if sources.len() > 1 {
+            return format!("{} sources available", sources.len());
+        }
+    }
+
+    if pkg.is_optimized.unwrap_or(false) {
+        return format!("Optimized for {}", pkg.source.label);
+    }
+
+    if !pkg.source.label.trim().is_empty() {
+        return pkg.source.label.clone();
+    }
+
+    if !pkg.source.id.trim().is_empty() {
+        return pkg.source.id.clone();
+    }
+
+    "Available now".to_string()
+}
+
+fn package_trust_level(pkg: &crate::models::Package) -> &'static str {
+    match pkg.source.source_type.as_str() {
+        "flatpak" => "sandboxed",
+        "aur" => "community",
+        "repo" => {
+            let id = pkg.source.id.to_lowercase();
+            if matches!(id.as_str(), "core" | "extra" | "community" | "multilib" | "official")
+                || id.contains("manjaro")
+                || id.contains("cachyos")
+                || id.contains("garuda")
+                || id.contains("endeavour")
+            {
+                "official"
+            } else {
+                "third_party"
+            }
+        }
+        _ => "third_party",
+    }
+}
+
+fn package_security_summary(pkg: &crate::models::Package) -> &'static str {
+    match pkg.source.source_type.as_str() {
+        "flatpak" => "Sandboxed package with portal-based access.",
+        "aur" => "Community build script; review PKGBUILD before installing.",
+        _ => "Native package with direct system access.",
+    }
+}
+
+pub fn apply_package_ui_defaults(pkg: &mut crate::models::Package) {
+    if pkg
+        .display_title
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        let display_name = pkg
+            .display_name
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| to_pretty_name(&pkg.name));
+        pkg.display_title = Some(display_name);
+    }
+
+    let (action, label) = package_primary_action(pkg);
+    if pkg
+        .primary_action
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        pkg.primary_action = Some(action.to_string());
+    }
+    if pkg
+        .primary_action_label
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        pkg.primary_action_label = Some(label.to_string());
+    }
+
+    if pkg
+        .source_summary
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        pkg.source_summary = Some(package_source_summary(pkg));
+    }
+
+    if pkg
+        .trust_level
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        pkg.trust_level = Some(package_trust_level(pkg).to_string());
+    }
+
+    if pkg
+        .security_summary
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        pkg.security_summary = Some(package_security_summary(pkg).to_string());
+    }
+
+    if pkg.last_modified_unix.is_none() {
+        pkg.last_modified_unix = pkg.last_modified;
+    }
+    if pkg.download_size_bytes.is_none() {
+        pkg.download_size_bytes = pkg.download_size;
+    }
+    if pkg.installed_size_bytes.is_none() {
+        pkg.installed_size_bytes = pkg.installed_size;
+    }
+}
+
 pub fn prepare_package_descriptions_for_ui(packages: &mut [crate::models::Package]) {
     for pkg in packages.iter_mut() {
         if !pkg.description.is_empty() {
             pkg.description = truncate_description_for_ui(&pkg.description, DESC_MAX_UI);
         }
+        apply_package_ui_defaults(pkg);
     }
 }
 
@@ -298,6 +431,37 @@ pub fn strip_package_suffix(name: &str) -> &str {
 
 /// Known Flatpak app_id -> canonical package name so the same app from AUR, Flatpak, and Chaotic
 /// merges into one card. Maps app_id (e.g. com.google.Chrome) to repo/AUR package name (e.g. google-chrome).
+/// Reverse mapping: maps canonical/repo names to Flathub App IDs for metadata proxying.
+pub fn canonical_to_flathub_id(canonical: &str) -> Option<String> {
+    let c = canonical.trim().to_lowercase();
+    let map: &[(&str, &str)] = &[
+        ("google-chrome", "com.google.Chrome"),
+        ("firefox", "org.mozilla.firefox"),
+        ("brave", "com.brave.Browser"),
+        ("spotify", "com.spotify.Client"),
+        ("discord", "com.discordapp.Discord"),
+        ("telegram-desktop", "org.telegram.desktop"),
+        ("signal-desktop", "org.signal.Signal"),
+        ("vlc", "org.videolan.VLC"),
+        ("mpv", "io.mpv.Mpv"),
+        ("obs-studio", "com.obsproject.Studio"),
+        ("gimp", "org.gimp.GIMP"),
+        ("kdenlive", "org.kde.kdenlive"),
+        ("code", "com.visualstudio.code"),
+        ("visual-studio-code", "com.visualstudio.code"),
+        ("steam", "com.valvesoftware.Steam"),
+        ("heroic-games-launcher", "com.heroicgameslauncher.hgl"),
+        ("bitwarden", "com.bitwarden.desktop"),
+        ("keepassxc", "org.keepassxc.KeePassXC"),
+    ];
+    for (k, v) in map {
+        if c == *k {
+            return Some((*v).to_string());
+        }
+    }
+    None
+}
+
 pub fn known_app_id_to_canonical(app_id: &str) -> Option<String> {
     let id = app_id.trim().to_lowercase();
     let map: &[(&str, &str)] = &[
@@ -308,6 +472,7 @@ pub fn known_app_id_to_canonical(app_id: &str) -> Option<String> {
         ("com.brave.browser", "brave"),
         ("com.microsoft.edge", "microsoft-edge"),
         ("com.vivaldi.vivaldi", "vivaldi"),
+        ("io.gitlab.librewolf-community", "librewolf"),
         // Media / comms
         ("com.spotify.client", "spotify"),
         ("com.discordapp.discord", "discord"),
@@ -374,12 +539,14 @@ pub fn known_app_id_to_canonical(app_id: &str) -> Option<String> {
 /// (e.g. "heroic" -> "Heroic Game Launcher" instead of sometimes "Heroic"). Display-only; merge key stays generic.
 fn preferred_display_name(canonical_key: &str) -> Option<&'static str> {
     match canonical_key {
+        "heroicgameslauncher" => Some("Heroic Game Launcher"),
         "heroic" => Some("Heroic Game Launcher"),
+        "obsstudio" => Some("OBS Studio"),
         "obs" => Some("OBS Studio"),
-        "visual" | "code" => Some("Visual Studio Code"),
+        "visualstudiocode" | "code" => Some("Visual Studio Code"),
         "libreoffice" => Some("LibreOffice"),
         "brave" => Some("Brave Browser"),
-        "chrome" => Some("Google Chrome"),
+        "googlechrome" | "chrome" => Some("Google Chrome"),
         "edge" => Some("Microsoft Edge"),
         "retroarch" => Some("RetroArch"),
         _ => None,
@@ -396,14 +563,18 @@ pub fn get_preferred_display_name(canonical_key: &str) -> Option<&'static str> {
 /// Used for AUR search, Chaotic filter, and repo search so one card shows all sources.
 pub fn aur_search_expansion_terms(query: &str) -> Vec<&'static str> {
     let q = query.trim().to_lowercase();
+    // Normalize query to alphanumeric for mapping (so "heroic-games-launcher" and "heroicgameslauncher" both match)
+    let mut q_norm = q.clone();
+    q_norm.retain(|c| c.is_ascii_alphanumeric());
+
     if q.is_empty() {
         return vec![];
     }
-    match q.as_str() {
-        "heroic" => vec!["heroic-games-launcher"],
-        "obs" => vec!["obs-studio"],
-        "code" | "vscode" => vec!["visual-studio-code"],
-        "chrome" | "google" => vec!["google-chrome"],
+    match q_norm.as_str() {
+        "heroic" | "heroicgameslauncher" => vec!["heroic-games-launcher"],
+        "obs" | "obsstudio" => vec!["obs-studio"],
+        "code" | "vscode" | "visualstudiocode" => vec!["visual-studio-code"],
+        "chrome" | "google" | "googlechrome" => vec!["google-chrome"],
         _ => vec![],
     }
 }
@@ -412,40 +583,80 @@ pub fn aur_search_expansion_terms(query: &str) -> Vec<&'static str> {
 /// So one card shows Official + CachyOS + Flatpak even when CachyOS names the pkg discord_arch_electron.
 pub fn canonical_to_repo_lookup_names(canonical: &str) -> Vec<&'static str> {
     let c = canonical.trim().to_lowercase();
+    let mut c_norm = c.clone();
+    c_norm.retain(|c| c.is_ascii_alphanumeric());
+
     if c.is_empty() {
         return vec![];
     }
-    match c.as_str() {
-        "discord" => vec![
-            "discord",
-            "discord_arch_electron",
-            "discord-canary",
-            "discord-ptb",
-        ],
-        "heroic" => vec!["heroic-games-launcher", "heroic-games-launcher-bin"],
-        "obs" => vec!["obs-studio"],
-        "code" | "visual" => vec!["visual-studio-code", "code"],
-        "telegram" => vec!["telegram-desktop"],
-        "signal" => vec!["signal-desktop"],
-        "google" => vec!["google-chrome", "google-chrome-stable"],
-        "microsoft" | "edge" => vec![
+    match c_norm.as_str() {
+        "discord" | "discordarchelectron" => vec!["discord", "discord_arch_electron"],
+        "discordcanary" => vec!["discord-canary"],
+        "discordptb" => vec!["discord-ptb"],
+        "heroicgameslauncher" => vec!["heroic-games-launcher", "heroic-games-launcher-bin"],
+        "obsstudio" => vec!["obs-studio"],
+        "code" | "visualstudiocode" => vec!["visual-studio-code", "code"],
+        "telegram" | "telegramdesktop" => vec!["telegram-desktop"],
+        "signal" | "signaldesktop" => vec!["signal-desktop"],
+        "google" | "googlechrome" => vec!["google-chrome", "google-chrome-stable"],
+        "googlechromecanary" => vec!["google-chrome-canary"],
+        "microsoftedge" => vec![
             "microsoft-edge-stable",
             "microsoft-edge-dev",
             "microsoft-edge",
         ],
         "libreoffice" => vec!["libreoffice-fresh", "libreoffice-still"],
         "vlc" => vec!["vlc"],
-        "steam" => vec!["steam", "steam-native-runtime"],
-        "minecraft" => vec!["minecraft-launcher", "poly-mc-launcher", "prism-launcher"],
-        "proton" => vec!["proton-vpn-gtk", "proton-vpn"],
-        "linux" => vec!["linux-cachyos", "linux"],
-        "cachyos" => vec!["cachyos-settings"],
-        "simplenote" => vec!["simplenote-electron-bin"],
+        "steam" | "steamnative" => vec!["steam", "steam-native-runtime"],
+        "minecraft" | "minecraftlauncher" | "prism" | "prismlauncher" => {
+            vec!["minecraft-launcher", "poly-mc-launcher", "prism-launcher"]
+        }
+        "proton" | "protonvpn" => vec!["proton-vpn-gtk", "proton-vpn"],
+        "linux" | "linuxcachyos" => vec!["linux-cachyos", "linux"],
+        "cachyos" | "cachyossettings" => vec!["cachyos-settings"],
+        "simplenote" | "simplenoteelectron" => vec!["simplenote-electron-bin"],
         "bitwarden" => vec!["bitwarden"],
         "keepass" | "keepassxc" => vec!["keepassxc"],
         "thunderbird" => vec!["thunderbird"],
         _ => vec![],
     }
+}
+
+pub fn is_package_or_alias_installed(name: &str) -> bool {
+    if crate::alpm_read::is_package_installed(name) {
+        return true;
+    }
+
+    let canonical = canonical_merge_key(name, None);
+    for alias in canonical_to_repo_lookup_names(&canonical) {
+        if alias != name && crate::alpm_read::is_package_installed(alias) {
+            return true;
+        }
+    }
+
+    false
+}
+
+pub fn installed_source_for_package(name: &str, app_id: Option<&str>) -> Option<crate::models::PackageSource> {
+    let canonical = canonical_merge_key(name, app_id);
+    let mut candidates = vec![name.to_string()];
+
+    for alias in canonical_to_repo_lookup_names(&canonical) {
+        let alias_name = alias.to_string();
+        if !candidates.contains(&alias_name) {
+            candidates.push(alias_name);
+        }
+    }
+
+    for candidate in candidates {
+        if let Some(pkg) = crate::alpm_read::get_package_native(&candidate) {
+            if pkg.installed {
+                return Some(pkg.source);
+            }
+        }
+    }
+
+    None
 }
 
 /// Returns a canonical key for merge deduplication. Variants (firefox, firefox-developer-edition,
@@ -455,12 +666,164 @@ pub fn canonical_to_repo_lookup_names(canonical: &str) -> Vec<&'static str> {
 /// 2. Fallback to package name with aggressive suffix stripping (-bin, -git, etc.).
 ///    For multi-segment names we use the first segment as key when valid (so "heroic" and "heroic-games-launcher" merge without a per-app list).
 pub fn canonical_merge_key(name: &str, app_id: Option<&str>) -> String {
-    let raw_key = canonical_merge_key_raw(name, app_id);
-    let mut final_key = raw_key;
+    let mut key = canonical_merge_key_raw(name, app_id).to_lowercase();
     // STRICT IRON CORE RULE: Retain ONLY alphanumeric, stripping dots, hyphens, underscores.
     // This ensures parity with frontend getPackageListKey (which uses replace(/[^a-z0-9]/g, '')).
-    final_key.retain(|c| c.is_ascii_alphanumeric());
-    final_key.to_lowercase()
+    key.retain(|c| c.is_ascii_alphanumeric());
+    key
+}
+
+/// Returns a "clean" canonical key that preserves hyphens/dots for search and grouping logic.
+/// Matches the result of canonical_merge_key_raw but explicitly lowercased.
+pub fn canonical_search_base(name: &str, app_id: Option<&str>) -> String {
+    canonical_merge_key_raw(name, app_id).to_lowercase()
+}
+
+pub fn finalize_package_contract(pkg: &mut models::Package) {
+    if pkg.canonical_id.trim().is_empty() {
+        pkg.canonical_id = canonical_merge_key(&pkg.name, pkg.app_id.as_deref());
+    } else {
+        pkg.canonical_id = canonical_merge_key(&pkg.canonical_id, None);
+    }
+
+    pkg.app_id = pkg.app_id.as_ref().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    let mut normalized_sources = Vec::new();
+    let mut seen_sources = std::collections::HashSet::new();
+    let mut push_source = |source: models::PackageSource| {
+        let key = format!(
+            "{}:{}:{}",
+            source.source_type,
+            source.id,
+            source.package_name.clone().unwrap_or_default()
+        );
+        if seen_sources.insert(key) {
+            normalized_sources.push(source);
+        }
+    };
+
+    if let Some(sources) = pkg.available_sources.take() {
+        for source in sources {
+            push_source(source);
+        }
+    }
+    push_source(pkg.source.clone());
+    pkg.available_sources = Some(normalized_sources);
+
+    if let Some(primary) = pkg
+        .available_sources
+        .as_ref()
+        .and_then(|sources| {
+            sources.iter().find(|source| {
+                source.source_type == pkg.source.source_type
+                    && source.id == pkg.source.id
+                    && source.package_name == pkg.source.package_name
+            })
+        })
+        .cloned()
+    {
+        pkg.source = primary;
+    } else if let Some(primary) = pkg
+        .available_sources
+        .as_ref()
+        .and_then(|sources| sources.first())
+        .cloned()
+    {
+        pkg.source = primary;
+    }
+
+    if let Some(existing) = pkg.installed_sources.as_mut() {
+        existing.retain(|value| !value.trim().is_empty());
+        existing.sort();
+        existing.dedup();
+        if existing.is_empty() {
+            pkg.installed_sources = None;
+        }
+    }
+
+    if pkg
+        .installed_sources
+        .as_ref()
+        .map(|sources| !sources.is_empty())
+        .unwrap_or(false)
+    {
+        pkg.installed = true;
+    }
+
+    if pkg.installed && pkg.installed_sources.is_none() {
+        let installed_name = pkg
+            .source
+            .package_name
+            .clone()
+            .or_else(|| pkg.app_id.clone())
+            .unwrap_or_else(|| pkg.name.clone());
+        pkg.installed_sources = Some(vec![installed_name]);
+    }
+
+    if pkg.launch_target.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+        let fallback = if pkg.source.source_type == "flatpak" {
+            pkg.app_id.clone().unwrap_or_else(|| pkg.name.clone())
+        } else {
+            pkg.source
+                .package_name
+                .clone()
+                .unwrap_or_else(|| pkg.name.clone())
+        };
+        pkg.launch_target = Some(fallback);
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        if pkg.canonical_id.trim().is_empty() {
+            log::error!(
+                "[IRON-CORE] package left finalizer without canonical_id: name={} app_id={:?}",
+                pkg.name,
+                pkg.app_id
+            );
+        }
+
+        if let Some(sources) = &pkg.available_sources {
+            let mut unique = std::collections::HashSet::new();
+            for source in sources {
+                let key = format!(
+                    "{}:{}:{}",
+                    source.source_type,
+                    source.id,
+                    source.package_name.clone().unwrap_or_default()
+                );
+                if !unique.insert(key) {
+                    log::warn!(
+                        "[IRON-CORE] duplicate source slot for canonical_id={}",
+                        pkg.canonical_id
+                    );
+                }
+            }
+            let source_present = sources.iter().any(|source| {
+                source.source_type == pkg.source.source_type
+                    && source.id == pkg.source.id
+                    && source.package_name == pkg.source.package_name
+            });
+            if !source_present {
+                log::warn!(
+                    "[IRON-CORE] primary source missing from available_sources for canonical_id={}",
+                    pkg.canonical_id
+                );
+            }
+        }
+    }
+}
+
+pub fn finalize_packages_contract(packages: &mut [models::Package]) {
+    for pkg in packages {
+        finalize_package_contract(pkg);
+    }
 }
 
 fn canonical_merge_key_raw(name: &str, app_id: Option<&str>) -> String {
@@ -481,7 +844,7 @@ fn canonical_merge_key_raw(name: &str, app_id: Option<&str>) -> String {
                 // If tail is too generic (desktop, git, bin) or too short, move back one segment
                 let is_generic = matches!(
                     t.as_str(),
-                    "desktop" | "git" | "bin" | "nightly" | "beta" | "stable"
+                    "desktop" | "git" | "bin" | "stable"
                 );
                 if t.len() < 3 || is_generic {
                     let segments: Vec<&str> = id_trim
@@ -512,31 +875,17 @@ fn canonical_merge_key_raw(name: &str, app_id: Option<&str>) -> String {
         }
     }
 
-    // 3. Fallback to package name with aggressive suffix stripping
+    // 3. Fallback to package name with packaging suffix stripping only.
+    // Channel/release variants (beta/canary/nightly/dev/ptb/esr/developer-edition/insider)
+    // are preserved as distinct product identities.
     let mut clean_name = name_trim.to_lowercase();
     let variant_suffixes = [
         "-bin",
         "-git",
-        "-flatpak",
         "-official",
         "-repo",
-        "-beta",
-        "-nightly",
         "-stable",
         "-appimage",
-        "-electron",
-        "-developer-edition",
-        "-esr",
-        "-dev",
-        "-wayland",
-        "-x11",
-        "-cn",
-        "-fresh",
-        "-still",
-        "-native",
-        "-runtime",
-        "-lts",
-        "-edge",
         ".desktop",
         "-desktop",
         "-hg",
@@ -563,53 +912,6 @@ fn canonical_merge_key_raw(name: &str, app_id: Option<&str>) -> String {
     clean_name
 }
 
-/// Final search/category pass: one package per canonical id. Normalizes canonical_id to lowercase and
-/// merges any duplicates (e.g. same app from different code paths). Use after all other dedupes.
-pub fn deduplicate_by_canonical_id_final(packages: Vec<models::Package>) -> Vec<models::Package> {
-    use std::collections::HashMap;
-    let mut by_cid: HashMap<String, models::Package> = HashMap::new();
-    for mut pkg in packages {
-        let cid = if pkg.canonical_id.trim().is_empty() {
-            canonical_merge_key(&pkg.name, pkg.app_id.as_deref())
-        } else {
-            pkg.canonical_id.clone()
-        };
-        let cid = cid.trim().to_lowercase();
-        if cid.is_empty() {
-            continue;
-        }
-        pkg.canonical_id = cid.clone();
-        if let Some(existing) = by_cid.get_mut(&cid) {
-            if let Some(ref sources) = pkg.available_sources {
-                let existing_sources = existing.available_sources.get_or_insert_with(Vec::new);
-                for s in sources {
-                    if !existing_sources
-                        .iter()
-                        .any(|e| e.id == s.id && e.source_type == s.source_type)
-                    {
-                        existing_sources.push(s.clone());
-                    }
-                }
-            }
-            if existing.display_name.as_ref().is_none_or(|s| s.is_empty())
-                && pkg.display_name.is_some()
-            {
-                existing.display_name = pkg.display_name.clone();
-            }
-            if existing.name.contains('.') && !pkg.name.contains('.') {
-                existing.name = pkg.name.clone();
-                existing.display_name = pkg.display_name.or(existing.display_name.clone());
-            }
-            if existing.app_id.is_none() && pkg.app_id.is_some() {
-                existing.app_id = pkg.app_id.clone();
-            }
-        } else {
-            by_cid.insert(cid, pkg);
-        }
-    }
-    by_cid.into_values().collect()
-}
-
 /// Deduplicates packages by canonical_merge_key and merges available_sources.
 /// Use after merge_search_results so the same app (e.g. Discord from AUR + Flatpak) never appears twice.
 /// Prefers keeping the package that has available_sources (unified card) so the UI shows a friendly name and dropdown.
@@ -620,14 +922,32 @@ pub fn deduplicate_by_canonical_key(packages: Vec<models::Package>) -> Vec<model
         let key = canonical_merge_key(&pkg.name, pkg.app_id.as_deref());
         if let Some(existing) = by_key.get_mut(&key) {
             // Merge available_sources from both
-            if let Some(ref sources) = pkg.available_sources {
-                let existing_sources = existing.available_sources.get_or_insert_with(Vec::new);
-                for s in sources {
-                    if !existing_sources
-                        .iter()
-                        .any(|e| e.id == s.id && e.source_type == s.source_type)
-                    {
-                        existing_sources.push(s.clone());
+            let incoming_sources = pkg
+                .available_sources
+                .clone()
+                .unwrap_or_else(|| vec![pkg.source.clone()]);
+            let existing_sources = existing.available_sources.get_or_insert_with(Vec::new);
+
+            // Ensure existing's primary source is also in its list if it was empty
+            if existing_sources.is_empty() {
+                existing_sources.push(existing.source.clone());
+            }
+
+            for s in incoming_sources {
+                if !existing_sources.iter().any(|e| {
+                    e.id == s.id
+                        && e.source_type == s.source_type
+                        && e.package_name == s.package_name
+                }) {
+                    existing_sources.push(s.clone());
+                } else if let Some(existing_src) = existing_sources.iter_mut().find(|e| {
+                    e.id == s.id
+                        && e.source_type == s.source_type
+                        && e.package_name == s.package_name
+                }) {
+                    // Same source slot: keep the newest version.
+                    if s.version > existing_src.version {
+                        *existing_src = s.clone();
                     }
                 }
             }
@@ -802,16 +1122,22 @@ mod tests {
 
     #[test]
     fn test_canonical_merge_key_variants() {
-        // Variants map to same canonical key for merge deduplication (hyphens/underscores normalized so AUR and Flatpak match)
+        // Packaging variants map to same canonical key for merge deduplication.
         assert_eq!(canonical_merge_key("firefox", None), "firefox");
+        assert_eq!(canonical_merge_key("firefox-bin", None), "firefox");
+        assert_eq!(canonical_merge_key("firefox-git", None), "firefox");
+
+        // Channel/release variants are distinct products.
         assert_eq!(
             canonical_merge_key("firefox-developer-edition", None),
-            "firefox"
+            "firefoxdeveloperedition"
         );
-        assert_eq!(canonical_merge_key("firefox-esr", None), "firefox");
+        assert_eq!(canonical_merge_key("firefox-esr", None), "firefoxesr");
+        assert_eq!(canonical_merge_key("discord-canary", None), "discordcanary");
+        assert_eq!(canonical_merge_key("discord-ptb", None), "discordptb");
+        assert_eq!(canonical_merge_key("google-chrome-canary", None), "googlechromecanary");
+
         assert_eq!(canonical_merge_key("brave-bin", None), "brave");
-        // After IRON CORE alphanumeric-only normalization + suffix stripping (-bin removed),
-        // "visual-studio-code" becomes "visualstudiocode"
         assert_eq!(
             canonical_merge_key("visual-studio-code-bin", None),
             "visualstudiocode"
@@ -834,14 +1160,14 @@ mod tests {
             "firefox"
         );
 
-        // First-segment rule: "obs-studio" and "com.obsproject.Studio" (known -> obs-studio) -> key "obsstudio"
+        // Stable cross-source merge.
         assert_eq!(
             canonical_merge_key("OBS Studio", Some("com.obsproject.Studio")),
             "obsstudio"
         );
         assert_eq!(canonical_merge_key("obs-studio", None), "obsstudio");
 
-        // "heroic" and "heroic-games-launcher" variants
+        // "heroic-games-launcher" keeps full identity.
         assert_eq!(canonical_merge_key("heroic", None), "heroic");
         assert_eq!(
             canonical_merge_key("heroic-games-launcher-bin", None),
@@ -861,24 +1187,111 @@ mod tests {
             canonical_merge_key("Discord", Some("com.discordapp.Discord")),
             "discord"
         );
+
+        assert_eq!(
+            canonical_merge_key("librewolf", Some("io.gitlab.librewolf-community")),
+            "librewolf"
+        );
+        assert_eq!(
+            canonical_merge_key("io.gitlab.librewolf-community", None),
+            "librewolf"
+        );
+    }
+
+    #[test]
+    fn test_finalize_package_contract_normalizes_identity_and_sources() {
+        let mut pkg = Package {
+            name: "firefox-bin".to_string(),
+            app_id: Some(" org.mozilla.firefox ".to_string()),
+            canonical_id: "".to_string(),
+            source: PackageSource::new("repo", "extra", "1.0", "Arch Official"),
+            available_sources: Some(vec![
+                PackageSource::new("repo", "extra", "1.0", "Arch Official"),
+                PackageSource::new("repo", "extra", "1.0", "Arch Official"),
+            ]),
+            installed: true,
+            installed_sources: None,
+            launch_target: None,
+            description: String::new(),
+            version: "1.0".to_string(),
+            display_name: None,
+            maintainer: None,
+            license: None,
+            url: None,
+            last_modified: None,
+            first_submitted: None,
+            out_of_date: None,
+            keywords: None,
+            num_votes: None,
+            icon: None,
+            screenshots: None,
+            provides: None,
+            is_optimized: None,
+            depends: None,
+            make_depends: None,
+            is_featured: None,
+            ..Default::default()
+        };
+
+        finalize_package_contract(&mut pkg);
+
+        assert_eq!(pkg.canonical_id, "firefox");
+        assert_eq!(pkg.app_id.as_deref(), Some("org.mozilla.firefox"));
+        assert_eq!(pkg.available_sources.as_ref().map(|s| s.len()), Some(1));
+        assert_eq!(pkg.installed_sources.as_ref().map(|s| s.len()), Some(1));
+        assert_eq!(pkg.launch_target.as_deref(), Some("firefox-bin"));
+    }
+
+    #[test]
+    fn test_finalize_package_contract_preserves_flatpak_launch_target() {
+        let mut pkg = Package {
+            name: "io.gitlab.librewolf-community".to_string(),
+            app_id: Some("io.gitlab.librewolf-community".to_string()),
+            source: PackageSource::new("flatpak", "flathub", "1.0", "Flatpak"),
+            description: String::new(),
+            version: "1.0".to_string(),
+            display_name: None,
+            maintainer: None,
+            license: None,
+            url: None,
+            last_modified: None,
+            first_submitted: None,
+            out_of_date: None,
+            keywords: None,
+            num_votes: None,
+            icon: None,
+            screenshots: None,
+            provides: None,
+            is_optimized: None,
+            depends: None,
+            make_depends: None,
+            is_featured: None,
+            installed: true,
+            ..Default::default()
+        };
+
+        finalize_package_contract(&mut pkg);
+
+        assert_eq!(pkg.canonical_id, "librewolf");
+        assert_eq!(pkg.launch_target.as_deref(), Some("io.gitlab.librewolf-community"));
     }
 
     #[test]
     fn test_deduplication_priority_swap() {
-        // Manjaro (Low Priority: 4)
+        // Manjaro (distro-native repo, highest priority in this pair)
         let manjaro = make_pkg("spotify", PackageSource::manjaro("spotify"), None);
-        // Chaotic (High Priority: 1)
+        // Chaotic (Lower priority than distro-native repos)
         let chaotic = make_pkg("spotify", PackageSource::chaotic("spotify"), None);
 
         let results = merge_and_deduplicate(vec![manjaro], vec![chaotic]);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source.source_type, "repo");
-        assert_eq!(results[0].source.id, "chaotic-aur");
+        assert_eq!(results[0].source.id, "manjaro");
         assert_eq!(results[0].alternatives.as_ref().unwrap().len(), 1);
         assert_eq!(
             results[0].alternatives.as_ref().unwrap()[0].source,
-            PackageSource::manjaro("spotify")
+            PackageSource::chaotic("spotify")
         );
     }
 
@@ -994,6 +1407,7 @@ pub fn get_install_mode() -> InstallMode {
 fn event_category_and_label(event: &str) -> (&'static str, &'static str) {
     match event {
         "app_started" => ("lifecycle", "App started"),
+        "store_installed" => ("lifecycle", "Store installed"),
         "search" | "search_query" => ("search", "Search"),
         "onboarding_completed" => ("engagement", "Onboarding completed"),
         "review_submitted" => ("engagement", "Review submitted"),

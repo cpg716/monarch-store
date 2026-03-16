@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef, useCallback } from 'react';
 import { commands } from './services/bindings';
 import { unwrap } from './utils/specta';
 import { ArrowLeft, Heart, AlertCircle, Database, Loader2 } from 'lucide-react';
@@ -7,38 +7,47 @@ import Sidebar from './components/Sidebar';
 import MobileNav from './components/MobileNav';
 import SearchBar from './components/SearchBar';
 import InstallMonitor from './components/InstallMonitor';
-import type { Package } from './services/bindings';
+import type { DiscoveryIntent, Package, SearchSuggestion } from './services/bindings';
 import { PackageSource } from './services/bindings';
 import TrendingSection from './components/TrendingSection';
-import HeroSection from './components/HeroSection';
-import PackageDetails from './pages/PackageDetailsFresh';
 import { useAppStore } from './store/internal_store';
 import { getPackageListKey } from './utils/packageKey';
-import CategoryView from './pages/CategoryView';
-import InstalledPage from './pages/InstalledPage';
-import UpdatesPage from './pages/UpdatesPage';
-import NewsPage from './pages/NewsPage';
-import SettingsPage from './pages/SettingsPage';
 import { useTheme } from './hooks/useTheme';
 import './App.css';
 import LoadingScreen from './components/LoadingScreen';
 import OnboardingModal from './components/OnboardingModal';
 import ErrorModal from './components/ErrorModal';
 import ConfirmationModal from './components/ConfirmationModal';
-import SearchPage from './pages/SearchPage';
 import { useSearchHistory } from './hooks/useSearchHistory';
-import { useSettings } from './hooks/useSettings';
 import { useUpdateChecker } from './hooks/useUpdateChecker';
-import HomePage from './pages/HomePage';
-import { ESSENTIAL_IDS } from './constants';
 import { listen } from '@tauri-apps/api/event';
 import { UpdateProgress } from './store/internal_store';
 import { useToast } from './context/ToastContext';
 import { useSessionPassword } from './context/useSessionPassword';
 import { useErrorService } from './context/ErrorContext';
 import TitleBar from './components/TitleBar';
+import { debugWarn } from './utils/debugLog';
+
+const PackageDetails = lazy(() => import('./pages/PackageDetailsFresh'));
+const CategoryView = lazy(() => import('./pages/CategoryView'));
+const InstalledPage = lazy(() => import('./pages/InstalledPage'));
+const UpdatesPage = lazy(() => import('./pages/UpdatesPage'));
+const NewsPage = lazy(() => import('./pages/NewsPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const SearchPage = lazy(() => import('./pages/SearchPage'));
+const HomePage = lazy(() => import('./pages/HomePage'));
+
+const DEFAULT_HOME_QUICK_STARTS: DiscoveryIntent[] = [
+  { id: 'web-browsers', label: 'Web Browsers', description: 'Find browsers and internet apps', query: 'browser', category: null },
+  { id: 'office-school', label: 'Office & School', description: 'Documents, mail, and study tools', query: 'office suite', category: null },
+  { id: 'gaming', label: 'Gaming', description: 'Launchers, emulators, and game clients', query: null, category: 'Game' },
+  { id: 'chat-voice', label: 'Chat & Voice', description: 'Messaging and voice apps', query: 'discord telegram', category: null },
+  { id: 'creative-tools', label: 'Creative Tools', description: 'Art, design, and editing apps', query: null, category: 'Graphics' },
+  { id: 'system-utilities', label: 'System Utilities', description: 'Maintenance and system tools', query: null, category: 'System' },
+];
 
 function App() {
+  useTheme();
   const activeTab = useAppStore(s => s.activeTab);
   const setActiveTab = useAppStore(s => s.setActiveTab);
   const [activeInstall, setActiveInstall] = useState<{ name: string; source: PackageSource; repoName?: string; displayName?: string; mode: 'install' | 'uninstall' } | null>(null);
@@ -49,6 +58,13 @@ function App() {
   const [preferredSource, setPreferredSource] = useState<string | undefined>(undefined);
   const [showSystemFixPopup, setShowSystemFixPopup] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [homeQuickStarts, setHomeQuickStarts] = useState<DiscoveryIntent[]>([]);
+  const [homeEssentialsPackages, setHomeEssentialsPackages] = useState<Package[]>([]);
+  const [homeTrendingPackages, setHomeTrendingPackages] = useState<Package[]>([]);
+  const [homeDiscoveryLoading, setHomeDiscoveryLoading] = useState(false);
+  const [homeDiscoveryError, setHomeDiscoveryError] = useState<string | null>(null);
+  const [searchSuggestions, setSearchSuggestions] = useState<SearchSuggestion[]>([]);
+  const [queryInterpretation, setQueryInterpretation] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(true);
   const [pendingDbRepair, setPendingDbRepair] = useState(false);
@@ -59,91 +75,154 @@ function App() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const searchRequestIdRef = useRef(0);
   const updateTimerRef = useRef<number | null>(null);
+  const startupInitRef = useRef(false);
+  const homeDiscoveryInitRef = useRef(false);
+  const homeDiscoveryInFlightRef = useRef<Promise<void> | null>(null);
+  const registrySyncQueueRef = useRef<Set<string>>(new Set());
+  const registrySyncFlushTimerRef = useRef<number | null>(null);
+  const registryBulkTimerRef = useRef<number | null>(null);
 
   const { addSearch } = useSearchHistory();
   const activePackageId = useAppStore((s) => s.activePackageId);
   const setActivePackageId = useAppStore((s) => s.setActivePackageId);
-  const {
-    fetchInfraStats,
-    setUpdateProgress,
-    setUpdateStatus,
-    setUpdatePhase,
-    setUpdating,
-    addUpdateLog,
-    setRebootRequired,
-    setPacnewWarnings,
-    upsertPackages,
-    syncRegistry,
-    syncRegistryBulk,
-    setLastInstallTarget,
-    updatePackageInstalledState,
-    setEssentialsPackages,
-    setTrendingPackages,
-    hydrateFavorites,
-    essentialsIds,
-    trendingIds,
-    initializeSettings,
-    onboardingCompleted,
-    setOnboardingCompleted,
-    declinedSystemSetup,
-    setDeclinedSystemSetup
-  } = useAppStore();
+  const packageRegistry = useAppStore((s) => s.packageRegistry);
+  const fetchInfraStats = useAppStore(s => s.fetchInfraStats);
+  const setUpdateProgress = useAppStore(s => s.setUpdateProgress);
+  const setUpdateStatus = useAppStore(s => s.setUpdateStatus);
+  const setUpdatePhase = useAppStore(s => s.setUpdatePhase);
+  const setUpdating = useAppStore(s => s.setUpdating);
+  const addUpdateLog = useAppStore(s => s.addUpdateLog);
+  const setRebootRequired = useAppStore(s => s.setRebootRequired);
+  const setPacnewWarnings = useAppStore(s => s.setPacnewWarnings);
+  const upsertPackages = useAppStore(s => s.upsertPackages);
+  const syncRegistry = useAppStore(s => s.syncRegistry);
+  const syncRegistryBulk = useAppStore(s => s.syncRegistryBulk);
+  const setLastInstallTarget = useAppStore(s => s.setLastInstallTarget);
+  const updatePackageInstalledState = useAppStore(s => s.updatePackageInstalledState);
+  const setEssentialsPackages = useAppStore(s => s.setEssentialsPackages);
+  const setTrendingPackages = useAppStore(s => s.setTrendingPackages);
+  const hydrateFavorites = useAppStore(s => s.hydrateFavorites);
+  const essentialsIds = useAppStore(s => s.essentialsIds);
+  const trendingIds = useAppStore(s => s.trendingIds);
+  const initializeSettings = useAppStore(s => s.initializeSettings);
+  const onboardingCompleted = useAppStore(s => s.onboardingCompleted);
+  const setOnboardingCompleted = useAppStore(s => s.setOnboardingCompleted);
+  const declinedSystemSetup = useAppStore(s => s.declinedSystemSetup);
+  const setDeclinedSystemSetup = useAppStore(s => s.setDeclinedSystemSetup);
 
-  const { accentColor } = useTheme();
-  const { favorites } = useFavorites();
+  const accentColor = useAppStore(s => s.accentColor);
+  const favorites = useAppStore(s => s.favorites);
   const favoriteError = useAppStore((s) => s.favoriteError);
   const clearFavoriteError = useAppStore((s) => s.clearFavoriteError);
   const { show: showToast } = useToast();
   const { requestSessionPassword } = useSessionPassword();
-  const errorService = useErrorService();
+  const { reportError, reportWarning } = useErrorService();
   const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
-  const { isAurEnabled, isFlatpakEnabled, isChaoticEnabled } = useSettings();
+  const isAurEnabled = useAppStore(s => s.isAurEnabled);
+  const isFlatpakEnabled = useAppStore(s => s.isFlatpakEnabled);
+  const isChaoticEnabled = useAppStore(s => s.isChaoticEnabled);
   const [enabledRepos, setEnabledRepos] = useState<{ name: string; enabled: boolean; source: any }[]>([]);
+
+  const loadHomeDiscovery = useCallback(async () => {
+    if (homeDiscoveryInFlightRef.current) {
+      return homeDiscoveryInFlightRef.current;
+    }
+
+    const run = (async () => {
+      setHomeDiscoveryLoading(true);
+      setHomeDiscoveryError(null);
+      setHomeQuickStarts(DEFAULT_HOME_QUICK_STARTS);
+
+      try {
+        const snapshot = unwrap(await commands.getDiscoveryHomeSnapshot());
+        const essentials = snapshot.essentials ?? [];
+        const trendingPkgs = snapshot.trending ?? [];
+        const quickStarts = snapshot.quick_starts?.length ? snapshot.quick_starts : DEFAULT_HOME_QUICK_STARTS;
+
+        if (essentials.length === 0) {
+          debugWarn('[HomeDiscovery] Snapshot returned no essentials packages');
+        }
+        if (trendingPkgs.length === 0) {
+          debugWarn('[HomeDiscovery] Snapshot returned no trending packages');
+        }
+
+        setHomeQuickStarts(quickStarts);
+        setHomeEssentialsPackages(essentials);
+        setEssentialsPackages(essentials);
+        setHomeTrendingPackages(trendingPkgs);
+        setTrendingPackages(trendingPkgs);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        debugWarn('[HomeDiscovery] Snapshot unavailable', message);
+        setHomeDiscoveryError(message);
+        setHomeQuickStarts(DEFAULT_HOME_QUICK_STARTS);
+        setHomeEssentialsPackages([]);
+        setEssentialsPackages([]);
+        setHomeTrendingPackages([]);
+        setTrendingPackages([]);
+      } finally {
+        setHomeDiscoveryLoading(false);
+        homeDiscoveryInFlightRef.current = null;
+      }
+    })();
+
+    homeDiscoveryInFlightRef.current = run;
+    return run;
+  }, [
+    setEssentialsPackages,
+    setTrendingPackages,
+  ]);
 
   const initializeStartup = useCallback(async () => {
     const startTime = Date.now();
     try {
+      commands.emitSyncProgress('Loading saved settings').catch(() => { });
       await initializeSettings(); // Fetch all backend settings (parallel, clean, etc)
 
       // CRITICAL: Fetch fresh state AFTER settings are loaded to avoid closure staleness
       const state = useAppStore.getState();
       const {
         reducePasswordPrompts,
-        isFlatpakEnabled,
-        isAurEnabled,
-        isChaoticEnabled,
         onboardingCompleted,
-        declinedSystemSetup
+        declinedSystemSetup,
+        oneClickEnabled
       } = state;
+      const useOneClickSessionAuth = reducePasswordPrompts || oneClickEnabled;
 
-      commands.emitSyncProgress('Checking system...').catch(() => { });
       const needsUnlock = await commands.needsStartupUnlock().catch(() => false);
 
-      if (needsUnlock && reducePasswordPrompts) {
-        try {
-          commands.emitSyncProgress('Unlock may be needed...').catch(() => { });
-          const pwd = await requestSessionPassword();
-          unwrap(await commands.unlockPacmanIfStale(pwd ?? null));
-        } catch (e) {
-          errorService.reportWarning(e as Error | string);
-        }
-      } else if (needsUnlock) {
-        commands.emitSyncProgress('Checking lock...').catch(() => { });
-        commands.unlockPacmanIfStale(null).then(unwrap).catch((e) => errorService.reportWarning(e as Error | string));
+      if (needsUnlock) {
+        commands.emitSyncProgress('Checking for a stale package-manager lock').catch(() => { });
+
+        (async () => {
+          try {
+            let pwd: string | null = null;
+            if (useOneClickSessionAuth) {
+              commands.emitSyncProgress('Authorization needed to clear a stale package-manager lock').catch(() => { });
+              pwd = await Promise.race<string | null>([
+                requestSessionPassword(),
+                new Promise<string | null>((resolve) => setTimeout(() => resolve(null), 4000)),
+              ]);
+            }
+            await commands.unlockPacmanIfStale(pwd ?? null).then(unwrap);
+          } catch (e) {
+            reportWarning(e as Error | string);
+          }
+        })();
       }
 
-      commands.emitSyncProgress('Checking health...').catch(() => { });
-      fetchInfraStats(); // No await needed, background
-      await state.checkTelemetry();
+      commands.emitSyncProgress('Checking package manager health').catch(() => { });
+      fetchInfraStats();
+      void state.checkTelemetry();
 
       commands.getRepoStates()
         .then(unwrap)
         .then(repos => setEnabledRepos(repos.filter(r => r.enabled)))
-        .catch((e) => errorService.reportError(e as Error | string));
+        .catch((e) => reportError(e as Error | string));
 
       const systemStatus = unwrap(await commands.checkInitializationStatus());
       setSystemHealth(systemStatus);
-      commands.emitSyncProgress('Preparing...').catch(() => { });
+      commands.emitSyncProgress('Loading your software catalog').catch(() => { });
 
       const isCompleted = onboardingCompleted;
       let redoOnboarding = !isCompleted;
@@ -155,7 +234,6 @@ function App() {
         if (onlySyncDbRepair) {
           setPendingDbRepair(true);
         } else if (!declinedSystemSetup) {
-          console.warn("System is unhealthy. Triggering repair flow.");
           const reasonText = systemStatus.reasons.join(" ");
           setOnboardingReason(`MonARCH detected system defects: ${reasonText} MonARCH will attempt to fix them on launch. In the next step you can choose to enter your password once to avoid multiple system prompts.`);
           setShowSystemFixPopup(true);
@@ -163,32 +241,16 @@ function App() {
         }
       }
 
-      commands.emitSyncProgress("Loading Essentials...").catch(() => { });
-      const list = await commands.getEssentialsList().then(unwrap).catch(() => ESSENTIAL_IDS as string[]);
-
-      // Use the FRESH state flags for these calls
-      const essentialsPromise = commands.getPackagesByNames(list, {
-        flatpak_enabled: isFlatpakEnabled,
-        aur_enabled: isAurEnabled,
-        chaotic_enabled: isChaoticEnabled,
-        for_installed_lookup: false
-      }, null).then(unwrap);
-
-      const trendingPromise = commands.getTrending({
-        flatpak_enabled: isFlatpakEnabled,
-        aur_enabled: isAurEnabled,
-        chaotic_enabled: isChaoticEnabled,
-        for_installed_lookup: false
-      }).then(unwrap);
-
-      const [pkgs, trendingPkgs] = await Promise.all([
-        essentialsPromise.catch(() => [] as Package[]),
-        trendingPromise.catch(() => [] as Package[]),
-      ]);
-
-      setEssentialsPackages(pkgs);
-      setTrendingPackages(trendingPkgs);
-      commands.emitSyncProgress("Analyzing Trending Apps...").catch(() => { });
+      commands.emitSyncProgress('Restoring featured apps').catch(() => { });
+      void (async () => {
+        try {
+          const installedPkgs = unwrap(await commands.getInstalledCatalog());
+          upsertPackages(installedPkgs);
+        } catch (e) {
+          reportWarning(e as Error | string);
+        }
+      })();
+      commands.emitSyncProgress('Ready').catch(() => { });
 
       if (redoOnboarding) {
         setShowOnboarding(true);
@@ -206,19 +268,25 @@ function App() {
         if (needsSync) {
           (async () => {
             try {
-              commands.emitSyncProgress('Syncing package databases...').catch(() => { });
-              const pwd = reducePasswordPrompts ? await requestSessionPassword() : null;
-              unwrap(await commands.applyOsConfig(pwd ?? null));
-              unwrap(await commands.syncSystemDatabases(pwd));
+              commands.emitSyncProgress('Refreshing package sources in background').catch(() => { });
+              const pwd = useOneClickSessionAuth ? await requestSessionPassword() : null;
+              unwrap(await commands.triggerRepoSync(3, pwd ?? null));
             } catch (e) {
-              errorService.reportWarning(e as Error | string);
+              reportWarning(e as Error | string);
             }
-            commands.triggerRepoSync("3").catch((e) => errorService.reportError(e as Error | string));
           })();
         }
       }
     } catch (e) {
-      errorService.reportError(e as Error | string);
+      reportError(e as Error | string);
+      try {
+        setEssentialsPackages([]);
+        setTrendingPackages([]);
+        setHomeEssentialsPackages([]);
+        setHomeTrendingPackages([]);
+        setHomeQuickStarts(DEFAULT_HOME_QUICK_STARTS);
+      } catch {
+      }
     } finally {
       const elapsed = Date.now() - startTime;
       const minDelayMs = 1200;
@@ -226,10 +294,9 @@ function App() {
       setTimeout(() => setIsRefreshing(false), remaining);
     }
   }, [
-    // MINIMAL DEPENDENCIES: Only stable functions/refs. 
-    // State variables (isFlatpakEnabled, onboardingCompleted, etc.) MUST NOT be here.
     requestSessionPassword,
-    errorService,
+    reportError,
+    reportWarning,
     fetchInfraStats,
     setEssentialsPackages,
     setTrendingPackages,
@@ -238,9 +305,11 @@ function App() {
     setOnboardingReason,
     setShowSystemFixPopup,
     setEnabledRepos,
+    setHomeQuickStarts,
     setShowOnboarding,
     setIsRefreshing,
-    // Store actions are stable
+    loadHomeDiscovery,
+    syncRegistry,
     setOnboardingCompleted,
     initializeSettings
   ]);
@@ -248,19 +317,38 @@ function App() {
   // Registry Sync Listeners
   useEffect(() => {
     const unlistenSync = listen<string[]>('registry-sync', (event) => {
-      console.log('[REGISTRY] Throttled sync triggered for:', event.payload);
-      syncRegistry(event.payload);
+      for (const id of event.payload ?? []) {
+        if (id) registrySyncQueueRef.current.add(id);
+      }
+      if (registrySyncFlushTimerRef.current) {
+        window.clearTimeout(registrySyncFlushTimerRef.current);
+      }
+      registrySyncFlushTimerRef.current = window.setTimeout(() => {
+        const ids = Array.from(registrySyncQueueRef.current);
+        registrySyncQueueRef.current.clear();
+        registrySyncFlushTimerRef.current = null;
+        if (ids.length > 0) {
+          syncRegistry(ids);
+        }
+      }, 120);
     });
     const unlistenBulk = listen('registry-sync-bulk', () => {
-      console.log('[REGISTRY] Bulk sync triggered');
-      syncRegistryBulk();
+      if (registryBulkTimerRef.current) {
+        window.clearTimeout(registryBulkTimerRef.current);
+      }
+      registryBulkTimerRef.current = window.setTimeout(() => {
+        registryBulkTimerRef.current = null;
+        syncRegistryBulk();
+      }, 150);
     });
 
     return () => {
+      if (registrySyncFlushTimerRef.current) window.clearTimeout(registrySyncFlushTimerRef.current);
+      if (registryBulkTimerRef.current) window.clearTimeout(registryBulkTimerRef.current);
       unlistenSync.then(fn => fn());
       unlistenBulk.then(fn => fn());
     };
-  }, [syncRegistry, syncRegistryBulk, initializeStartup]);
+  }, [syncRegistry, syncRegistryBulk]);
 
   useEffect(() => {
     if (favoriteError) {
@@ -269,8 +357,9 @@ function App() {
     }
   }, [favoriteError, showToast, clearFavoriteError]);
 
-  // Background update checker: respect Sources settings so badge matches what Update All would run
-  useUpdateChecker(isAurEnabled, isFlatpakEnabled);
+  // Background update checker includes installed updates from repo/AUR/Flatpak.
+  // Source toggles affect discovery only (browse/search), not update detection.
+  useUpdateChecker(!isRefreshing);
 
   useEffect(() => {
     hydrateFavorites();
@@ -289,8 +378,8 @@ function App() {
           );
         }
       })
-      .catch((e) => errorService.reportWarning(e as Error | string));
-  }, [isRefreshing, showToast, errorService]);
+      .catch((e) => reportWarning(e as Error | string));
+  }, [isRefreshing, showToast, reportWarning]);
 
   // Global Update Listeners
   useEffect(() => {
@@ -314,7 +403,7 @@ function App() {
               const warnings = unwrap(await commands.getPacnewWarnings());
               setPacnewWarnings(warnings);
             } catch (e) {
-              errorService.reportError(e as Error | string);
+              reportError(e as Error | string);
             }
           })();
         }, 1500);
@@ -354,7 +443,7 @@ function App() {
       setSystemHealth(status);
       return status;
     } catch (e) {
-      errorService.reportError(e as Error | string);
+      reportError(e as Error | string);
       return null;
     }
   };
@@ -370,9 +459,24 @@ function App() {
     // Ensure app becomes visible after at most 18s so Essentials/Trending can load in background
     const maxWaitMs = 18000;
     const timeoutId = setTimeout(() => setIsRefreshing(false), maxWaitMs);
-    initializeStartup();
+    if (!startupInitRef.current) {
+      startupInitRef.current = true;
+      initializeStartup();
+    }
     return () => clearTimeout(timeoutId);
   }, [initializeStartup]);
+
+  useEffect(() => {
+    if (homeDiscoveryInitRef.current) return;
+    homeDiscoveryInitRef.current = true;
+    void loadHomeDiscovery();
+  }, [loadHomeDiscovery]);
+
+  useEffect(() => {
+    if (!isRefreshing && !useAppStore.getState().metadataInitialized) {
+      useAppStore.setState({ metadataInitialized: true });
+    }
+  }, [isRefreshing]);
 
   useEffect(() => {
     if (searchQuery) setActivePackageId(null);
@@ -403,27 +507,42 @@ function App() {
     // Increment request ID to track stale responses
     const currentRequestId = ++searchRequestIdRef.current;
 
+    if (!searchQuery) {
+      setPackages([]);
+      setSearchSuggestions([]);
+      setQueryInterpretation(null);
+      useAppStore.getState().setSearchResultIds([]);
+      setLoading(false);
+      return;
+    }
+
+    // Prepare for search: set loading immediately if we're active
+    setLoading(true);
+
     const search = async () => {
-      if (!searchQuery) {
-        setPackages([]);
-        useAppStore.getState().setSearchResultIds([]);
-        return;
-      }
       try {
-        const results = unwrap(await commands.searchPackages(searchQuery, {
+        const searchResponse = unwrap(await commands.searchPackagesRich(searchQuery, {
           flatpak_enabled: isFlatpakEnabled,
           aur_enabled: isAurEnabled,
           chaotic_enabled: isChaoticEnabled,
           for_installed_lookup: false
         }));
-        if (currentRequestId !== searchRequestIdRef.current) return;
-        const { upsertPackages: upsert, setSearchResultIds: setIds, fetchRatingsForPackages } = useAppStore.getState();
-        upsert(results);
-        setIds([...new Set(results.map((p) => getPackageListKey(p)))]);
+        const results = searchResponse.packages ?? [];
 
-        // Safe batch rating fetch using IDs OR names (merges into live registry)
-        const lookupIds = results.map(p => p.app_id || p.name).filter(id => !!id) as string[];
-        fetchRatingsForPackages(lookupIds);
+        if (currentRequestId !== searchRequestIdRef.current) return;
+
+        // Backend is SSOT: upsert backend payload as-is, then map current result IDs.
+        upsertPackages(results);
+        const ids = Array.from(new Set(results.map((p) => getPackageListKey(p)).filter(Boolean)));
+        useAppStore.getState().setSearchResultIds(ids);
+        setSearchSuggestions(searchResponse.suggestions ?? []);
+        setQueryInterpretation(searchResponse.query_interpretation ?? null);
+
+        // Safe batch rating fetch: use both app_id (ODRS canonical) and name (fallback)
+        const lookupIds = Array.from(new Set(
+          results.flatMap(p => [p.app_id, p.name].filter((id): id is string => !!id && id.length > 0))
+        ));
+        useAppStore.getState().fetchRatingsForPackages(lookupIds);
 
         setPackages(results);
         addSearch(searchQuery);
@@ -434,7 +553,11 @@ function App() {
           has_results: results.length > 0,
         }).catch(() => { });
       } catch (e) {
-        errorService.reportError(e as Error | string);
+        // Ignore stale request failures (user typed a new query before this one resolved).
+        if (currentRequestId !== searchRequestIdRef.current) return;
+        setSearchSuggestions([]);
+        setQueryInterpretation(null);
+        reportError(e as Error | string);
       } finally {
         // Only update loading state if this is still the latest request
         if (currentRequestId === searchRequestIdRef.current) {
@@ -443,9 +566,9 @@ function App() {
       }
     };
 
-    const timeoutId = setTimeout(() => search(), 500);
+    const timeoutId = setTimeout(() => search(), 200);
     return () => clearTimeout(timeoutId);
-  }, [searchQuery, addSearch, errorService]);
+  }, [searchQuery, addSearch, reportError, isFlatpakEnabled, isAurEnabled, isChaoticEnabled, upsertPackages]);
 
   const handleTabChange = (tab: string) => {
     if (tab === 'search') {
@@ -487,15 +610,16 @@ function App() {
 
   const handleSelectPackage = useCallback(
     (pkg: Package, preferredSource?: string) => {
-      // Always open the canonical (merged) package so details show one page with all sources/selector
-      const id =
-        typeof pkg.canonical_id === 'string' && pkg.canonical_id.trim() !== ''
-          ? pkg.canonical_id
-          : getPackageListKey(pkg);
+      const id = getPackageListKey(pkg);
+      if (!id) {
+        reportWarning(`Package missing canonical_id: ${pkg.name}`);
+        return;
+      }
+      upsertPackages([pkg]);
       setActivePackageId(id);
       if (preferredSource !== undefined) setPreferredSource(preferredSource);
     },
-    [setActivePackageId]
+    [reportWarning, setActivePackageId, upsertPackages]
   );
 
   const handleBack = () => {
@@ -508,6 +632,21 @@ function App() {
       setViewAll(null);
     }
   };
+
+  const handleQuickStart = useCallback((intent: DiscoveryIntent) => {
+    setActivePackageId(null);
+    setViewAll(null);
+    if (intent.category) {
+      setSearchQuery('');
+      setSelectedCategory(intent.category);
+      return;
+    }
+    if (intent.query) {
+      setSelectedCategory(null);
+      setActiveTab('search');
+      setSearchQuery(intent.query);
+    }
+  }, [setActivePackageId, setActiveTab]);
 
   const runDbRepair = async () => {
     if (dbRepairInProgress) return;
@@ -525,7 +664,7 @@ function App() {
       setPendingDbRepair(false);
       showToast('Package databases fixed.', 'success');
     } catch (e) {
-      errorService.reportError(e as Error | string);
+      reportError(e as Error | string);
       showToast('Repair failed. Try Settings → Refresh Databases or run: sudo pacman -Syy', 'error');
     } finally {
       setDbRepairInProgress(false);
@@ -539,7 +678,7 @@ function App() {
       className="h-screen w-screen bg-app-bg text-app-fg overflow-hidden font-sans transition-colors"
       style={{ '--tw-selection-bg': `${accentColor}4D` } as any}
     >
-      <div className="relative flex flex-col h-full border border-white/5 rounded-xl shadow-2xl overflow-hidden">
+      <div className="relative flex flex-col h-full bg-app-bg border border-white/5 rounded-xl shadow-2xl overflow-hidden">
         <TitleBar />
         {/* Grandma-proof: one-step DB repair overlay when only issue is corrupt sync DBs */}
         {pendingDbRepair && (
@@ -596,29 +735,34 @@ function App() {
             {showOnboarding ? (
               <div className="flex-1 bg-app-bg" /> /* Empty dark background while onboarding is active/animating */
             ) : activePackageId ? (
-              <PackageDetails
-                onBack={handleBack}
-                preferredSource={preferredSource}
-                installInProgress={activeInstall !== null}
-                activeInstallPackage={activeInstall}
-                onInstall={(p: { name: string; source: PackageSource | string; repoName?: string; displayName?: string }) => {
-                  const srcArgs = typeof p.source === 'string'
-                    ? { source_type: 'repo', id: p.source, version: '', label: p.source.toUpperCase() } as PackageSource
-                    : p.source;
-                  setActiveInstall({ name: p.name, source: srcArgs, repoName: p.repoName, displayName: p.displayName, mode: 'install' });
-                  setLastInstallTarget({ name: p.name, mode: 'install' });
-                }}
-                onUninstall={(p: { name: string; source: PackageSource | string; repoName?: string; displayName?: string }) => {
-                  const srcArgs = typeof p.source === 'string'
-                    ? { source_type: 'repo', id: p.source, version: '', label: p.source.toUpperCase() } as PackageSource
-                    : p.source;
-                  setActiveInstall({ name: p.name, source: srcArgs, repoName: p.repoName, displayName: p.displayName, mode: 'uninstall' });
-                  setLastInstallTarget({ name: p.name, mode: 'uninstall' });
-                }}
-                onOpenSettings={() => setActiveTab('settings')}
-              />
+              <Suspense fallback={<div className="flex-1 bg-app-bg" />}>
+                <PackageDetails
+                  pkg={packageRegistry[activePackageId] as any}
+                  onBack={handleBack}
+                  preferredSource={preferredSource}
+                  installInProgress={activeInstall !== null}
+                  activeInstallPackage={activeInstall}
+                  onInstall={(p: { name: string; source: PackageSource | string; repoName?: string; displayName?: string }) => {
+                    const srcArgs = typeof p.source === 'string'
+                      ? { source_type: 'repo', id: p.source, version: '', label: p.source.toUpperCase() } as PackageSource
+                      : p.source;
+                    setActiveInstall({ name: p.name, source: srcArgs, repoName: p.repoName, displayName: p.displayName, mode: 'install' });
+                    setLastInstallTarget({ name: p.name, mode: 'install' });
+                  }}
+                  onUninstall={(p: { name: string; source: PackageSource | string; repoName?: string; displayName?: string }) => {
+                    const srcArgs = typeof p.source === 'string'
+                      ? { source_type: 'repo', id: p.source, version: '', label: p.source.toUpperCase() } as PackageSource
+                      : p.source;
+                    setActiveInstall({ name: p.name, source: srcArgs, repoName: p.repoName, displayName: p.displayName, mode: 'uninstall' });
+                    setLastInstallTarget({ name: p.name, mode: 'uninstall' });
+                  }}
+                  onOpenSettings={() => setActiveTab('settings')}
+                />
+              </Suspense>
             ) : selectedCategory ? (
-              <CategoryView category={selectedCategory} onBack={handleBack} onSelectPackage={handleSelectPackage} onOpenSettings={() => setActiveTab('settings')} />
+              <Suspense fallback={<div className="flex-1 bg-app-bg" />}>
+                <CategoryView category={selectedCategory} onBack={handleBack} onSelectPackage={handleSelectPackage} onOpenSettings={() => setActiveTab('settings')} />
+              </Suspense>
             ) : viewAll ? (
               <div className="flex-1 overflow-y-auto pb-32 scroll-gpu">
                 <div className="p-10 pb-6 sticky top-0 bg-app-bg/95 backdrop-blur-xl z-20 border-b border-app-border/50 flex items-center gap-4">
@@ -630,22 +774,17 @@ function App() {
                     title=""
                     listKind={viewAll === 'essentials' ? 'essentials' : 'trending'}
                     filterIds={viewAll === 'essentials' ? essentialsIds : trendingIds}
+                    preloadedPackages={viewAll === 'essentials' ? homeEssentialsPackages : homeTrendingPackages}
                     onSelectPackage={handleSelectPackage}
                   />
                 </div>
               </div>
             ) : (
               <div className="flex-1 overflow-hidden flex flex-col relative">
-                <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 via-app-bg/50 to-blue-500/5 pointer-events-none transition-colors" />
+                <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-transparent to-transparent pointer-events-none transition-colors" />
 
                 <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0 pb-32 scroll-smooth scroll-gpu">
                   <div className="max-w-[1920px] mx-auto w-full">
-                    {activeTab === 'explore' && !searchQuery && (
-                      <div className="px-6 pt-6 animate-in fade-in slide-in-from-top-5 duration-700">
-                        <HeroSection />
-                      </div>
-                    )}
-
                     <div className="sticky top-0 z-10 px-4 sm:px-6 py-4 bg-app-bg backdrop-blur-xl transition-all flex items-center justify-center gap-3">
                       <SearchBar
                         value={searchQuery}
@@ -658,47 +797,63 @@ function App() {
                     </div>
 
                     <div className="max-w-7xl mx-auto px-6 pb-16 min-h-[50vh]">
-                      {(searchQuery || activeTab === 'search') ? (
-                        <SearchPage
-                          query={searchQuery}
-                          onQueryChange={setSearchQuery}
-                          packages={packages}
-                          loading={loading}
-                          onSelectPackage={handleSelectPackage}
-                          enabledRepos={enabledRepos}
-                          onOpenSettings={() => setActiveTab('settings')}
-                        />
-                      ) : activeTab === 'explore' ? (
-                        <HomePage
-                          onSelectPackage={handleSelectPackage}
-                          onSeeAll={setViewAll}
-                          onSelectCategory={setSelectedCategory}
-                          onOpenSettings={() => setActiveTab('settings')}
-                        />
-                      ) : activeTab === 'installed' ? (
-                        <InstalledPage onSelectPackage={handleSelectPackage} />
-                      ) : activeTab === 'favorites' ? (
-                        <div className="py-4">
-                          <h2 className="text-2xl font-bold mb-2">Favorites</h2>
-                          {favorites.length === 0 ? (
-                            <div className="text-center text-app-muted py-20 flex flex-col items-center gap-4">
-                              <div className="p-4 rounded-full bg-app-subtle"><Heart size={32} className="opacity-50" /></div>
-                              <p className="font-bold">No favorites yet</p>
-                            </div>
-                          ) : (
-                            <TrendingSection title="" listKind="favorites" filterIds={favorites} onSelectPackage={handleSelectPackage} limit={100} onOpenSettings={() => setActiveTab('settings')} />
-                          )}
-                        </div>
-                      ) : activeTab === 'updates' ? (
-                        <UpdatesPage />
-                      ) : activeTab === 'news' ? (
-                        <NewsPage />
-                      ) : activeTab === 'settings' ? (
-                        <SettingsPage
-                          onRestartOnboarding={() => setShowOnboarding(true)}
-                          onRepairComplete={async () => { await refreshSystemHealth(); }}
-                        />
-                      ) : null}
+                      <Suspense fallback={<div className="py-12 text-center text-sm text-app-muted">Loading…</div>}>
+                        {(searchQuery || activeTab === 'search') ? (
+                          <SearchPage
+                            query={searchQuery}
+                            onQueryChange={setSearchQuery}
+                            packages={packages}
+                            loading={loading}
+                            onSelectPackage={handleSelectPackage}
+                            enabledRepos={enabledRepos}
+                            suggestions={searchSuggestions}
+                            queryInterpretation={queryInterpretation}
+                            onOpenSettings={() => setActiveTab('settings')}
+                          />
+                        ) : activeTab === 'explore' ? (
+                          <HomePage
+                            onSelectPackage={handleSelectPackage}
+                            onSeeAll={setViewAll}
+                            onSelectCategory={setSelectedCategory}
+                            quickStarts={homeQuickStarts}
+                            essentialsPackages={homeEssentialsPackages}
+                            trendingPackages={homeTrendingPackages}
+                            homeDiscoveryLoading={homeDiscoveryLoading}
+                            homeDiscoveryError={homeDiscoveryError}
+                            onQuickStart={handleQuickStart}
+                            onOpenSettings={() => setActiveTab('settings')}
+                          />
+                        ) : activeTab === 'installed' ? (
+                          <InstalledPage
+                            onSelectPackage={handleSelectPackage}
+                            onUninstallPackage={(pkg) => {
+                              setActiveInstall({ name: pkg.name, source: pkg.source, displayName: pkg.display_name ?? undefined, mode: 'uninstall' });
+                              setLastInstallTarget({ name: pkg.name, mode: 'uninstall' });
+                            }}
+                          />
+                        ) : activeTab === 'favorites' ? (
+                          <div className="py-4">
+                            <h2 className="text-2xl font-bold mb-2">Favorites</h2>
+                            {favorites.length === 0 ? (
+                              <div className="text-center text-app-muted py-20 flex flex-col items-center gap-4">
+                                <div className="p-4 rounded-full bg-app-subtle"><Heart size={32} className="opacity-50" /></div>
+                                <p className="font-bold">No favorites yet</p>
+                              </div>
+                            ) : (
+                              <TrendingSection title="" listKind="favorites" filterIds={favorites} onSelectPackage={handleSelectPackage} limit={100} onOpenSettings={() => setActiveTab('settings')} />
+                            )}
+                          </div>
+                        ) : activeTab === 'updates' ? (
+                          <UpdatesPage />
+                        ) : activeTab === 'news' ? (
+                          <NewsPage />
+                        ) : activeTab === 'settings' ? (
+                          <SettingsPage
+                            onRestartOnboarding={() => setShowOnboarding(true)}
+                            onRepairComplete={async () => { await refreshSystemHealth(); }}
+                          />
+                        ) : null}
+                      </Suspense>
                     </div>
                   </div>
                 </div>

@@ -121,7 +121,7 @@ export default function SystemHealthSection() {
                     }
                     break;
                 case "cache":
-                    unwrap(await commands.clearCache());
+                    unwrap(await commands.clearMetadataCaches());
                     break;
             }
 

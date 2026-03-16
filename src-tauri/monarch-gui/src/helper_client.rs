@@ -16,7 +16,6 @@ pub static ACTIVE_HELPER_CHILD: Lazy<Mutex<Option<tokio::process::Child>>> =
 #[cfg(test)]
 mod tests {
     use super::HelperCommand;
-    use serde_json;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -57,7 +56,7 @@ mod tests {
         assert!(!contents.trim().is_empty());
         assert_eq!(contents.trim(), json);
 
-        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&contents.trim());
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(contents.trim());
         assert!(parsed.is_ok(), "File content should be valid JSON");
     }
 
@@ -133,7 +132,7 @@ pub struct ProgressMessage {
 /// Auth behavior:
 /// - One-click ON (use_branded_auth): use app's password dialog and sudo -S (single branded prompt).
 /// - One-click OFF: always use pkexec (Polkit) so advanced users get the system auth dialog and full control.
-/// When use_branded_auth is false we ignore `password` and use pkexec regardless.
+///   When use_branded_auth is false we ignore `password` and use pkexec regardless.
 pub async fn invoke_helper(
     app: &AppHandle,
     cmd: HelperCommand,

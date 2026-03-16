@@ -1,9 +1,13 @@
 use crate::{aur_api, helper_client, models, repo_manager::RepoManager};
-use serde::Serialize;
+use moka::future::Cache;
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex as StdMutex;
+use std::time::{Duration as StdDuration, Instant};
 use tauri::{AppHandle, Emitter, State};
 use tempfile;
 use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
@@ -11,6 +15,235 @@ use tokio::sync::Mutex;
 
 /// Global PID of an active AUR build (makepkg) so abort_installation can kill it.
 static ACTIVE_AUR_BUILD_PID: AtomicU32 = AtomicU32::new(0);
+
+use crate::models::FullPackageDetails;
+
+// Short-lived details cache to dedupe StrictMode/dev duplicate invokes and rapid re-opens.
+static FULL_DETAILS_CACHE: Lazy<Cache<String, FullPackageDetails>> = Lazy::new(|| {
+    Cache::builder()
+        .time_to_live(std::time::Duration::from_secs(600))
+        .max_capacity(256)
+        .build()
+});
+static FULL_DETAILS_GATE: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static CACHE_STATS_CACHE: Lazy<StdMutex<Option<(Instant, models::CacheStats)>>> =
+    Lazy::new(|| StdMutex::new(None));
+type InstalledCatalogEntry = (Instant, Vec<models::Package>);
+static INSTALLED_CATALOG_CACHE: Lazy<StdMutex<Option<InstalledCatalogEntry>>> =
+    Lazy::new(|| StdMutex::new(None));
+static INSTALLED_CATALOG_GATE: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+const CACHE_STATS_TTL: StdDuration = StdDuration::from_secs(5);
+const INSTALLED_CATALOG_TTL: StdDuration = StdDuration::from_secs(20);
+
+pub(crate) fn invalidate_installed_catalog_cache() {
+    if let Ok(mut cache) = INSTALLED_CATALOG_CACHE.lock() {
+        *cache = None;
+    }
+}
+
+fn maintainer_fallback_for_source(source: &models::PackageSource) -> Option<String> {
+    let id = source.id.to_lowercase();
+    match source.source_type.as_str() {
+        "repo" => {
+            if id.contains("cachyos") {
+                Some("CachyOS Packaging Team".to_string())
+            } else if id.contains("chaotic") {
+                Some("Chaotic-AUR Team".to_string())
+            } else if id.contains("manjaro") || id.contains("garuda") || id.contains("endeavour") {
+                Some("Distribution Packaging Team".to_string())
+            } else {
+                Some("Arch Linux Packager".to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+fn derive_developer_name_for_details(pkg: &models::Package) -> Option<String> {
+    if let Some(maintainer) = pkg.maintainer.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        return Some(maintainer.to_string());
+    }
+
+    let url = pkg.url.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty())?;
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url)
+        .trim_start_matches("www.");
+    let first = host.split('.').next().unwrap_or(host).trim();
+    if first.is_empty() {
+        return None;
+    }
+
+    let mut chars = first.chars();
+    let head = chars.next()?;
+    Some(format!(
+        "{}{}",
+        head.to_uppercase(),
+        chars.collect::<String>()
+    ))
+}
+
+fn derive_donation_url_for_details(pkg: &models::Package) -> Option<String> {
+    pkg.url
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+}
+
+fn build_security_summary(
+    source: Option<&models::PackageSource>,
+    maintainer_known: bool,
+) -> models::PackageSecuritySummary {
+    let fallback = models::PackageSource::new("repo", "core", "latest", "Arch Official");
+    let source = source.unwrap_or(&fallback);
+    let id = source.id.to_lowercase();
+
+    let (trust_tier, system_access, verification_note) = match source.source_type.as_str() {
+        "flatpak" => (
+            "sandboxed",
+            "scoped",
+            "Runs with sandboxed permissions, which may vary by app.",
+        ),
+        "aur" => (
+            "community_build",
+            "full",
+            "Built from community-provided packaging scripts on your machine.",
+        ),
+        "repo" if id.contains("chaotic") => (
+            "third_party_repo",
+            "full",
+            "Provided by a third-party binary repository.",
+        ),
+        "repo" if id.contains("cachyos")
+            || id.contains("manjaro")
+            || id.contains("garuda")
+            || id.contains("endeavour") => (
+            "distro_native",
+            "full",
+            "Provided by your distribution's repositories.",
+        ),
+        _ => (
+            "official",
+            "full",
+            "Provided by the system package repositories.",
+        ),
+    };
+
+    let user_action_note = if maintainer_known {
+        "Review the package source before installing or updating."
+    } else {
+        "This source did not publish a maintainer. Verify the source before installing."
+    };
+
+    models::PackageSecuritySummary {
+        trust_tier: trust_tier.to_string(),
+        system_access: system_access.to_string(),
+        maintainer_known,
+        verification_note: verification_note.to_string(),
+        user_action_note: user_action_note.to_string(),
+    }
+}
+
+fn repo_family_key(source_id: &str) -> String {
+    let id = source_id.to_lowercase();
+    if id.contains("cachyos") {
+        "cachyos".to_string()
+    } else if id.contains("manjaro") {
+        "manjaro".to_string()
+    } else if id.contains("garuda") {
+        "garuda".to_string()
+    } else if id.contains("endeavour") {
+        "endeavouros".to_string()
+    } else if id.contains("chaotic") {
+        "chaotic-aur".to_string()
+    } else if matches!(id.as_str(), "core" | "extra" | "community" | "multilib" | "official") {
+        "arch-official".to_string()
+    } else {
+        id
+    }
+}
+
+fn same_source_identity_or_family(
+    a: &models::PackageSource,
+    b: &models::PackageSource,
+) -> bool {
+    if a.source_type != b.source_type {
+        return false;
+    }
+
+    if a.id == b.id {
+        return true;
+    }
+
+    if a.source_type == "repo" {
+        return repo_family_key(&a.id) == repo_family_key(&b.id);
+    }
+
+    false
+}
+
+fn canonicalize_to_known_variant_source(
+    preferred: Option<models::PackageSource>,
+    variants: &[models::PackageVariant],
+) -> Option<models::PackageSource> {
+    let preferred = preferred?;
+    variants
+        .iter()
+        .find(|variant| same_source_identity_or_family(&variant.source, &preferred))
+        .map(|variant| variant.source.clone())
+        .or(Some(preferred))
+}
+
+fn reorder_variants_for_selected_source(
+    variants: &mut [models::PackageVariant],
+    selected_source: Option<&models::PackageSource>,
+    preferred_default: Option<&models::PackageSource>,
+) {
+    variants.sort_by_key(|variant| {
+        if selected_source
+            .map(|selected| same_source_identity_or_family(&variant.source, selected))
+            .unwrap_or(false)
+        {
+            0
+        } else if preferred_default
+            .map(|preferred| same_source_identity_or_family(&variant.source, preferred))
+            .unwrap_or(false)
+        {
+            1
+        } else {
+            2
+        }
+    });
+}
+
+fn resolve_authoritative_selected_source(
+    package: Option<&models::Package>,
+    install_status: &PackageInstallStatus,
+    all_installed_variants: &[PackageInstallStatus],
+    all_variants: &mut [models::PackageVariant],
+) -> Option<models::PackageSource> {
+    let package_default = package.map(|pkg| pkg.source.clone());
+    let installed_candidate = all_installed_variants
+        .iter()
+        .find_map(|status| status.source.clone())
+        .or_else(|| install_status.source.clone());
+
+    let selected = if install_status.installed {
+        canonicalize_to_known_variant_source(installed_candidate, all_variants)
+            .or_else(|| canonicalize_to_known_variant_source(package_default.clone(), all_variants))
+    } else {
+        canonicalize_to_known_variant_source(package_default.clone(), all_variants)
+            .or_else(|| all_variants.first().map(|variant| variant.source.clone()))
+    };
+
+    reorder_variants_for_selected_source(all_variants, selected.as_ref(), package_default.as_ref());
+    selected
+}
 
 /// Zone 4: Copy built .pkg.tar.zst to shared temp so root helper can read them.
 const MONARCH_INSTALL_DIR: &str = "/tmp/monarch-install";
@@ -45,15 +278,21 @@ pub struct InstalledPackage {
     pub version: String,
     pub description: String,
     pub install_date: Option<String>,
+    pub install_date_unix: Option<i64>,
     pub size: Option<String>,
+    pub size_bytes: Option<u64>,
     pub url: Option<String>,
     pub repository: Option<String>,
+    pub source_label: Option<String>,
+    pub resolved_source: Option<models::PackageSource>,
+    pub display_name: Option<String>,
+    pub launchable: bool,
 
     // Optimizing "The Storm": Serve icon directly to avoid N+1 requests
     pub icon: Option<String>,
 }
 
-#[derive(Serialize, Clone, Type)]
+#[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct PackageInstallStatus {
     pub installed: bool,
     pub version: Option<String>,
@@ -277,10 +516,11 @@ pub async fn install_package_core(
             )
             .await?;
             // Flatpak success: skip ALPM verification (package is not in pacman DB). Emit success and return.
+            invalidate_installed_catalog_cache();
             let _ = app.emit("install-complete", "success");
             if repo_manager.is_notifications_enabled().await {
                 crate::commands::system::show_desktop_notification_safe(
-                    &app,
+                    app,
                     "✨ MonARCH: Installation Complete".to_string(),
                     format!("Successfully installed '{}'", name),
                 )
@@ -575,13 +815,14 @@ pub async fn install_package_core(
         ));
     }
 
+    invalidate_installed_catalog_cache();
     let _ = app.emit("install-complete", "success");
 
     // Process notification & telemetry
     // Only send system notification if enabled
     if repo_manager.is_notifications_enabled().await {
         crate::commands::system::show_desktop_notification_safe(
-            &app,
+            app,
             "✨ MonArch: Installation Complete".to_string(),
             format!("Successfully installed '{}'", name),
         )
@@ -646,6 +887,7 @@ pub async fn uninstall_package(
         if src.source_type == "flatpak" {
             match crate::flathub_api::remove_flatpak(app.clone(), name.clone()).await {
                 Ok(()) => {
+                    invalidate_installed_catalog_cache();
                     let _ = app.emit("install-complete", "success");
                     crate::utils::track_event_safe(
                         &app,
@@ -702,6 +944,7 @@ pub async fn uninstall_package(
         ));
     }
 
+    invalidate_installed_catalog_cache();
     let _ = app.emit("install-complete", "success");
 
     crate::utils::track_event_safe(
@@ -1314,6 +1557,234 @@ pub async fn fetch_pkgbuild(pkg_name: String) -> Result<String, String> {
     }
 }
 
+async fn get_installed_packages_legacy(
+    state: &crate::metadata::MetadataState,
+    state_registry: &crate::registry::RegistryState,
+) -> Vec<InstalledPackage> {
+    let native_pkgs = crate::alpm_read::get_installed_packages_native();
+    let mut apps = Vec::new();
+
+    if let Ok(loader) = state.loader.lock() {
+        for pkg in native_pkgs {
+            let icon = loader.find_icon_heuristic(&pkg.name);
+            let has_icon = icon.is_some();
+            let has_id = loader.find_app_id(&pkg.name).is_some();
+
+            if has_icon || has_id {
+                let display_name = loader
+                    .find_package(&pkg.name)
+                    .map(|meta| meta.name.clone())
+                    .filter(|value| !value.trim().is_empty())
+                    .or_else(|| Some(crate::utils::to_pretty_name(&pkg.name)));
+                let source_label = crate::utils::installed_source_for_package(&pkg.name, None)
+                    .map(|source| source.label)
+                    .or_else(|| Some("System package".to_string()));
+
+                apps.push(InstalledPackage {
+                    name: pkg.name.clone(),
+                    version: pkg.version,
+                    description: pkg.description,
+                    install_date: None,
+                    install_date_unix: None,
+                    size: pkg
+                        .installed_size
+                        .map(|s| format!("{} MB", s / (1024 * 1024))),
+                    size_bytes: pkg.installed_size,
+                    url: None,
+                    repository: source_label.as_ref().map(|_| "repo".to_string()),
+                    source_label,
+                    resolved_source: crate::utils::installed_source_for_package(&pkg.name, None),
+                    display_name,
+                    launchable: true,
+                    icon,
+                });
+            }
+        }
+    }
+
+    let flatpaks = tokio::time::timeout(
+        StdDuration::from_secs(3),
+        crate::flathub_api::get_installed_flatpaks_detailed(),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .unwrap_or_default();
+
+    for fp in flatpaks {
+        let flatpak_version = fp.version.clone();
+        let mut icon = None;
+        let mut description = fp.summary.clone();
+        let canonical = crate::utils::canonical_merge_key(&fp.name, Some(&fp.app_id));
+
+        if let Ok(entries) = state_registry.manager.get_packages_by_canonical_ids(&[canonical.clone(),
+            fp.app_id.to_lowercase(),
+            fp.app_id.clone()]) {
+            if let Some(cached) = entries.into_iter().next() {
+                icon = cached.icon;
+                if !cached.description.is_empty() {
+                    description = cached.description;
+                }
+            }
+        }
+
+        if icon.is_none() {
+            if let Ok(loader) = state.loader.lock() {
+                icon = loader
+                    .find_icon_heuristic(&fp.app_id)
+                    .or_else(|| loader.find_icon_heuristic(&fp.name))
+                    .or_else(|| loader.find_icon_heuristic(&canonical));
+                if description.trim().is_empty() {
+                    description = loader
+                        .find_package(&fp.app_id)
+                        .or_else(|| loader.find_package(&fp.name))
+                        .or_else(|| loader.find_package(&canonical))
+                        .and_then(|meta| meta.summary)
+                        .unwrap_or(description);
+                }
+            }
+        }
+
+        apps.push(InstalledPackage {
+            name: fp.app_id.clone(),
+            version: flatpak_version.clone(),
+            description,
+            install_date: None,
+            install_date_unix: None,
+            size: None,
+            size_bytes: None,
+            url: None,
+            repository: Some("flathub".to_string()),
+            source_label: Some("Flatpak".to_string()),
+            resolved_source: Some(models::PackageSource::new_with_name(
+                "flatpak",
+                "flathub",
+                &flatpak_version,
+                "Flatpak",
+                &fp.app_id,
+            )),
+            display_name: Some(fp.name.clone()),
+            launchable: true,
+            icon,
+        });
+    }
+
+    apps
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_installed_catalog(
+    state: tauri::State<'_, crate::metadata::MetadataState>,
+    state_registry: tauri::State<'_, crate::registry::RegistryState>,
+) -> Result<Vec<models::Package>, String> {
+    if let Ok(cache) = INSTALLED_CATALOG_CACHE.lock() {
+        if let Some((created_at, snapshot)) = cache.as_ref() {
+            if created_at.elapsed() < INSTALLED_CATALOG_TTL {
+                log::debug!(
+                    "[INSTALLED-CATALOG] cache hit: {} packages",
+                    snapshot.len()
+                );
+                let mut snapshot = snapshot.clone();
+                crate::utils::finalize_packages_contract(&mut snapshot);
+                return Ok(snapshot);
+            }
+        }
+    }
+
+    let _guard = INSTALLED_CATALOG_GATE.lock().await;
+    if let Ok(cache) = INSTALLED_CATALOG_CACHE.lock() {
+        if let Some((created_at, snapshot)) = cache.as_ref() {
+            if created_at.elapsed() < INSTALLED_CATALOG_TTL {
+                log::debug!(
+                    "[INSTALLED-CATALOG] cache hit after gate: {} packages",
+                    snapshot.len()
+                );
+                let mut snapshot = snapshot.clone();
+                crate::utils::finalize_packages_contract(&mut snapshot);
+                return Ok(snapshot);
+            }
+        }
+    }
+
+    let started = Instant::now();
+    let mut packages = get_installed_packages_legacy(state.inner(), state_registry.inner())
+        .await
+        .into_iter()
+        .map(|pkg| {
+            let resolved_source = pkg.resolved_source.clone();
+            let source_type = resolved_source
+                .as_ref()
+                .map(|source| source.source_type.clone())
+                .unwrap_or_else(|| {
+                    if pkg.repository.as_deref() == Some("flathub") {
+                        "flatpak".to_string()
+                    } else {
+                        "repo".to_string()
+                    }
+                });
+            let source_id = resolved_source
+                .as_ref()
+                .map(|source| source.id.clone())
+                .or_else(|| pkg.repository.clone())
+                .unwrap_or_else(|| "local".to_string());
+            let source_label = resolved_source
+                .as_ref()
+                .map(|source| source.label.clone())
+                .or_else(|| pkg.source_label.clone())
+                .unwrap_or_else(|| "Installed".to_string());
+            let source_package_name = resolved_source
+                .as_ref()
+                .and_then(|source| source.package_name.clone())
+                .unwrap_or_else(|| pkg.name.clone());
+            let package_source = models::PackageSource::new_with_name(
+                &source_type,
+                &source_id,
+                &pkg.version,
+                &source_label,
+                &source_package_name,
+            );
+            models::Package {
+                name: pkg.name.clone(),
+                display_name: pkg.display_name.clone(),
+                display_title: pkg.display_name.clone(),
+                description: pkg.description.clone(),
+                version: pkg.version.clone(),
+                source: package_source.clone(),
+                icon: pkg.icon.clone(),
+                installed: true,
+                installed_size_bytes: pkg.size_bytes,
+                installed_size: pkg.size_bytes,
+                available_sources: Some(vec![package_source]),
+                canonical_id: crate::utils::canonical_merge_key(
+                    &pkg.name,
+                    if source_type == "flatpak" { Some(&pkg.name) } else { None },
+                ),
+                installed_sources: Some(vec![pkg.name.clone()]),
+                launch_target: Some(pkg.name.clone()),
+                app_id: if source_type == "flatpak" {
+                    Some(pkg.name.clone())
+                } else {
+                    None
+                },
+                ..Default::default()
+            }
+        })
+        .collect::<Vec<_>>();
+    crate::utils::finalize_packages_contract(&mut packages);
+    log::info!(
+        "[INSTALLED-CATALOG] loaded {} packages in {} ms",
+        packages.len(),
+        started.elapsed().as_millis()
+    );
+
+    if let Ok(mut cache) = INSTALLED_CATALOG_CACHE.lock() {
+        *cache = Some((Instant::now(), packages.clone()));
+    }
+
+    Ok(packages)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_installed_packages(
@@ -1321,72 +1792,7 @@ pub async fn get_installed_packages(
     _state_flathub: tauri::State<'_, crate::flathub_api::FlathubApiClient>,
     state_registry: tauri::State<'_, crate::registry::RegistryState>,
 ) -> Result<Vec<InstalledPackage>, String> {
-    let native_pkgs = crate::alpm_read::get_installed_packages_native();
-    let mut apps = Vec::new();
-
-    // 1. Process ALPM packages (Repo/AUR/Chaotic)
-    if let Ok(loader) = state.loader.lock() {
-        for pkg in native_pkgs {
-            // Check if it's an app
-            let icon = loader.find_icon_heuristic(&pkg.name);
-            let has_icon = icon.is_some();
-            let has_id = loader.find_app_id(&pkg.name).is_some();
-
-            if has_icon || has_id {
-                apps.push(InstalledPackage {
-                    name: pkg.name,
-                    version: pkg.version,
-                    description: pkg.description,
-                    install_date: None,
-                    size: pkg
-                        .installed_size
-                        .map(|s| format!("{} MB", s / (1024 * 1024))),
-                    url: None,
-                    repository: None,
-                    icon,
-                });
-            }
-        }
-    }
-
-    // 2. Process Flatpaks
-    if let Ok(flatpaks) = crate::flathub_api::get_installed_flatpaks_detailed().await {
-        for fp in flatpaks {
-            let mut icon = None;
-            let mut description = fp.summary.clone();
-
-            // Try to enrich from Registry first (best quality icons)
-            if let Ok(Some(cached)) = state_registry
-                .manager
-                .get_package(&fp.app_id.to_lowercase())
-            {
-                icon = cached.icon;
-                if !cached.description.is_empty() {
-                    description = cached.description;
-                }
-            }
-
-            // Fallback to local AppStream loader
-            if icon.is_none() {
-                if let Ok(loader) = state.loader.lock() {
-                    icon = loader.find_icon_heuristic(&fp.app_id);
-                }
-            }
-
-            apps.push(InstalledPackage {
-                name: fp.app_id.clone(),
-                version: fp.version,
-                description,
-                install_date: None,
-                size: None,
-                url: None,
-                repository: Some("flathub".to_string()),
-                icon,
-            });
-        }
-    }
-
-    Ok(apps)
+    Ok(get_installed_packages_legacy(state.inner(), state_registry.inner()).await)
 }
 
 #[tauri::command]
@@ -1548,7 +1954,8 @@ pub async fn check_installed_status(
     state: State<'_, crate::metadata::MetadataState>,
     name: String,
 ) -> Result<PackageInstallStatus, String> {
-    // 1. ALPM (native) check: resolve display name to package name if needed
+    // 1. ALPM (native) check: resolve display name to package name if needed,
+    // then try known repo aliases for the same canonical product.
     let resolved_name = state
         .loader
         .lock()
@@ -1556,14 +1963,29 @@ pub async fn check_installed_status(
         .map(|loader| loader.resolve_package_name(&name))
         .unwrap_or_else(|| name.clone());
 
-    if let Some(pkg) = crate::alpm_read::get_package_native(&resolved_name) {
-        return Ok(PackageInstallStatus {
-            installed: pkg.installed,
-            version: Some(pkg.version),
-            repo: None,
-            source: Some(pkg.source),
-            actual_package_name: Some(resolved_name),
-        });
+    let canonical = crate::utils::canonical_merge_key(&resolved_name, None);
+    let mut candidate_names = vec![resolved_name.clone()];
+    for alias in crate::utils::canonical_to_repo_lookup_names(&canonical) {
+        let alias_name = alias.to_string();
+        if !candidate_names.contains(&alias_name) {
+            candidate_names.push(alias_name);
+        }
+    }
+
+    for candidate in candidate_names {
+        if let Some(pkg) = crate::alpm_read::get_package_native(&candidate) {
+            // Only finalize here when ALPM confirms this package is installed.
+            // If it's merely available in sync DBs, continue to Flatpak detection below.
+            if pkg.installed {
+                return Ok(PackageInstallStatus {
+                    installed: true,
+                    version: Some(pkg.version),
+                    repo: None,
+                    source: Some(pkg.source),
+                    actual_package_name: Some(candidate),
+                });
+            }
+        }
     }
 
     // 2. Flatpak check: so Launch and conflict UI work for Flatpak-installed apps
@@ -1689,10 +2111,8 @@ struct EssentialsCache {
     featured_by_category: Option<std::collections::HashMap<String, Vec<String>>>,
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn get_essentials_list(
-    state_repo: State<'_, RepoManager>,
+pub(crate) async fn resolve_essentials_list(
+    state_repo: &RepoManager,
 ) -> Result<Vec<String>, String> {
     // 1. System override: power users / distro packagers
     let db_path = std::path::Path::new("/var/lib/monarch/dbs/essentials.db");
@@ -1744,7 +2164,12 @@ pub async fn get_essentials_list(
         }
 
         // Fetch from remote (supports flat array or { packages, featured_by_category? })
-        if let Ok(resp) = reqwest::get(ESSENTIALS_JSON_URL).await {
+        let fetch = tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            reqwest::get(ESSENTIALS_JSON_URL),
+        )
+        .await;
+        if let Ok(Ok(resp)) = fetch {
             if resp.status().is_success() {
                 if let Ok(bytes) = resp.bytes().await {
                     let mut packages: Vec<String> = Vec::new();
@@ -1815,7 +2240,7 @@ pub async fn get_essentials_list(
     }
 
     // 4. CachyOS extras when repo enabled (append, still cap at ESSENTIALS_MAX)
-    if state_repo.inner().is_repo_enabled("cachyos").await {
+    if state_repo.is_repo_enabled("cachyos").await {
         for pkg in &["cachyos-settings", "linux-cachyos", "paru"] {
             if seen.insert(*pkg) && unique.len() < ESSENTIALS_MAX {
                 unique.push((*pkg).to_string());
@@ -1832,6 +2257,14 @@ pub async fn get_essentials_list(
         .collect();
 
     Ok(normalized)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_essentials_list(
+    state_repo: State<'_, RepoManager>,
+) -> Result<Vec<String>, String> {
+    resolve_essentials_list(state_repo.inner()).await
 }
 
 #[tauri::command]
@@ -1871,7 +2304,25 @@ pub async fn get_pacnew_warnings() -> Result<Vec<String>, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_cache_stats() -> Result<models::CacheStats, String> {
+    if let Ok(cache) = CACHE_STATS_CACHE.lock() {
+        if let Some((ts, stats)) = cache.as_ref() {
+            if ts.elapsed() < CACHE_STATS_TTL {
+                return Ok(stats.clone());
+            }
+        }
+    }
+
     log::info!("Calculating package cache stats...");
+    let stats = compute_cache_stats();
+
+    if let Ok(mut cache) = CACHE_STATS_CACHE.lock() {
+        *cache = Some((Instant::now(), stats.clone()));
+    }
+
+    Ok(stats)
+}
+
+fn compute_cache_stats() -> models::CacheStats {
     let cache_dir = "/var/cache/pacman/pkg";
     let mut total_size = 0;
     let mut pkg_count = 0;
@@ -1891,10 +2342,10 @@ pub async fn get_cache_stats() -> Result<models::CacheStats, String> {
         }
     }
 
-    Ok(models::CacheStats {
+    models::CacheStats {
         total_size_bytes: total_size,
         package_count: pkg_count,
-    })
+    }
 }
 
 #[tauri::command]
@@ -1921,6 +2372,10 @@ pub async fn clean_package_cache(
     while let Some(msg) = rx.recv().await {
         app.emit("package-cache-progress", msg.clone())
             .map_err(|e| e.to_string())?;
+    }
+
+    if let Ok(mut cache) = CACHE_STATS_CACHE.lock() {
+        *cache = None;
     }
 
     Ok(())
@@ -1993,4 +2448,669 @@ pub async fn restart_service(
 #[specta::specta]
 pub async fn get_flatpak_permissions(app_id: String) -> Result<Vec<String>, String> {
     crate::flathub_api::get_flatpak_permissions(&app_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_full_package_details_by_canonical_id(
+    canonical_id: String,
+    state_meta: State<'_, crate::metadata::MetadataState>,
+    state_repo: State<'_, RepoManager>,
+    state_chaotic: State<'_, crate::chaotic_api::ChaoticApiClient>,
+    state_flathub: State<'_, crate::flathub_api::FlathubApiClient>,
+    state_registry: State<'_, crate::registry::RegistryState>,
+    app: AppHandle,
+) -> Result<FullPackageDetails, String> {
+    let requested_id = canonical_id.trim();
+    if requested_id.is_empty() {
+        return Err("canonical_id is required".to_string());
+    }
+
+    let lookup = state_registry
+        .manager
+        .get_package(requested_id)
+        .ok()
+        .flatten()
+        .map(|pkg| pkg.name)
+        .unwrap_or_else(|| requested_id.to_string());
+
+    get_full_package_details(
+        lookup,
+        state_meta,
+        state_repo,
+        state_chaotic,
+        state_flathub,
+        state_registry,
+        app,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_full_package_details(
+    name: String,
+    state_meta: State<'_, crate::metadata::MetadataState>,
+    state_repo: State<'_, RepoManager>,
+    state_chaotic: State<'_, crate::chaotic_api::ChaoticApiClient>,
+    state_flathub: State<'_, crate::flathub_api::FlathubApiClient>,
+    state_registry: State<'_, crate::registry::RegistryState>,
+    _app: AppHandle,
+) -> Result<FullPackageDetails, String> {
+    let request_cache_key = name.trim().to_lowercase();
+    if let Some(cached) = FULL_DETAILS_CACHE.get(&request_cache_key).await {
+        let mut cached = cached;
+        if let Some(package) = cached.package.as_mut() {
+            crate::utils::finalize_package_contract(package);
+        }
+        return Ok(cached);
+    }
+    let mut cache_alias_keys = Vec::new();
+    if name.contains('.') && !name.contains(' ') {
+        if let Some(mapped_name) = crate::flathub_api::get_package_name_from_app_id(&name) {
+            let mapped_key = mapped_name.trim().to_lowercase();
+            if mapped_key != request_cache_key {
+                cache_alias_keys.push(mapped_key);
+            }
+        } else if let Some(last) = name.split('.').next_back() {
+            let fallback_key = last.trim().to_lowercase();
+            if !fallback_key.is_empty() && fallback_key != request_cache_key {
+                cache_alias_keys.push(fallback_key);
+            }
+        }
+    }
+    for alias_key in &cache_alias_keys {
+        if let Some(cached) = FULL_DETAILS_CACHE.get(alias_key).await {
+            let mut cached = cached;
+            if let Some(package) = cached.package.as_mut() {
+                crate::utils::finalize_package_contract(package);
+            }
+            FULL_DETAILS_CACHE
+                .insert(request_cache_key.clone(), cached.clone())
+                .await;
+            return Ok(cached);
+        }
+    }
+    // Single-flight guard: collapse concurrent duplicate detail requests
+    // (common in dev StrictMode / rapid tab transitions) into one backend fetch.
+    let _details_guard = FULL_DETAILS_GATE.lock().await;
+    if let Some(cached) = FULL_DETAILS_CACHE.get(&request_cache_key).await {
+        let mut cached = cached;
+        if let Some(package) = cached.package.as_mut() {
+            crate::utils::finalize_package_contract(package);
+        }
+        return Ok(cached);
+    }
+    for alias_key in &cache_alias_keys {
+        if let Some(cached) = FULL_DETAILS_CACHE.get(alias_key).await {
+            let mut cached = cached;
+            if let Some(package) = cached.package.as_mut() {
+                crate::utils::finalize_package_contract(package);
+            }
+            FULL_DETAILS_CACHE
+                .insert(request_cache_key.clone(), cached.clone())
+                .await;
+            return Ok(cached);
+        }
+    }
+
+    // Heuristic: If name contains a dot and no spaces, it's likely an app_id
+    let mut search_name = name.clone();
+    let mut search_app_id = None;
+    if name.contains('.') && !name.contains(' ') {
+        search_app_id = Some(name.clone());
+        if let Some(mapped_name) = crate::flathub_api::get_package_name_from_app_id(&name) {
+            search_name = mapped_name;
+        } else if let Some(last) = name.split('.').next_back() {
+            search_name = last.to_lowercase();
+        }
+    }
+
+    // 1. Fetch from Unified Backend Aggregation (replaces multiple calls / "Two Brains" issue).
+    // Respect discovery toggles so details does not re-inject hidden sources into the shared registry.
+    let include_flatpak = state_repo.inner().is_flatpak_enabled().await;
+    let include_aur = state_repo.inner().is_aur_enabled().await;
+    let include_chaotic = state_repo.inner().is_repo_enabled("chaotic-aur").await;
+
+    let mut packages = crate::middleware::aggregation::fetch_and_merge_packages_by_names_impl(
+        &state_meta,
+        &state_chaotic,
+        &state_repo,
+        &state_flathub,
+        &state_registry.manager,
+        vec![(search_name, search_app_id)],
+        include_flatpak,
+        include_aur,
+        include_chaotic,
+        false, // details is a discovery surface; installed variants are resolved separately below
+    )
+    .await?;
+
+    let mut primary_idx = 0;
+    for (i, p) in packages.iter().enumerate() {
+        if p.name == name || p.app_id.as_deref() == Some(&name) || p.canonical_id == name {
+            primary_idx = i;
+            break;
+        }
+    }
+
+    let mut package = if !packages.is_empty() {
+        Some(packages.remove(primary_idx))
+    } else {
+        None
+    };
+
+    let packages_iter = packages.into_iter();
+
+    // 2. ORPHAN VARIANT & DEEP METADATA FIX
+    if let Some(primary) = &mut package {
+        if !primary.canonical_id.trim().is_empty() {
+            if let Ok(Some(registry_pkg)) = state_registry.manager.get_package(&primary.canonical_id) {
+                if primary
+                    .long_description
+                    .as_deref()
+                    .map(|text| text.trim().is_empty())
+                    .unwrap_or(true)
+                    && registry_pkg
+                        .long_description
+                        .as_deref()
+                        .map(|text| !text.trim().is_empty())
+                        .unwrap_or(false)
+                {
+                    primary.long_description = registry_pkg.long_description.clone();
+                }
+                if primary
+                    .screenshots
+                    .as_ref()
+                    .map(|shots| shots.is_empty())
+                    .unwrap_or(true)
+                    && registry_pkg
+                        .screenshots
+                        .as_ref()
+                        .map(|shots| !shots.is_empty())
+                        .unwrap_or(false)
+                {
+                    primary.screenshots = registry_pkg.screenshots.clone();
+                }
+                if (primary.icon.is_none()
+                    || primary.icon.as_deref().unwrap_or("").trim().is_empty()
+                    || primary.icon.as_deref().unwrap_or("").starts_with('/'))
+                    && registry_pkg
+                        .icon
+                        .as_deref()
+                        .map(|icon| !icon.trim().is_empty() && !icon.starts_with('/'))
+                        .unwrap_or(false)
+                {
+                    primary.icon = registry_pkg.icon.clone();
+                }
+                if primary.app_id.is_none() && registry_pkg.app_id.is_some() {
+                    primary.app_id = registry_pkg.app_id.clone();
+                }
+            }
+        }
+        // A. Merge disjoint variants (fixes missing dropdown / "Repo" label)
+        let mut merged_sources = primary
+            .available_sources
+            .clone()
+            .unwrap_or_else(|| vec![primary.source.clone()]);
+        let primary_canonical = crate::utils::canonical_merge_key(
+            &primary.name,
+            primary.app_id.as_deref(),
+        );
+
+        for mut other_pkg in packages_iter {
+            // CRITICAL: only merge variants that belong to the same canonical product.
+            // This prevents unrelated Flatpak search hits from polluting the source selector.
+            let other_canonical =
+                crate::utils::canonical_merge_key(&other_pkg.name, other_pkg.app_id.as_deref());
+            if other_canonical != primary_canonical {
+                continue;
+            }
+            let other_sources = other_pkg
+                .available_sources
+                .take()
+                .unwrap_or_else(|| vec![other_pkg.source.clone()]);
+            for src in other_sources {
+                if !merged_sources.iter().any(|s| {
+                    // Dedup by (source_type, id, package_name) only — NOT version.
+                    // This prevents libreoffice-fresh v20 and v25 from both appearing
+                    // as separate "Arch Official" entries in the source dropdown.
+                    s.id == src.id
+                        && s.source_type == src.source_type
+                        && s.package_name == src.package_name
+                }) {
+                    merged_sources.push(src);
+                } else {
+                    // Keep the higher version entry for this slot
+                    if let Some(existing) = merged_sources.iter_mut().find(|s| {
+                        s.id == src.id
+                            && s.source_type == src.source_type
+                            && s.package_name == src.package_name
+                    }) {
+                        if src.version > existing.version {
+                            *existing = src;
+                        }
+                    }
+                }
+            }
+        }
+        merged_sources.sort_by(|a, b| {
+            let rank = |s: &models::PackageSource| {
+                let id = s.id.to_lowercase();
+                match s.source_type.as_str() {
+                    "repo" => {
+                        if id.contains("cachyos")
+                            || id.contains("manjaro")
+                            || id.contains("garuda")
+                            || id.contains("endeavour")
+                        {
+                            50
+                        } else if matches!(id.as_str(), "core" | "extra" | "community" | "multilib" | "official") {
+                            40
+                        } else if id.contains("chaotic") {
+                            30
+                        } else {
+                            35
+                        }
+                    }
+                    "flatpak" => 20,
+                    "aur" => 10,
+                    _ => 0,
+                }
+            };
+            rank(b)
+                .cmp(&rank(a))
+                .then_with(|| a.id.cmp(&b.id))
+                .then_with(|| a.package_name.cmp(&b.package_name))
+        });
+        primary.available_sources = Some(merged_sources);
+
+        let mut search_id = primary
+            .app_id
+            .clone()
+            .unwrap_or_else(|| primary.name.clone());
+
+        // PROACTIVE FIX: If the search_id is just a package name (likely from Repo/AUR),
+        // try to find a known AppID mapping before falling back to search-by-name.
+        if !search_id.contains('.') {
+            if let Some(mapped) = crate::utils::canonical_to_flathub_id(&search_id) {
+                log::info!(
+                    "[DETAILS-PROXY] Mapping found for {}: -> {}",
+                    search_id,
+                    mapped
+                );
+                search_id = mapped;
+            }
+        }
+
+        let needs_long_description = primary
+            .long_description
+            .as_deref()
+            .map(|text| text.trim().is_empty())
+            .unwrap_or(true);
+        let needs_screenshots = primary
+            .screenshots
+            .as_ref()
+            .map(|shots| shots.is_empty())
+            .unwrap_or(true);
+        let needs_icon = primary.icon.is_none() || primary.icon.as_deref().unwrap_or("").starts_with('/');
+        let needs_app_id = primary.app_id.is_none();
+        let needs_remote_metadata =
+            needs_long_description || needs_screenshots || needs_icon || needs_app_id;
+
+        if needs_remote_metadata {
+            log::info!(
+                "[DETAILS-PROXY] Fetching Flathub metadata for ID: {}",
+                search_id
+            );
+            if let Some(fm) = state_flathub.get_metadata_for_package(&search_id).await {
+                log::info!(
+                    "[DETAILS-PROXY] Successfully fetched Flathub metadata for ID: {}",
+                    search_id
+                );
+                let full_meta = crate::flathub_api::flathub_to_app_metadata(&fm, &primary.name);
+                let mut enriched = false;
+
+                if primary.app_id.is_none() {
+                    primary.app_id = Some(full_meta.app_id.clone());
+                    enriched = true;
+                }
+
+                if needs_long_description {
+                    log::info!(
+                        "[DETAILS-PROXY] Updating long_description for {}",
+                        primary.name
+                    );
+                    primary.long_description = full_meta.description.clone();
+                    enriched = true;
+                }
+                if needs_screenshots {
+                    primary.screenshots = Some(full_meta.screenshots);
+                    enriched = true;
+                }
+                if needs_icon {
+                    primary.icon = full_meta.icon_url;
+                    enriched = true;
+                }
+
+                if enriched {
+                    if let Err(error) = state_registry
+                        .manager
+                        .bulk_upsert_packages(std::slice::from_ref(primary))
+                    {
+                        log::warn!(
+                            "[DETAILS-PROXY] Failed to persist enriched metadata for {}: {}",
+                            primary.name,
+                            error
+                        );
+                    }
+                }
+            } else {
+                log::warn!(
+                    "[DETAILS-PROXY] Failed to fetch Flathub metadata for ID: {}",
+                    search_id
+                );
+            }
+        }
+
+        if primary.maintainer.is_none() {
+            primary.maintainer = maintainer_fallback_for_source(&primary.source);
+        }
+    }
+
+    // Determine actual package name and flatpak app_id if available
+    let actual_name = package
+        .as_ref()
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| name.clone());
+
+    let flathub_app_id = package.as_ref().and_then(|p| p.app_id.clone());
+
+    // 2. Fetch Install Status
+    let install_status = match check_installed_status(state_meta.clone(), actual_name.clone()).await
+    {
+        Ok(s) => s,
+        Err(_) => PackageInstallStatus {
+            installed: false,
+            version: None,
+            repo: None,
+            source: None,
+            actual_package_name: None,
+        },
+    };
+
+    // 3. Fetch all completely installed variants (Repo + AUR + Flatpak)
+    // Here we can re-use the available_sources from the `package` we just fetched if it exists
+    let mut all_installed_variants = vec![];
+    if let Some(pkg) = &package {
+        if let Some(sources) = &pkg.available_sources {
+            let unique_names: std::collections::HashSet<String> = sources
+                .iter()
+                .filter_map(|s| s.package_name.clone().or_else(|| Some(pkg.name.clone())))
+                .collect();
+
+            for uniq_n in unique_names {
+                if let Ok(status) = check_installed_status(state_meta.clone(), uniq_n.clone()).await
+                {
+                    if status.installed {
+                        all_installed_variants.push(status);
+                    }
+                }
+            }
+        }
+    }
+    // Fallback if the package itself was installed but variant logic didn't catch it
+    if all_installed_variants.is_empty() && install_status.installed {
+        all_installed_variants.push(install_status.clone());
+    }
+
+    // 4. Fetch permissions if it has a flatpak app_id
+    let flatpak_permissions = match flathub_app_id {
+        Some(app_id) => get_flatpak_permissions(app_id).await.ok(),
+        None => None,
+    };
+
+    // 5. Build rich variant list for metadata reactivity from canonical available_sources.
+    let mut all_variants = if let Some(pkg) = &package {
+        let sources = pkg
+            .available_sources
+            .clone()
+            .unwrap_or_else(|| vec![pkg.source.clone()]);
+        let mut seen = std::collections::HashSet::new();
+        let mut flatpak_size_cache: std::collections::HashMap<String, (Option<u64>, Option<u64>)> =
+            std::collections::HashMap::new();
+        let mut variants = Vec::new();
+
+        for src in sources {
+            let slot = format!(
+                "{}|{}|{}",
+                src.source_type,
+                src.id,
+                src.package_name.clone().unwrap_or_default()
+            );
+            if !seen.insert(slot) {
+                continue;
+            }
+
+            // Reuse source-specific metadata from alternatives when available.
+            let alt_match = pkg.alternatives.as_ref().and_then(|alts| {
+                alts.iter().find(|a| {
+                    a.source.id == src.id
+                        && a.source.source_type == src.source_type
+                        && a.source.package_name == src.package_name
+                })
+            });
+
+            let v = alt_match.unwrap_or(pkg);
+            let variant_maintainer = v
+                .maintainer
+                .clone()
+                .or_else(|| maintainer_fallback_for_source(&src));
+            let variant_security = Some(build_security_summary(
+                Some(&src),
+                variant_maintainer
+                    .as_ref()
+                    .map(|maintainer| !maintainer.trim().is_empty())
+                    .unwrap_or(false),
+            ));
+            let mut download_size = v.download_size;
+            let mut installed_size = v.installed_size;
+            if src.source_type == "flatpak" && (download_size.is_none() || installed_size.is_none()) {
+                if let Some(app_id) = src
+                    .package_name
+                    .clone()
+                    .or_else(|| v.app_id.clone())
+                    .or_else(|| pkg.app_id.clone())
+                {
+                    let sizes = if let Some(existing) = flatpak_size_cache.get(&app_id) {
+                        *existing
+                    } else {
+                        let fetched = crate::flathub_api::get_remote_app_sizes(&app_id, &src.id)
+                            .await
+                            .unwrap_or((None, None));
+                        flatpak_size_cache.insert(app_id.clone(), fetched);
+                        flatpak_size_cache
+                            .get(&app_id)
+                            .cloned()
+                            .unwrap_or((None, None))
+                    };
+                    if download_size.is_none() {
+                        download_size = sizes.0;
+                    }
+                    if installed_size.is_none() {
+                        installed_size = sizes.1;
+                    }
+                }
+            }
+            variants.push(models::PackageVariant {
+                source: src.clone(),
+                version: if src.version.is_empty() {
+                    v.version.clone()
+                } else {
+                    src.version.clone()
+                },
+                repo_name: if src.id == "chaotic-aur" {
+                    Some("chaotic-aur".to_string())
+                } else {
+                    None
+                },
+                pkg_name: src.package_name.clone().or_else(|| Some(v.name.clone())),
+                download_size,
+                installed_size,
+                maintainer: variant_maintainer,
+                license: v.license.clone(),
+                description: Some(v.description.clone()),
+                screenshots: v.screenshots.clone(),
+                security: variant_security,
+            });
+        }
+
+        variants
+    } else {
+        vec![]
+    };
+
+    let selected_source = resolve_authoritative_selected_source(
+        package.as_ref(),
+        &install_status,
+        &all_installed_variants,
+        &mut all_variants,
+    );
+    let installed_source_label = if install_status.installed {
+        selected_source
+            .as_ref()
+            .as_ref()
+            .map(|src| src.label.clone())
+            .or_else(|| install_status.repo.clone())
+    } else {
+        None
+    };
+    let source_switch_notice = installed_source_label.as_ref().map(|label| {
+        format!(
+            "Installed from {}. To install from another source, uninstall the current app first.",
+            label
+        )
+    });
+    let maintainer_known = package
+        .as_ref()
+        .and_then(|pkg| pkg.maintainer.as_ref())
+        .map(|m| !m.trim().is_empty())
+        .unwrap_or(false);
+    let security = Some(build_security_summary(
+        selected_source.as_ref().or_else(|| package.as_ref().map(|pkg| &pkg.source)),
+        maintainer_known,
+    ));
+    let developer_name = package
+        .as_ref()
+        .and_then(derive_developer_name_for_details);
+    let donation_url = package
+        .as_ref()
+        .and_then(derive_donation_url_for_details);
+    let presentation = package.as_ref().map(|pkg| models::PackagePresentation {
+        display_title: Some(
+            pkg.display_title
+                .clone()
+                .or_else(|| pkg.display_name.clone())
+                .unwrap_or_else(|| pkg.name.clone()),
+        ),
+        icon: pkg.icon.clone(),
+        short_description: Some(pkg.description.clone()),
+        long_description: pkg.long_description.clone(),
+        screenshots: pkg.screenshots.clone().unwrap_or_default(),
+        app_id: pkg.app_id.clone(),
+        developer_name: developer_name.clone(),
+        donation_url: donation_url.clone(),
+    });
+    let mut response = FullPackageDetails {
+        presentation,
+        display_title: package
+            .as_ref()
+            .map(|p| p.display_name.clone().unwrap_or_else(|| p.name.clone())),
+        primary_action: Some(if install_status.installed {
+            "launch".to_string()
+        } else {
+            "install".to_string()
+        }),
+        primary_action_label: Some(if install_status.installed {
+            "Launch".to_string()
+        } else {
+            "Install".to_string()
+        }),
+        selected_default_source: selected_source.clone(),
+        source_summary: if all_variants.is_empty() {
+            None
+        } else if all_variants.len() == 1 {
+            let src = &all_variants[0].source;
+            Some(format!("Primary source: {}", src.label))
+        } else {
+            Some(format!("{} sources available", all_variants.len()))
+        },
+        security_summary: security
+            .as_ref()
+            .map(|summary| format!("{} {}", summary.verification_note, summary.user_action_note)),
+        installed_source_label,
+        source_switch_policy: Some(if install_status.installed {
+            "informational_only".to_string()
+        } else {
+            "switch_allowed".to_string()
+        }),
+        source_switch_notice,
+        security,
+        developer_name,
+        donation_url,
+        package,
+        installed_status: install_status,
+        all_installed_variants,
+        flatpak_permissions,
+        all_variants,
+    };
+    if let Some(package) = response.package.as_mut() {
+        crate::utils::finalize_package_contract(package);
+    }
+    log::debug!(
+        "[DETAILS] name={} sources={} installed={}",
+        actual_name,
+        response
+            .package
+            .as_ref()
+            .and_then(|p| p.available_sources.as_ref().map(|s| s.len()))
+            .unwrap_or(0),
+        response.installed_status.installed
+    );
+    let resolved_cache_key = response
+        .package
+        .as_ref()
+        .map(|pkg| {
+            if pkg.canonical_id.trim().is_empty() {
+                crate::utils::canonical_merge_key(&pkg.name, pkg.app_id.as_deref())
+            } else {
+                pkg.canonical_id.to_lowercase()
+            }
+        })
+        .unwrap_or_else(|| request_cache_key.clone());
+
+    FULL_DETAILS_CACHE
+        .insert(request_cache_key.clone(), response.clone())
+        .await;
+    if resolved_cache_key != request_cache_key {
+        FULL_DETAILS_CACHE
+            .insert(resolved_cache_key.clone(), response.clone())
+            .await;
+    }
+    if let Some(pkg) = response.package.as_ref() {
+        if let Some(app_id) = pkg.app_id.as_ref() {
+            let app_id_key = app_id.trim().to_lowercase();
+            if !app_id_key.is_empty()
+                && app_id_key != request_cache_key
+                && app_id_key != resolved_cache_key
+            {
+                FULL_DETAILS_CACHE.insert(app_id_key, response.clone()).await;
+            }
+        }
+        let name_key = pkg.name.trim().to_lowercase();
+        if !name_key.is_empty() && name_key != request_cache_key && name_key != resolved_cache_key {
+            FULL_DETAILS_CACHE.insert(name_key, response.clone()).await;
+        }
+    }
+    Ok(response)
 }

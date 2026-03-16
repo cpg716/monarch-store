@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     libgtksourceview-3.0-dev \
     libappindicator3-dev \
     libwebkit2gtk-4.1-dev \
+    libgtk-4-dev \
+    libadwaita-1-dev \
     meson \
     ninja-build \
     libcurl4-openssl-dev \

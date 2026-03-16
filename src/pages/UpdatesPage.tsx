@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { RefreshCw, ArrowRight, CheckCircle2, Download, AlertCircle, Unlock, Loader2, Terminal, ShieldCheck, RotateCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ConfirmationModal from '../components/ConfirmationModal';
@@ -11,9 +11,18 @@ import { useErrorService } from '../context/ErrorContext';
 import { useToast } from '../context/ToastContext';
 import { useSessionPassword } from '../context/useSessionPassword';
 import { friendlyError } from '../utils/friendlyError';
-import { commands, UpdateItem, NewsItem, AppMetadata, DistroContext } from '../services/bindings';
+import { commands, UpdateItem, NewsItem, DistroContext, UpdateSnapshot, UpdateSourceStatus } from '../services/bindings';
 import { unwrap } from '../utils/specta';
 import { notifyUpdateComplete } from '../services/notificationService';
+
+function describeError(error: unknown): string {
+    if (error instanceof Error) return `${error.name}: ${error.message}`;
+    try {
+        return JSON.stringify(error);
+    } catch {
+        return String(error);
+    }
+}
 
 import RepoBadge from '../components/RepoBadge';
 
@@ -33,6 +42,7 @@ export default function UpdatesPage() {
     const { success: toastSuccess } = useToast();
     const { requestSessionPassword } = useSessionPassword();
     const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
+    const oneClickEnabled = useAppStore((s) => s.oneClickEnabled);
     const {
         isUpdating,
         updateProgress: progress,
@@ -47,11 +57,10 @@ export default function UpdatesPage() {
     } = useAppStore();
 
     const [updates, setUpdates] = useState<UpdateItem[]>([]);
-    const [metadataCache, setMetadataCache] = useState<Record<string, AppMetadata>>({});
+    const [sourceStatuses, setSourceStatuses] = useState<UpdateSourceStatus[]>([]);
     const [isChecking, setIsChecking] = useState(true);
     const [updateResult, setUpdateResult] = useState<string | null>(null);
     const [showConsole, setShowConsole] = useState(false);
-    const [password, setPassword] = useState('');
     const [currentStep, setCurrentStep] = useState(0);
     const [fixingLock, setFixingLock] = useState(false);
     const [showAuthHint, setShowAuthHint] = useState(false);
@@ -84,8 +93,62 @@ export default function UpdatesPage() {
     }
     const [manifest, setManifest] = useState<UpdateManifest | null>(null);
 
+    interface UpdateFailedPackage {
+        name: string;
+        source: string;
+        reason: string;
+    }
+    interface UpdateRunSummary {
+        repo: 'success' | 'failed' | 'skipped';
+        aur: 'success' | 'partial' | 'failed' | 'skipped';
+        flatpak: 'success' | 'partial' | 'failed' | 'skipped';
+        succeeded_packages: string[];
+        failed_packages: UpdateFailedPackage[];
+        warnings: string[];
+        duration_ms: number;
+    }
+    interface UpdateCompleteEvent {
+        overall: 'success' | 'partial' | 'failed';
+        summary: UpdateRunSummary;
+        message: string;
+    }
+    interface UpdateSourceProgressEvent {
+        source: 'repo' | 'aur' | 'flatpak';
+        stage: string;
+        current: number;
+        total: number;
+        package?: string;
+    }
+
     // 3.2: Per-source progress indicators
     const [sourceProgress, setSourceProgress] = useState<{ repo: 'idle' | 'active' | 'done' | 'error'; aur: 'idle' | 'active' | 'done' | 'error'; flatpak: 'idle' | 'active' | 'done' | 'error' }>({ repo: 'idle', aur: 'idle', flatpak: 'idle' });
+    const [sourceProgressDetail, setSourceProgressDetail] = useState<Record<'repo' | 'aur' | 'flatpak', { stage: string; current: number; total: number; package?: string }>>({
+        repo: { stage: 'idle', current: 0, total: 0 },
+        aur: { stage: 'idle', current: 0, total: 0 },
+        flatpak: { stage: 'idle', current: 0, total: 0 },
+    });
+    const [lastUpdateSummary, setLastUpdateSummary] = useState<UpdateCompleteEvent | null>(null);
+    const [showAdvancedControls, setShowAdvancedControls] = useState(false);
+    const [advancedScope, setAdvancedScope] = useState({ repo: true, aur: true, flatpak: true });
+    const [excludedUpdateKeys, setExcludedUpdateKeys] = useState<Record<string, boolean>>({});
+    const [retryTargets, setRetryTargets] = useState<UpdateItem[]>([]);
+    const sourceSections = useMemo(() => {
+        const grouped = new Map<string, UpdateItem[]>();
+        for (const u of updates) {
+            const key = u.source?.source_type || 'unknown';
+            const list = grouped.get(key) ?? [];
+            list.push(u);
+            grouped.set(key, list);
+        }
+        return Array.from(grouped.entries());
+    }, [updates]);
+
+    const sourceLabel = useCallback((sourceType: string) => {
+        if (sourceType === 'repo') return 'System (repos)';
+        if (sourceType === 'aur') return 'AUR (community)';
+        if (sourceType === 'flatpak') return 'Flatpak';
+        return `${sourceType} updates`;
+    }, []);
 
     // Batch fetch metadata for updates
     useEffect(() => {
@@ -108,20 +171,6 @@ export default function UpdatesPage() {
         }
     };
 
-    // Batch fetch metadata for updates
-    useEffect(() => {
-        if (updates.length === 0) return;
-
-        // Identify which updates are missing from our cache
-        const missing = updates.filter(u => !metadataCache[u.name]).map(u => u.name);
-
-        if (missing.length > 0) {
-            commands.getMetadataBatch(missing).then(unwrap).then(newMeta => {
-                setMetadataCache(prev => ({ ...prev, ...newMeta }));
-            }).catch(e => console.error("Failed to batch load metadata:", e));
-        }
-    }, [updates]); // Run whenever updates list updates (e.g. initial load or post-update check)
-
     const isLockOrBusyError = updateResult != null && /lock|busy|database.*(locked|busy)/i.test(updateResult);
 
     // If update is "stuck" on auth/connectivity for 5s, show hint (password dialog may be hidden).
@@ -137,10 +186,10 @@ export default function UpdatesPage() {
     }, [isUpdating]);
 
     const steps = [
-        "Synchronizing Databases",
-        "Upgrading System",
-        "Updating Community Apps",
-        "Updating Flatpaks"
+        "Preparing update",
+        "Updating system packages",
+        "Building community packages (AUR)",
+        "Updating Flatpak apps"
     ];
 
     const fetchNews = useCallback(async () => {
@@ -172,9 +221,17 @@ export default function UpdatesPage() {
         setIsChecking(true);
         setUpdateResult(null);
         try {
-            // For updates, sources are never "off": repo (incl. Chaotic-AUR), AUR, and Flatpak always included.
-            // Discovery toggles (Settings → Sources) only affect search/browse, not the Updates list.
-            const pendingUpdates = unwrap(await commands.checkUpdates(true, true));
+            const snapshot: UpdateSnapshot = unwrap(await commands.getUpdateSnapshot(true, true));
+            setSourceStatuses(snapshot.sources);
+            const pendingUpdates: UpdateItem[] = snapshot.items.map((item) => ({
+                name: item.package.name,
+                display_name: item.package.display_name,
+                current_version: item.current_version,
+                new_version: item.new_version,
+                source: item.package.source,
+                size: item.package.download_size_bytes ?? item.package.download_size ?? null,
+                icon: item.package.icon,
+            }));
             // Deduplicate by name:source_type:id to prevent React key collisions
             const seen = new Set<string>();
             const deduped = pendingUpdates.filter(pkg => {
@@ -185,13 +242,25 @@ export default function UpdatesPage() {
             });
             setUpdates(deduped);
         } catch (e) {
-            errorService.reportError(e as Error | string);
+            errorService.reportError(describeError(e));
         } finally {
             setIsChecking(false);
         }
     };
 
     const [showConfirm, setShowConfirm] = useState(false);
+
+    const getUpdateKey = useCallback((pkg: UpdateItem) => `${pkg.name}:${pkg.source.source_type}:${pkg.source.id}`, []);
+    const selectedUpdates = useMemo(
+        () => updates.filter((u) => {
+            const src = u.source.source_type;
+            if (src === 'repo' && !advancedScope.repo) return false;
+            if (src === 'aur' && !advancedScope.aur) return false;
+            if (src === 'flatpak' && !advancedScope.flatpak) return false;
+            return !excludedUpdateKeys[getUpdateKey(u)];
+        }),
+        [updates, advancedScope, excludedUpdateKeys, getUpdateKey]
+    );
 
     // Fetch updates on mount (list always includes repo + AUR + Flatpak for installed packages)
     useEffect(() => {
@@ -200,17 +269,18 @@ export default function UpdatesPage() {
 
     // Listen for update-complete so we don't block the UI waiting for the backend.
     useEffect(() => {
-        const unlisten = listen<{ success: boolean; message: string }>('update-complete', async (event) => {
+        const unlisten = listen<UpdateCompleteEvent>('update-complete', async (event) => {
             setUpdating(false);
             setUpdateResult(event.payload.message);
+            setLastUpdateSummary(event.payload);
             // Mark all sources as done when update completes
             setSourceProgress(prev => ({
-                repo: prev.repo === 'active' ? 'done' : prev.repo,
-                aur: prev.aur === 'active' ? 'done' : prev.aur,
-                flatpak: prev.flatpak === 'active' ? 'done' : prev.flatpak,
+                repo: event.payload.summary.repo === 'failed' ? 'error' : prev.repo === 'active' ? 'done' : prev.repo,
+                aur: (event.payload.summary.aur === 'failed' || event.payload.summary.aur === 'partial') ? 'error' : prev.aur === 'active' ? 'done' : prev.aur,
+                flatpak: (event.payload.summary.flatpak === 'failed' || event.payload.summary.flatpak === 'partial') ? 'error' : prev.flatpak === 'active' ? 'done' : prev.flatpak,
             }));
             // Desktop notification on update completion
-            notifyUpdateComplete(event.payload.success, event.payload.message).catch(() => { });
+            notifyUpdateComplete(event.payload.overall !== 'failed', event.payload.message).catch(() => { });
             checkForUpdates();
             try {
                 const warnings = unwrap(await commands.getPacnewWarnings());
@@ -218,7 +288,7 @@ export default function UpdatesPage() {
             } catch {
                 // ignore
             }
-            if (event.payload.success) {
+            if (event.payload.overall !== 'failed') {
                 try {
                     const orphans = unwrap(await commands.getOrphans());
                     setOrphansAfterUpdate(orphans || []);
@@ -228,43 +298,65 @@ export default function UpdatesPage() {
             } else {
                 setOrphansAfterUpdate([]);
             }
+
+            if (event.payload.summary.failed_packages.length > 0) {
+                const failedSet = new Set(event.payload.summary.failed_packages.map((f) => `${f.name}:${f.source}`));
+                setRetryTargets(
+                    updates.filter((u) => failedSet.has(`${u.name}:${u.source.source_type}`))
+                );
+            } else {
+                setRetryTargets([]);
+            }
         });
         return () => {
             unlisten.then((fn) => fn()).catch(() => { });
         };
-    }, [setUpdating, setPacnewWarnings]);
+    }, [setUpdating, setPacnewWarnings, updates]);
 
     // 3.1: Listen for transaction manifest from backend
     useEffect(() => {
         const unlisten = listen<UpdateManifest>('update-manifest', (event) => {
             setManifest(event.payload);
         });
-
-        // 3.2: Per-source progress from update-status messages (tightened matching)
-        const unlistenStatus = listen<string>('update-status', (event) => {
-            const msg = typeof event.payload === 'string' ? event.payload.toLowerCase() : '';
-            if (msg.includes('synchronizing') || msg.includes('system upgrade') || msg.includes('official') || msg.includes('database') || msg.includes('upgrading system') || msg.includes('waiting for authentication')) {
-                setSourceProgress(prev => ({ ...prev, repo: 'active' }));
-            } else if (msg.includes('aur') || msg.includes('building') || msg.includes('makepkg')) {
-                setSourceProgress(prev => ({ ...prev, repo: prev.repo === 'active' ? 'done' : prev.repo, aur: 'active' }));
-            } else if (msg.includes('flatpak')) {
-                setSourceProgress(prev => ({ ...prev, aur: prev.aur === 'active' ? 'done' : prev.aur, flatpak: 'active' }));
-            } else if (msg.includes('all updates completed')) {
-                setSourceProgress(prev => ({
-                    repo: prev.repo !== 'idle' ? 'done' : 'idle',
-                    aur: prev.aur !== 'idle' ? 'done' : 'idle',
-                    flatpak: prev.flatpak !== 'idle' ? 'done' : 'idle',
-                }));
-            }
+        const unlistenSourceProgress = listen<UpdateSourceProgressEvent>('update-source-progress', (event) => {
+            const { source, stage, current, total, package: pkg } = event.payload;
+            setSourceProgressDetail((prev) => ({
+                ...prev,
+                [source]: { stage, current, total, package: pkg },
+            }));
+            setSourceProgress((prev) => ({
+                ...prev,
+                [source]:
+                    stage === 'failed'
+                        ? 'error'
+                        : stage === 'complete' || stage === 'skipped'
+                            ? 'done'
+                            : stage === 'idle'
+                                ? 'idle'
+                                : 'active',
+            }));
         });
 
         return () => {
             unlisten.then((fn) => fn()).catch(() => { });
-            unlistenStatus.then((fn) => fn()).catch(() => { });
+            unlistenSourceProgress.then((fn) => fn()).catch(() => { });
         };
     }, []);
 
     const handleUpdateAll = () => {
+        if (selectedUpdates.length === 0) {
+            setUpdateResult('No updates selected. Adjust Advanced Controls or select updates to continue.');
+            return;
+        }
+        setManifest({
+            total: selectedUpdates.length,
+            repo_count: selectedUpdates.filter((u) => u.source.source_type === 'repo').length,
+            aur_count: selectedUpdates.filter((u) => u.source.source_type === 'aur').length,
+            flatpak_count: selectedUpdates.filter((u) => u.source.source_type === 'flatpak').length,
+            repo_packages: selectedUpdates.filter((u) => u.source.source_type === 'repo').map((u) => u.name),
+            aur_packages: selectedUpdates.filter((u) => u.source.source_type === 'aur').map((u) => u.name),
+            flatpak_packages: selectedUpdates.filter((u) => u.source.source_type === 'flatpak').map((u) => u.name),
+        });
         const readIds = getReadNewsIds();
         const unreadCritical = newsItems.filter((i) => i.is_critical && !readIds.includes(i.id));
         if (unreadCritical.length > 0) {
@@ -279,29 +371,66 @@ export default function UpdatesPage() {
         setShowConfirm(false);
         setUpdating(true);
         setUpdateResult(null);
+        setLastUpdateSummary(null);
         clearUpdateLogs();
         setCurrentStep(0);
         setSourceProgress({ repo: 'idle', aur: 'idle', flatpak: 'idle' });
+        setSourceProgressDetail({
+            repo: { stage: 'idle', current: 0, total: 0 },
+            aur: { stage: 'idle', current: 0, total: 0 },
+            flatpak: { stage: 'idle', current: 0, total: 0 },
+        });
 
-        // For updates, sources are never "off": always run AUR and Flatpak phases for installed packages.
-        // Pass modal password when AUR updates require it (backend uses it for makepkg/sudo).
-        const pwd = password?.trim() || null;
-        setPassword('');
+        const repoSelected = selectedUpdates.some((u) => u.source.source_type === 'repo');
+        const aurSelected = selectedUpdates.some((u) => u.source.source_type === 'aur');
+        const flatpakSelected = selectedUpdates.some((u) => u.source.source_type === 'flatpak');
+        const usingAdvancedSelection =
+            showAdvancedControls ||
+            Object.keys(excludedUpdateKeys).length > 0 ||
+            !advancedScope.repo ||
+            !advancedScope.aur ||
+            !advancedScope.flatpak;
+
+        let pwd: string | null = null;
+        if (oneClickEnabled || reducePasswordPrompts) {
+            // Branded one-click auth is requested upfront; user can choose system prompt fallback.
+            pwd = await requestSessionPassword();
+        }
 
         if (doSnapshot && snapshotStatus?.is_configured) {
             try {
                 // We don't block the WHOLE update if snapshot fails, but we try.
                 await commands.createSystemSnapshot(snapshotStatus.tool as any, `Monarch Store Update: ${new Date().toISOString()}`).then(unwrap);
             } catch (e) {
-                console.error("Snapshot failed:", e);
-                // Continue with update anyway, just log it?
+                errorService.reportWarning(e as Error | string);
                 clearUpdateLogs();
             }
         }
 
-        commands.performSystemUpdate(pwd, true, true).catch((e) => {
+        const runPromise = usingAdvancedSelection
+            ? commands.applyUpdates(selectedUpdates, pwd)
+            : commands.performSystemUpdate(pwd, aurSelected, flatpakSelected);
+
+        runPromise.catch((e) => {
             errorService.reportError(e as Error | string);
             setUpdateResult(`Update failed: ${e}`);
+            setUpdating(false);
+        });
+    };
+
+    const retryFailedOnly = async () => {
+        if (retryTargets.length === 0 || isUpdating) return;
+        setUpdating(true);
+        setUpdateResult(null);
+        clearUpdateLogs();
+        setSourceProgress({ repo: 'idle', aur: 'idle', flatpak: 'idle' });
+        let pwd: string | null = null;
+        if (oneClickEnabled || reducePasswordPrompts) {
+            pwd = await requestSessionPassword();
+        }
+        commands.applyUpdates(retryTargets, pwd).catch((e) => {
+            errorService.reportError(e as Error | string);
+            setUpdateResult(`Retry failed: ${e}`);
             setUpdating(false);
         });
     };
@@ -311,27 +440,32 @@ export default function UpdatesPage() {
     return (
         <div className="h-full flex flex-col bg-app-bg animate-in slide-in-from-right duration-300 transition-colors">
             {/* Header */}
-            <div className="p-8 pb-6 border-b border-black/5 dark:border-white/5 bg-app-bg/95 backdrop-blur-3xl z-10 transition-colors shadow-sm dark:shadow-2xl dark:shadow-black/20 sticky top-0">
+            <div className="sticky top-0 z-10 border-b border-black/5 bg-app-bg/95 p-6 pb-4 backdrop-blur-3xl transition-colors dark:border-white/5">
                 <div className="flex items-end justify-between">
                     <div>
-                        <h1 className="text-4xl lg:text-5xl font-black flex items-center gap-4 text-slate-900 dark:text-white tracking-tight leading-none mb-2">
-                            <span className={clsx("p-2 rounded-2xl bg-blue-500/10 text-blue-500", (isUpdating || isChecking) && "animate-butterfly")}>
-                                <RefreshCw size={32} />
+                        <h1 className="mb-2 flex items-center gap-3 text-2xl lg:text-3xl font-black tracking-tight leading-none text-slate-900 dark:text-white">
+                            <span className={clsx("p-2 rounded-xl bg-blue-500/10 text-blue-500", (isUpdating || isChecking) && "animate-butterfly")}>
+                                <RefreshCw size={24} />
                             </span>
                             Updates
                         </h1>
-                        <p className="text-lg text-slate-500 dark:text-app-muted font-medium ml-1">
+                        <p className="ml-1 text-sm font-medium text-slate-500 dark:text-app-muted">
                             {isChecking ? "Checking for updates..." :
                                 updates.length === 0 ? "Your system is up to date" :
                                     `${updates.length} updates available`}
                         </p>
+                        {!isChecking && (
+                            <p className="ml-1 mt-1 text-xs text-slate-500 dark:text-app-muted/80">
+                                Review update scope, blockers, and source progress before applying changes.
+                            </p>
+                        )}
                     </div>
 
                     <div className="flex items-center gap-3 flex-wrap">
                         <button
                             onClick={checkForUpdates}
                             disabled={isChecking || isUpdating}
-                            className="px-6 py-3 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-slate-900 dark:text-white font-bold text-sm border border-black/10 dark:border-white/10 transition-all disabled:opacity-50 flex items-center gap-2 active:scale-95"
+                            className="px-4 py-2.5 rounded-lg bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-slate-900 dark:text-white font-bold text-sm border border-black/10 dark:border-white/10 transition-all disabled:opacity-50 flex items-center gap-2 active:scale-95"
                         >
                             <RefreshCw size={18} className={isChecking ? "animate-spin" : ""} />
                             Check Now
@@ -347,15 +481,23 @@ export default function UpdatesPage() {
                                 }
                             }}
                             disabled={isUpdating}
-                            className="px-6 py-3 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-slate-900 dark:text-white font-bold text-sm border border-black/10 dark:border-white/10 transition-all disabled:opacity-50 flex items-center gap-2 active:scale-95"
-                            title="Copy full system upgrade command (sudo pacman -Syu) to run in your terminal"
+                            className="px-4 py-2.5 rounded-lg bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-slate-900 dark:text-white font-bold text-sm border border-black/10 dark:border-white/10 transition-all disabled:opacity-50 flex items-center gap-2 active:scale-95"
+                            title="Copy the full system upgrade command (sudo pacman -Syu) to run in your terminal"
                         >
-                            <Terminal size={18} /> Update in terminal
+                            <Terminal size={18} /> Copy terminal command
                         </button>
                         {updates.length > 0 && !isUpdating && (
                             <button
+                                onClick={() => setShowAdvancedControls((v) => !v)}
+                                className="px-4 py-2.5 rounded-lg bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-slate-900 dark:text-white font-bold text-sm border border-black/10 dark:border-white/10 transition-all flex items-center gap-2"
+                            >
+                                <Terminal size={18} /> {showAdvancedControls ? 'Hide Advanced Scope' : 'Advanced Scope'}
+                            </button>
+                        )}
+                        {updates.length > 0 && !isUpdating && (
+                            <button
                                 onClick={handleUpdateAll}
-                                className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-xl font-bold text-sm shadow-lg shadow-blue-900/20 active:scale-95 transition-all flex items-center gap-2 border border-white/10 hover:shadow-blue-500/20"
+                                className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-lg font-bold text-sm active:scale-95 transition-all flex items-center gap-2 border border-white/10"
                             >
                                 <Download size={20} /> Update All
                             </button>
@@ -369,7 +511,7 @@ export default function UpdatesPage() {
                         initial={{ opacity: 0, y: -5 }}
                         animate={{ opacity: 1, y: 0 }}
                         className={clsx(
-                            'mt-4 rounded-xl px-4 py-2.5 flex items-center gap-3 text-xs font-bold border',
+                            'mt-4 rounded-lg px-4 py-2.5 flex items-center gap-3 text-xs font-bold border',
                             distroContext.id === 'manjaro'
                                 ? 'bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400'
                                 : 'bg-app-accent/5 border-app-accent/15 text-app-accent/80'
@@ -391,6 +533,54 @@ export default function UpdatesPage() {
                     </motion.div>
                 )}
 
+                {showAdvancedControls && updates.length > 0 && !isUpdating && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mt-4 rounded-xl border border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 p-4 space-y-4"
+                    >
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Advanced Run Scope</h3>
+                            <span className="text-xs text-slate-500 dark:text-app-muted">
+                                Selected: {selectedUpdates.length}/{updates.length}
+                            </span>
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-app-muted/80">
+                            Use this only when you intentionally want to limit which update sources run. The default full update remains the safest path.
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                            {(['repo', 'aur', 'flatpak'] as const).map((source) => (
+                                <button
+                                    key={source}
+                                    onClick={() => setAdvancedScope((prev) => ({ ...prev, [source]: !prev[source] }))}
+                                    className={clsx(
+                                        'px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide border transition-colors',
+                                        advancedScope[source]
+                                            ? 'bg-blue-500/15 text-blue-500 border-blue-500/30'
+                                            : 'bg-black/5 dark:bg-white/5 text-slate-500 dark:text-app-muted border-black/10 dark:border-white/10'
+                                    )}
+                                >
+                                    {source}
+                                </button>
+                            ))}
+                        </div>
+                        {retryTargets.length > 0 && (
+                            <div className="flex items-center justify-between gap-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                                <p className="text-xs text-amber-700 dark:text-amber-300">
+                                    {retryTargets.length} failed update{retryTargets.length !== 1 ? 's' : ''} ready for retry.
+                                </p>
+                                <button
+                                    onClick={retryFailedOnly}
+                                    disabled={isUpdating}
+                                    className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold disabled:opacity-60"
+                                >
+                                    Retry failed only
+                                </button>
+                            </div>
+                        )}
+                    </motion.div>
+                )}
+
                 {/* System Status Indicators (NEW: Phase 4 & 5) */}
                 {(rebootRequired || pacnewWarnings.length > 0) && (
                     <div className="mt-6 flex flex-col gap-3">
@@ -398,7 +588,7 @@ export default function UpdatesPage() {
                             <motion.div
                                 initial={{ opacity: 0, y: -10 }}
                                 animate={{ opacity: 1, y: 0 }}
-                                className="bg-orange-500/10 border border-orange-500/20 rounded-2xl p-4 flex items-center justify-between gap-4"
+                                className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 flex items-center justify-between gap-4"
                             >
                                 <div className="flex items-center gap-4">
                                     <div className="p-2 bg-orange-500/20 rounded-xl text-orange-500">
@@ -410,8 +600,8 @@ export default function UpdatesPage() {
                                     </div>
                                 </div>
                                 <button
-                                    onClick={() => commands.launchApp({ pkg_name: 'reboot' }).catch(() => { })}
-                                    className="px-6 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl font-bold text-sm transition-all shadow-lg shadow-orange-900/20 whitespace-nowrap"
+                                    onClick={() => commands.launchPackage({ package_name: 'reboot', app_id: null, desktop_entry: null, launch_target: null, source: null }).catch(() => { })}
+                                    className="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm transition-all whitespace-nowrap"
                                 >
                                     Restart Now
                                 </button>
@@ -422,7 +612,7 @@ export default function UpdatesPage() {
                             <motion.div
                                 initial={{ opacity: 0, y: -10 }}
                                 animate={{ opacity: 1, y: 0 }}
-                                className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-4 flex items-center justify-between gap-4"
+                                className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 flex items-center justify-between gap-4"
                             >
                                 <div className="flex items-center gap-4">
                                     <div className="p-2 bg-blue-500/20 rounded-xl text-blue-500">
@@ -448,7 +638,7 @@ export default function UpdatesPage() {
                             <motion.div
                                 initial={{ opacity: 0, y: -10 }}
                                 animate={{ opacity: 1, y: 0 }}
-                                className="bg-purple-500/10 border border-purple-500/20 rounded-2xl p-4 flex items-center justify-between gap-4"
+                                className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 flex items-center justify-between gap-4"
                             >
                                 <div className="flex items-center gap-4">
                                     <div className="p-2 bg-purple-500/20 rounded-xl text-purple-500">
@@ -475,10 +665,10 @@ export default function UpdatesPage() {
                                             toastSuccess('Services restarted successfully');
                                             useAppStore.getState().refreshPendingUpdates();
                                         } catch (e) {
-                                            console.error(e);
+                                            errorService.reportError(e as Error | string);
                                         }
                                     }}
-                                    className="px-6 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold text-sm transition-all shadow-lg shadow-purple-900/20 whitespace-nowrap"
+                                    className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm transition-all whitespace-nowrap"
                                 >
                                     Restart Now
                                 </button>
@@ -489,7 +679,7 @@ export default function UpdatesPage() {
                             <motion.div
                                 initial={{ opacity: 0, y: -10 }}
                                 animate={{ opacity: 1, y: 0 }}
-                                className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-4 flex items-center justify-between gap-4"
+                                className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 flex items-center justify-between gap-4"
                             >
                                 <div className="flex items-center gap-4">
                                     <div className="p-2 bg-emerald-500/20 rounded-xl text-emerald-500">
@@ -521,7 +711,7 @@ export default function UpdatesPage() {
                             initial={{ height: 0, opacity: 0 }}
                             animate={{ height: 'auto', opacity: 1 }}
                             exit={{ height: 0, opacity: 0 }}
-                            className="mt-8 bg-black/5 dark:bg-black/20 rounded-2xl p-6 border border-black/5 dark:border-white/10"
+                            className="mt-8 bg-black/5 dark:bg-black/20 rounded-xl p-5 border border-black/5 dark:border-white/10"
                         >
                             <div className="flex items-center justify-between mb-8">
                                 {steps.map((step, idx) => (
@@ -574,7 +764,7 @@ export default function UpdatesPage() {
 
                             {/* 3.2: Per-source progress badges */}
                             <div className="flex items-center gap-3 mt-3">
-                                {updates.some(u => u.source.source_type === 'repo') && (
+                                {sourceSections.some(([t]) => t === 'repo') && (
                                     <div className={clsx(
                                         'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all duration-300',
                                         sourceProgress.repo === 'active' ? 'bg-blue-500/15 text-blue-400 border-blue-500/30 animate-pulse' :
@@ -588,7 +778,7 @@ export default function UpdatesPage() {
                                         Repo
                                     </div>
                                 )}
-                                {updates.some(u => u.source.source_type === 'aur') && (
+                                {sourceSections.some(([t]) => t === 'aur') && (
                                     <div className={clsx(
                                         'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all duration-300',
                                         sourceProgress.aur === 'active' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30 animate-pulse' :
@@ -602,7 +792,7 @@ export default function UpdatesPage() {
                                         AUR
                                     </div>
                                 )}
-                                {updates.some(u => u.source.source_type === 'flatpak') && (
+                                {sourceSections.some(([t]) => t === 'flatpak') && (
                                     <div className={clsx(
                                         'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all duration-300',
                                         sourceProgress.flatpak === 'active' ? 'bg-purple-500/15 text-purple-400 border-purple-500/30 animate-pulse' :
@@ -616,7 +806,23 @@ export default function UpdatesPage() {
                                         Flatpak
                                     </div>
                                 )}
+                                {sourceSections
+                                    .filter(([t]) => !['repo', 'aur', 'flatpak'].includes(t))
+                                    .map(([t]) => (
+                                        <div
+                                            key={`badge-${t}`}
+                                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all duration-300 bg-app-fg/5 text-app-muted/70 border-app-border/50"
+                                        >
+                                            <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                                            {t}
+                                        </div>
+                                    ))}
                             </div>
+                            <p className="mt-2 text-[11px] text-slate-500 dark:text-app-muted">
+                                {sourceProgressDetail.repo.stage !== 'idle' && `Repo: ${sourceProgressDetail.repo.stage} ${sourceProgressDetail.repo.total > 0 ? `(${sourceProgressDetail.repo.current}/${sourceProgressDetail.repo.total})` : ''} `}
+                                {sourceProgressDetail.aur.stage !== 'idle' && `• AUR: ${sourceProgressDetail.aur.stage} ${sourceProgressDetail.aur.total > 0 ? `(${sourceProgressDetail.aur.current}/${sourceProgressDetail.aur.total})` : ''} `}
+                                {sourceProgressDetail.flatpak.stage !== 'idle' && `• Flatpak: ${sourceProgressDetail.flatpak.stage} ${sourceProgressDetail.flatpak.total > 0 ? `(${sourceProgressDetail.flatpak.current}/${sourceProgressDetail.flatpak.total})` : ''}`}
+                            </p>
 
                             <div className="flex items-center justify-between mt-4">
                                 <button
@@ -655,6 +861,54 @@ export default function UpdatesPage() {
                                     </motion.div>
                                 )}
                             </AnimatePresence>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
+                <AnimatePresence>
+                    {!isUpdating && lastUpdateSummary && (
+                        <motion.div
+                            initial={{ opacity: 0, y: -8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className={clsx(
+                                'mt-6 rounded-2xl border p-4',
+                                lastUpdateSummary.overall === 'success'
+                                    ? 'bg-emerald-500/10 border-emerald-500/25'
+                                    : lastUpdateSummary.overall === 'partial'
+                                        ? 'bg-amber-500/10 border-amber-500/25'
+                                        : 'bg-red-500/10 border-red-500/25'
+                            )}
+                        >
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <h3 className="text-sm font-bold text-slate-900 dark:text-white">Update Summary</h3>
+                                    <p className="text-xs text-slate-600 dark:text-app-muted mt-1">{lastUpdateSummary.message}</p>
+                                </div>
+                                <div className="text-right text-xs">
+                                    <div className="font-bold text-slate-900 dark:text-white">{lastUpdateSummary.summary.succeeded_packages.length} updated</div>
+                                    <div className="text-red-500">{lastUpdateSummary.summary.failed_packages.length} failed</div>
+                                </div>
+                            </div>
+                            {lastUpdateSummary.summary.failed_packages.length > 0 && (
+                                <div className="mt-3 space-y-1">
+                                    {lastUpdateSummary.summary.failed_packages.slice(0, 5).map((item, idx) => (
+                                        <p key={`${item.name}:${idx}`} className="text-xs text-slate-700 dark:text-app-muted">
+                                            {item.name} ({item.source}): {item.reason}
+                                        </p>
+                                    ))}
+                                    {lastUpdateSummary.summary.failed_packages.length > 5 && (
+                                        <p className="text-xs text-slate-500 dark:text-app-muted">+{lastUpdateSummary.summary.failed_packages.length - 5} more failures</p>
+                                    )}
+                                    {retryTargets.length > 0 && (
+                                        <button
+                                            onClick={retryFailedOnly}
+                                            className="mt-2 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold"
+                                        >
+                                            Retry failed only
+                                        </button>
+                                    )}
+                                </div>
+                            )}
                         </motion.div>
                     )}
                 </AnimatePresence>
@@ -754,7 +1008,7 @@ export default function UpdatesPage() {
                                     <span>{rebootRequired ? "System Reboot is required to apply kernel/driver updates." : "Safety Banner: This update includes kernel or driver changes. A reboot is highly recommended after completion."}</span>
                                     {rebootRequired && (
                                         <button
-                                            onClick={() => commands.launchApp({ pkg_name: 'reboot' }).catch(() => { })}
+                                            onClick={() => commands.launchPackage({ package_name: 'reboot', app_id: null, desktop_entry: null, launch_target: null, source: null }).catch(() => { })}
                                             className="ml-auto px-4 py-1.5 rounded-lg bg-orange-500 text-white hover:bg-orange-600 transition-colors"
                                         >
                                             Reboot Now
@@ -802,27 +1056,44 @@ export default function UpdatesPage() {
                     </div>
                 ) : (
                     <div className="space-y-6 max-w-5xl mx-auto">
-                        {(['repo', 'aur', 'flatpak'] as const).map((sourceType) => {
-                            const sectionUpdates = updates.filter((u) => (u.source?.source_type ?? 'repo') === sourceType);
+                        {sourceStatuses.filter((status) => status.status === 'timeout' || status.status === 'error').map((status) => (
+                            <div
+                                key={status.source}
+                                className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200"
+                            >
+                                {status.source.toUpperCase()} check {status.status}: {status.error || 'Unknown error'}
+                            </div>
+                        ))}
+                        {sourceSections.map(([sourceType, sectionUpdates]) => {
+                            if (sourceType === 'repo' && !advancedScope.repo) return null;
+                            if (sourceType === 'aur' && !advancedScope.aur) return null;
+                            if (sourceType === 'flatpak' && !advancedScope.flatpak) return null;
                             if (sectionUpdates.length === 0) return null;
-                            const sectionLabel = sourceType === 'repo' ? 'System (repos)' : sourceType === 'aur' ? 'AUR (community)' : 'Flatpak';
+                            const sectionLabel = sourceLabel(sourceType);
                             return (
                                 <div key={sourceType} className="space-y-3">
                                     <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-app-muted px-1">
                                         {sectionLabel} — {sectionUpdates.length} update{sectionUpdates.length !== 1 ? 's' : ''}
                                     </h3>
                                     {sectionUpdates.map((pkg, idx) => (
+                                        (() => {
+                                            const pkgKey = getUpdateKey(pkg);
+                                            const excluded = Boolean(excludedUpdateKeys[pkgKey]);
+                                            return (
                                         <div
                                             key={`${pkg.name}:${String(pkg.source?.source_type ?? 'repo')}:${String(pkg.source?.id ?? pkg.name)}:${idx}`}
-                                            className="bg-white dark:bg-app-card border border-black/5 dark:border-white/5 rounded-2xl p-5 flex items-center justify-between hover:bg-white/80 dark:hover:bg-white/5 transition-all group hover:scale-[1.01] hover:shadow-xl hover:border-black/10 dark:hover:border-white/10"
+                                            className={clsx(
+                                                "bg-white dark:bg-app-card border border-black/5 dark:border-white/5 rounded-2xl p-5 flex items-center justify-between hover:bg-white/80 dark:hover:bg-white/5 transition-all group hover:scale-[1.01] hover:shadow-xl hover:border-black/10 dark:hover:border-white/10",
+                                                excluded && "opacity-50"
+                                            )}
                                         >
                                             <div className="flex items-center gap-6">
                                                 <div className="w-14 h-14 rounded-xl bg-slate-50 dark:bg-black/20 flex items-center justify-center shrink-0 overflow-hidden relative p-2 border border-black/5 dark:border-white/5 shadow-inner">
-                                                    <AppIcon pkgId={pkg.name} iconUrl={metadataCache[pkg.name]?.icon_url} />
+                                                    <AppIcon pkgId={pkg.name} iconUrl={pkg.icon} />
                                                 </div>
                                                 <div>
                                                     <h3 className="font-bold flex items-center gap-3 text-xl text-slate-900 dark:text-white mb-1">
-                                                        {pkg.name}
+                                                        {pkg.display_name || pkg.name}
                                                         <RepoBadge source={pkg.source} />
                                                     </h3>
                                                     <div className="flex items-center gap-3 text-sm font-medium">
@@ -834,6 +1105,21 @@ export default function UpdatesPage() {
                                             </div>
 
                                             <div className="flex items-center gap-6">
+                                                {showAdvancedControls && (
+                                                    <label className="flex items-center gap-2 text-xs text-slate-500 dark:text-app-muted cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={!excluded}
+                                                            onChange={() => {
+                                                                setExcludedUpdateKeys((prev) => ({
+                                                                    ...prev,
+                                                                    [pkgKey]: !prev[pkgKey],
+                                                                }));
+                                                            }}
+                                                        />
+                                                        Include
+                                                    </label>
+                                                )}
                                                 {pkg.source.source_type === 'aur' && (
                                                     <div className="flex items-center gap-2">
                                                         <button
@@ -850,6 +1136,8 @@ export default function UpdatesPage() {
                                                 )}
                                             </div>
                                         </div>
+                                            );
+                                        })()
                                     ))}
                                 </div>
                             );
@@ -872,7 +1160,6 @@ export default function UpdatesPage() {
                 isOpen={showConfirm}
                 onClose={() => {
                     setShowConfirm(false);
-                    setPassword('');
                     setManifest(null);
                 }}
                 onConfirm={performUpdate}
@@ -880,43 +1167,40 @@ export default function UpdatesPage() {
                 message={
                     <div className="space-y-4">
                         <p>
-                            {updates.some(u => u.source.source_type === 'aur')
-                                ? "This update includes AUR packages which require building from source. Please enter your administrator password to proceed."
-                                : "This will update all system packages. Are you ready to proceed?"
-                            }
+                            This will apply selected updates across system repos, AUR, and Flatpak. We will report partial success if any source has failures.
                         </p>
 
                         {/* 3.1: Transaction Manifest Details */}
                         <div className="space-y-2 bg-app-bg/50 rounded-xl p-3 border border-app-border">
                             <p className="text-xs font-semibold text-app-fg/80 uppercase tracking-wider">Transaction Summary</p>
-                            {updates.filter(u => u.source.source_type === 'repo').length > 0 && (
+                            {(manifest?.repo_count ?? selectedUpdates.filter(u => u.source.source_type === 'repo').length) > 0 && (
                                 <div className="flex items-center gap-2">
                                     <span className="w-2 h-2 rounded-full bg-blue-500" />
                                     <span className="text-xs text-app-muted">
-                                        <strong className="text-app-fg">{updates.filter(u => u.source.source_type === 'repo').length}</strong> Official packages (full system upgrade)
+                                        <strong className="text-app-fg">{manifest?.repo_count ?? selectedUpdates.filter(u => u.source.source_type === 'repo').length}</strong> Official packages (full system upgrade)
                                     </span>
                                 </div>
                             )}
-                            {updates.filter(u => u.source.source_type === 'aur').length > 0 && (
+                            {(manifest?.aur_count ?? selectedUpdates.filter(u => u.source.source_type === 'aur').length) > 0 && (
                                 <div className="flex items-center gap-2">
                                     <span className="w-2 h-2 rounded-full bg-amber-500" />
                                     <span className="text-xs text-app-muted">
-                                        <strong className="text-app-fg">{updates.filter(u => u.source.source_type === 'aur').length}</strong> AUR packages
+                                        <strong className="text-app-fg">{manifest?.aur_count ?? selectedUpdates.filter(u => u.source.source_type === 'aur').length}</strong> AUR packages
                                         <span className="text-[10px] opacity-60 ml-1">(build from source)</span>
                                     </span>
                                 </div>
                             )}
-                            {updates.filter(u => u.source.source_type === 'flatpak').length > 0 && (
+                            {(manifest?.flatpak_count ?? selectedUpdates.filter(u => u.source.source_type === 'flatpak').length) > 0 && (
                                 <div className="flex items-center gap-2">
                                     <span className="w-2 h-2 rounded-full bg-purple-500" />
                                     <span className="text-xs text-app-muted">
-                                        <strong className="text-app-fg">{updates.filter(u => u.source.source_type === 'flatpak').length}</strong> Flatpak apps
+                                        <strong className="text-app-fg">{manifest?.flatpak_count ?? selectedUpdates.filter(u => u.source.source_type === 'flatpak').length}</strong> Flatpak apps
                                     </span>
                                 </div>
                             )}
                             <hr className="border-app-border/50" />
                             <p className="text-[10px] text-app-muted/60 font-mono">
-                                Total: {updates.length} package{updates.length !== 1 ? 's' : ''}
+                                Total: {manifest?.total ?? selectedUpdates.length} package{(manifest?.total ?? selectedUpdates.length) !== 1 ? 's' : ''}
                             </p>
                         </div>
 
@@ -930,9 +1214,7 @@ export default function UpdatesPage() {
                 }
                 confirmLabel="Start Update"
                 variant="info"
-                showPasswordInput={updates.some(u => u.source.source_type === 'aur')}
-                passwordValue={password}
-                onPasswordChange={setPassword}
+                showPasswordInput={false}
             />
 
             <AnimatePresence>

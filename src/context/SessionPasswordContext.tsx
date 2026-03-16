@@ -1,4 +1,4 @@
-import { createContext, useState, useCallback, useRef, ReactNode } from 'react';
+import { createContext, useState, useCallback, useRef, ReactNode, useMemo } from 'react';
 import { Lock } from 'lucide-react';
 import { useAppStore } from '../store/internal_store';
 
@@ -21,20 +21,26 @@ function setCachedPassword(p: string | null) {
 
 interface SessionPasswordContextType {
     /** Returns password for privileged action when "Reduce password prompts" is on; else null. Shows one dialog per session. */
-    requestSessionPassword: () => Promise<string | null>;
+    requestSessionPassword: (opts?: { forcePrompt?: boolean }) => Promise<string | null>;
 }
 
 export const SessionPasswordContext = createContext<SessionPasswordContextType | undefined>(undefined);
 
 export function SessionPasswordProvider({ children }: { children: ReactNode }) {
     const reducePasswordPrompts = useAppStore((s) => s.reducePasswordPrompts);
+    const oneClickEnabled = useAppStore((s) => s.oneClickEnabled);
     const [showModal, setShowModal] = useState(false);
     const [inputValue, setInputValue] = useState('');
     const inputValueRef = useRef(''); // Sync ref to avoid stale state in submit callback
     const resolveRef = useRef<((p: string | null) => void) | null>(null);
 
-    const requestSessionPassword = useCallback((): Promise<string | null> => {
-        if (!reducePasswordPrompts) return Promise.resolve(null);
+    const settingsRef = useRef({ reducePasswordPrompts, oneClickEnabled });
+    settingsRef.current = { reducePasswordPrompts, oneClickEnabled };
+
+    const requestSessionPassword = useCallback((opts?: { forcePrompt?: boolean }): Promise<string | null> => {
+        const forcePrompt = opts?.forcePrompt === true;
+        const { reducePasswordPrompts, oneClickEnabled } = settingsRef.current;
+        if (!forcePrompt && !reducePasswordPrompts && !oneClickEnabled) return Promise.resolve(null);
         const cached = getCachedPassword();
         if (cached) return Promise.resolve(cached);
         return new Promise((resolve) => {
@@ -43,7 +49,7 @@ export function SessionPasswordProvider({ children }: { children: ReactNode }) {
             inputValueRef.current = '';
             setShowModal(true);
         });
-    }, [reducePasswordPrompts]);
+    }, []);
 
     const submit = useCallback((usePassword: boolean) => {
         // Use ref for immediate value access (fixes stale closure if Enter is pressed fast)
@@ -57,8 +63,10 @@ export function SessionPasswordProvider({ children }: { children: ReactNode }) {
         setShowModal(false);
     }, []); // No dependency on inputValue needed now
 
+    const contextValue = useMemo(() => ({ requestSessionPassword }), [requestSessionPassword]);
+
     return (
-        <SessionPasswordContext.Provider value={{ requestSessionPassword }}>
+        <SessionPasswordContext.Provider value={contextValue}>
             {children}
             {showModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-label="Session password">
@@ -68,8 +76,8 @@ export function SessionPasswordProvider({ children }: { children: ReactNode }) {
                                 <Lock size={24} className="text-amber-500" />
                             </div>
                             <div>
-                                <h3 className="font-bold text-app-fg text-lg">MonARCH Silent Guard</h3>
-                                <p className="text-xs text-app-muted mt-0.5">Unlock seamless app management. Enter your password once to authorize MonARCH for this entire session (up to 12 hours).</p>
+                                <h3 className="font-bold text-app-fg text-lg">MonARCH One-Click Authentication</h3>
+                                <p className="text-xs text-app-muted mt-0.5">Enter your password once to let MonARCH perform repeated privileged actions during this app session. Your password stays in memory only and is cleared when MonARCH closes.</p>
                             </div>
                         </div>
                         <input

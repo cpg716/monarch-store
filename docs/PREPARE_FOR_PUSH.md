@@ -1,8 +1,8 @@
-# Prepare for Push to GitHub — v0.4.5-alpha
+# Prepare for Push to GitHub — v0.5.0-alpha
 
-**Last updated:** 2026-02-03
+**Last updated:** 2026-03-14
 
-Use this checklist before pushing to GitHub (main and/or release tag). For a summary of recent features (one card per app, details dropdown, Operation Chaotic Good, onboarding), see [RECENT_CHANGES.md](RECENT_CHANGES.md).
+Use this checklist before pushing to GitHub (main and/or release tag). For recent changes see [RELEASE_NOTES.md](../RELEASE_NOTES.md) and [RECENT_CHANGES.md](RECENT_CHANGES.md).
 
 ---
 
@@ -10,11 +10,11 @@ Use this checklist before pushing to GitHub (main and/or release tag). For a sum
 
 | Step | Command / action | Status |
 |------|------------------|--------|
-| **Build** | `npm run build` | ✅ Must pass (TS + Vite) |
-| **Rust** | `cd src-tauri && cargo check` | ✅ Must pass |
+| **Rust (GTK)** | `cd src-tauri && cargo check && cargo run -p monarch-gtk` | ✅ Must pass |
+| **Tests** | `cd src-tauri && cargo test -p monarch-core` | ✅ Must pass |
 | **.gitignore** | `.cursor` and build artifacts ignored | ✅ Done |
 | **No secrets** | No API keys, tokens, or `.env` committed | ⬜ Verify |
-| **Version** | package.json, tauri.conf.json, Cargo.toml (monarch-gui + monarch-helper), PKGBUILD = 0.4.5-alpha | ✅ Synced |
+| **Version** | package.json, Cargo.toml (monarch-core, monarch-gtk, monarch-helper), PKGBUILD = 0.5.0-alpha / 0.5.0_alpha | ✅ Synced |
 
 ---
 
@@ -41,7 +41,7 @@ Use this checklist before pushing to GitHub (main and/or release tag). For a sum
 
 ```bash
 git push origin main
-git push origin v0.4.5-alpha
+git push origin v0.5.0-alpha
 ```
 
 **Otherwise**, from repo root:
@@ -54,14 +54,14 @@ git add -A
 git status
 
 # 3. Commit (adjust message if needed)
-git commit -m "Release v0.4.5-alpha: Version bump, Chaotic Good, unification"
+git commit -m "Release v0.5.0-alpha: GTK-only, package detail fixes, Supabase 503 handling"
 
 # 4. Push main
 git push origin main
 
 # 5. (Optional) Create and push release tag (triggers CI build + draft release)
-git tag -a v0.4.5-alpha -m "Release v0.4.5-alpha"
-git push origin v0.4.5-alpha
+git tag -a v0.5.0-alpha -m "Release v0.5.0-alpha"
+git push origin v0.5.0-alpha
 ```
 
 If you use SSH for GitHub:
@@ -69,7 +69,7 @@ If you use SSH for GitHub:
 ```bash
 git remote set-url origin git@github.com:cpg716/monarch-store.git
 git push origin main
-git push origin v0.4.5-alpha
+git push origin v0.5.0-alpha
 ```
 
 ---

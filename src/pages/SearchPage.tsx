@@ -1,28 +1,18 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { VList } from 'virtua';
 import { Search, Clock, X, Sparkles, TrendingUp, Heart } from 'lucide-react';
 import { useSearchHistory } from '../hooks/useSearchHistory';
-import { getPackageListKey } from '../utils/packageKey';
 import { useFavorites } from '../hooks/useFavorites';
-import PackageCard from '../components/PackageCard';
-import type { Package } from '../services/bindings';
+import PackageCardList from '../components/PackageCardList';
+import type { Package, SearchSuggestion } from '../services/bindings';
 import { useAppStore } from '../store/internal_store';
 import PackageCardSkeleton from '../components/PackageCardSkeleton';
 import EmptyState from '../components/EmptyState';
 import { clsx } from 'clsx';
 import { useChaoticStatus, isOnlyChaoticSource } from '../hooks/useChaoticStatus';
 import { getSourceFamilyId, getSourceFamilyLabel } from '../utils/repoHelper';
-
-
-const GRID_COLS = 3;
-function chunk<T>(arr: T[], size: number): T[][] {
-    const out: T[][] = [];
-    for (let i = 0; i < arr.length; i += size) {
-        out.push(arr.slice(i, i + size));
-    }
-    return out;
-}
+import { getPackageDisplayTitle } from '../utils/packagePresentation';
+import { usePackageCardList } from '../hooks/usePackageCardList';
 
 interface SearchPageProps {
     query: string;
@@ -31,6 +21,8 @@ interface SearchPageProps {
     loading: boolean;
     onSelectPackage: (pkg: Package) => void;
     enabledRepos: { name: string; enabled: boolean; source: any }[];
+    suggestions?: SearchSuggestion[];
+    queryInterpretation?: string | null;
     error?: string | null;
     onRetry?: () => void;
     onOpenSettings?: () => void;
@@ -43,6 +35,8 @@ export default function SearchPage({
     loading,
     onSelectPackage,
     enabledRepos,
+    suggestions = [],
+    queryInterpretation,
     error,
     onRetry,
     onOpenSettings
@@ -50,9 +44,7 @@ export default function SearchPage({
     const { history, removeSearch, clearHistory } = useSearchHistory();
     const { favorites } = useFavorites();
     const { enabled: chaoticEnabled } = useChaoticStatus();
-    const searchResultIds = useAppStore((s) => s.searchResultIds);
     const packageRegistry = useAppStore((s) => s.packageRegistry);
-    const favoriteSet = useMemo(() => new Set(favorites.map((f) => f.toLowerCase())), [favorites]);
     const [activeFilter, setActiveFilter] = useState('all');
     const [sortBy, setSortBy] = useState<'best_match' | 'name' | 'updated'>('best_match');
     const filterChipsRef = useRef<HTMLDivElement>(null);
@@ -67,54 +59,23 @@ export default function SearchPage({
     if (query.trim().startsWith('@')) {
         const magic = query.trim().split(' ')[0].toLowerCase();
         if (magic === '@aur') currentFilter = 'aur';
-        else if (magic === '@chaotic') currentFilter = 'chaotic';
+        else if (magic === '@chaotic') currentFilter = 'chaotic-aur';
         else if (magic === '@official') currentFilter = 'official';
+        else if (magic === '@flatpak') currentFilter = 'flatpak';
+    } else if (query.trim().toLowerCase().startsWith('in:')) {
+        const scope = query.trim().split(' ')[0].slice(3).toLowerCase();
+        if (scope === 'games') currentFilter = 'all';
     }
 
-    const sortedIds = useMemo(() => {
-        const pkgs = searchResultIds
-            .map((id) => packageRegistry[id])
-            .filter((p): p is Package => p != null);
-        let filtered = pkgs;
-        if (currentFilter !== 'all') {
-            filtered = pkgs.filter((p) => {
-                const pFamily = getSourceFamilyId(typeof p.source === 'string' ? p.source : p.source);
-                if (pFamily === currentFilter) return true;
-                const matchesAvailable = p.available_sources?.some((s) => getSourceFamilyId(s) === currentFilter);
-                return !!matchesAvailable;
-            });
-        }
-        const seen = new Set<string>();
-        const deduped = filtered.filter((pkg) => {
-            const key = getPackageListKey(pkg);
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-        return deduped
-            .sort((a, b) => {
-                if (sortBy === 'name') return (a.display_name || a.name).localeCompare(b.display_name || b.name);
-                if (sortBy === 'updated') {
-                    const getT = (t: number | string | null | undefined) => typeof t === 'string' ? parseInt(t, 10) : (t || 0);
-                    return getT(b.last_modified) - getT(a.last_modified);
-                }
-                if (sortBy === 'best_match') {
-                    const idA = getPackageListKey(a);
-                    const idB = getPackageListKey(b);
-                    const score = (p: Package, id: string) =>
-                        (p.installed ? 2 : 0) + (favoriteSet.has(id) ? 1 : 0);
-                    const sA = score(a, idA);
-                    const sB = score(b, idB);
-                    if (sB !== sA) return sB - sA;
-                    return (a.display_name || a.name).localeCompare(b.display_name || b.name);
-                }
-                return 0;
-            })
-            .map((p) => getPackageListKey(p));
-    }, [searchResultIds, packageRegistry, currentFilter, sortBy, query, favoriteSet]);
-
-    const rows = useMemo(() => chunk(sortedIds, GRID_COLS), [sortedIds]);
-    const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const { packages: directPackages } = usePackageCardList({
+        source: { mode: 'packages', packages: _packagesProp },
+        packageRegistry,
+        sourceFamilyFilter: currentFilter,
+        sort: sortBy === 'best_match' ? 'preserve' : sortBy,
+        query,
+    });
+    const displayResultCount = directPackages.length;
+    const displayPackages = directPackages;
 
     const handleSelectPackage = useCallback((pkg: Package) => {
         onSelectPackage(pkg);
@@ -147,8 +108,11 @@ export default function SearchPage({
                             {query ? `Search Results` : 'Explore'}
                         </h2>
                         <p className="text-app-muted text-sm capitalize">
-                            {query ? `${searchResultIds.length} apps matching "${query}"` : 'Discover your next favorite app'}
+                            {query ? `${displayResultCount} apps matching "${query}"` : 'Discover your next favorite app'}
                         </p>
+                        {queryInterpretation && (
+                            <p className="mt-1 text-xs font-medium text-blue-300">{queryInterpretation}</p>
+                        )}
                     </div>
 
                     {query && (
@@ -172,7 +136,13 @@ export default function SearchPage({
 
                 {/* Filter Chips */}
                 {query && (
-                    <div ref={filterChipsRef} className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
+                    <div ref={filterChipsRef} className="space-y-3">
+                        {didYouMean && (
+                            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+                                <span className="font-semibold">Popular alternative:</span> {didYouMean}
+                            </div>
+                        )}
+                        <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
                         <button
                             onClick={() => setActiveFilter('all')}
                             className={clsx(
@@ -182,7 +152,7 @@ export default function SearchPage({
                                     : "bg-app-card border-app-border text-app-muted hover:border-app-fg/30"
                             )}
                         >
-                            All ({searchResultIds.length})
+                            All ({displayResultCount})
                         </button>
                         {(() => {
                             // Unify repos into families (same ids as Category backend: official, chaotic-aur, aur, flatpak, etc.)
@@ -191,9 +161,7 @@ export default function SearchPage({
                                 const sourceObj = typeof repo.source === 'object' && repo.source != null ? repo.source : { id: String(repo.source), source_type: String(repo.source), label: '', version: '' };
                                 const familyId = getSourceFamilyId(sourceObj);
                                 const label = getSourceFamilyLabel(familyId);
-                                const count = searchResultIds.filter((id) => {
-                                    const p = packageRegistry[id];
-                                    if (!p) return false;
+                                const count = displayPackages.filter((p) => {
                                     return getSourceFamilyId(typeof p.source === 'string' ? p.source : p.source) === familyId ||
                                         (p.available_sources?.some((s) => getSourceFamilyId(s) === familyId) ?? false);
                                 }).length;
@@ -205,9 +173,7 @@ export default function SearchPage({
                                 }
                             });
 
-                            const flatpakCount = searchResultIds.filter((id) => {
-                                const p = packageRegistry[id];
-                                if (!p) return false;
+                            const flatpakCount = displayPackages.filter((p) => {
                                 return getSourceFamilyId(typeof p.source === 'string' ? p.source : p.source) === 'flatpak' ||
                                     (p.available_sources?.some((s) => getSourceFamilyId(s) === 'flatpak') ?? false);
                             }).length;
@@ -230,13 +196,19 @@ export default function SearchPage({
                                 </button>
                             ));
                         })()}
+                        </div>
                     </div>
                 )}
 
                 {!query && (
-                    <div className="flex flex-wrap gap-2 pt-2 text-[11px] text-app-muted">
+                    <div className="space-y-3 pt-2">
+                        <div className="text-xs text-app-muted">
+                            Try app names, tasks, or categories like "browser", "video editor", "office", or "music player".
+                        </div>
+                        <div className="flex flex-wrap gap-2 text-[11px] text-app-muted">
                         {[
                             { token: '@official', label: 'Official Repos' },
+                            { token: '@flatpak', label: 'Flatpak Apps' },
                             { token: '@aur', label: 'AUR Source' },
                             { token: '@chaotic', label: 'Chaotic-AUR' }
                         ].map((shortcut) => (
@@ -251,6 +223,7 @@ export default function SearchPage({
                                 <span className="ml-2 text-[10px] uppercase tracking-wide opacity-70">{shortcut.label}</span>
                             </button>
                         ))}
+                        </div>
                     </div>
                 )}
             </div>
@@ -305,7 +278,7 @@ export default function SearchPage({
                                     </h3>
                                     <div className="grid grid-cols-2 gap-3">
                                         <button
-                                            onClick={() => onQueryChange("top:trending")}
+                                            onClick={() => onQueryChange("browser")}
                                             className="p-4 rounded-2xl border flex flex-col items-center gap-2 hover:scale-[1.02] transition-all group accent-hover-outline"
                                             style={{
                                                 background: 'linear-gradient(135deg, color-mix(in srgb, var(--app-accent) 18%, transparent), transparent 70%)',
@@ -313,14 +286,14 @@ export default function SearchPage({
                                             }}
                                         >
                                             <TrendingUp className="text-accent group-hover:scale-110 transition-transform" />
-                                            <span className="text-xs font-bold text-app-fg">Browse Trending</span>
+                                            <span className="text-xs font-bold text-app-fg">Popular Browsers</span>
                                         </button>
                                         <button
-                                            onClick={() => onQueryChange("top:new")}
+                                            onClick={() => onQueryChange("video editor")}
                                             className="p-4 rounded-2xl bg-gradient-to-br from-purple-500/10 to-pink-500/5 border border-purple-500/20 flex flex-col items-center gap-2 hover:scale-[1.02] transition-all group"
                                         >
                                             <Sparkles className="text-purple-500 group-hover:scale-110 transition-transform" />
-                                            <span className="text-xs font-bold text-app-fg">New Arrivals</span>
+                                            <span className="text-xs font-bold text-app-fg">Video Editors</span>
                                         </button>
                                     </div>
                                 </div>
@@ -331,15 +304,19 @@ export default function SearchPage({
                                             <Heart size={16} className="text-red-500" /> From Your Favorites
                                         </h3>
                                         <div className="flex flex-wrap gap-2">
-                                            {favorites.slice(0, 8).map((fav, i) => (
+                                            {favorites.slice(0, 8).map((fav, i) => {
+                                                const favPkg = packageRegistry[fav];
+                                                const label = getPackageDisplayTitle(favPkg) || fav;
+                                                return (
                                                 <button
                                                     key={typeof fav === 'string' ? fav : `fav-${i}`}
                                                     onClick={() => onQueryChange(fav)}
                                                     className="px-3 py-1.5 rounded-full bg-app-card border border-app-border text-xs text-app-fg hover:border-red-500/30 hover:bg-red-500/5 transition-all"
                                                 >
-                                                    {fav}
+                                                    {label}
                                                 </button>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
                                     </div>
                                 )}
@@ -363,50 +340,51 @@ export default function SearchPage({
                                     }}
                                     variant="error"
                                 />
-                            ) : loading && searchResultIds.length === 0 ? (
+                            ) : (loading && activeFilter === 'all') ? (
                                 <div className="grid gap-6 max-w-7xl mx-auto w-full grid-cols-[repeat(auto-fill,minmax(260px,1fr))]">
                                     {[...Array(8)].map((_, i) => (
                                         <PackageCardSkeleton key={i} />
                                     ))}
                                 </div>
-                            ) : sortedIds.length === 0 ? (
-                                <EmptyState
-                                    title="No apps found"
-                                    description={didYouMean ? `Did you mean '${didYouMean}'? Arch uses different apps than Windows.` : `We couldn't find any packages matching "${query}"${activeFilter !== 'all' ? ` in the ${activeFilter} source` : ''}.`}
-                                    actionLabel={didYouMean ? `Search for ${didYouMean}` : "Clear filters & search again"}
-                                    onAction={() => {
-                                        if (didYouMean) onQueryChange(didYouMean);
-                                        else { onQueryChange(''); setActiveFilter('all'); }
-                                    }}
-                                />
-                            ) : (
-                                <div ref={scrollContainerRef} className="flex-1 min-h-0 -mx-8 px-8 max-w-7xl mx-auto w-full">
-                                    <VList
-                                        data={rows}
-                                        style={{ height: '100%', minHeight: 400 }}
-                                        className="custom-scrollbar"
-                                    >
-                                        {(row, rowIndex) => (
-                                            <div
-                                                key={rowIndex}
-                                                className="grid gap-6 pb-6 grid-cols-1 md:grid-cols-2 lg:grid-cols-3"
-                                            >
-                                                {row.map((id) => {
-                                                    const pkg = packageRegistry[id];
-                                                    return (
-                                                        <PackageCard
-                                                            key={id}
-                                                            pkgId={id}
-                                                            onClick={(p) => handleSelectPackage(p)}
-                                                            setupRequired={pkg ? isOnlyChaoticSource(pkg) && !chaoticEnabled : false}
-                                                            onConfigureSource={onOpenSettings}
-                                                        />
-                                                    );
-                                                })}
+                            ) : directPackages.length === 0 ? (
+                                <div className="space-y-4">
+                                    <EmptyState
+                                        title="No apps found"
+                                        description={didYouMean ? `Did you mean '${didYouMean}'? Arch uses different apps than Windows.` : `We couldn't find any packages matching "${query}"${activeFilter !== 'all' ? ` in the ${activeFilter} source` : ''}.`}
+                                        actionLabel={didYouMean ? `Search for ${didYouMean}` : "Clear filters & search again"}
+                                        onAction={() => {
+                                            if (didYouMean) onQueryChange(didYouMean);
+                                            else { onQueryChange(''); setActiveFilter('all'); }
+                                        }}
+                                    />
+                                    {suggestions.length > 0 && (
+                                        <div className="rounded-xl border border-app-border bg-app-card p-4">
+                                            <div className="text-xs font-bold uppercase tracking-widest text-app-muted">Try instead</div>
+                                            <div className="mt-3 flex flex-wrap gap-2">
+                                                {suggestions.map((suggestion) => (
+                                                    <button
+                                                        key={`${suggestion.reason}:${suggestion.query}`}
+                                                        type="button"
+                                                        onClick={() => onQueryChange(suggestion.query)}
+                                                        className="rounded-full border border-app-border bg-black/20 px-3 py-2 text-xs font-bold text-white transition-colors hover:border-blue-500/40 hover:bg-blue-500/10"
+                                                        title={suggestion.reason}
+                                                    >
+                                                        {suggestion.label}
+                                                    </button>
+                                                ))}
                                             </div>
-                                        )}
-                                    </VList>
+                                        </div>
+                                    )}
                                 </div>
+                            ) : (
+                                <PackageCardList
+                                    source={{ mode: 'packages', packages: directPackages }}
+                                    onSelectPackage={handleSelectPackage}
+                                    variant="grid"
+                                    setupRequiredResolver={(pkg) => isOnlyChaoticSource(pkg) && !chaoticEnabled}
+                                    onConfigureSource={onOpenSettings}
+                                    surfaceName="SearchPage"
+                                />
                             )}
                         </motion.div>
                     )}

@@ -1,10 +1,10 @@
-
 import { useMemo } from 'react';
-import PackageCard from './PackageCard';
 import type { Package } from '../services/bindings';
 import PackageCardSkeleton from './PackageCardSkeleton';
 import { useChaoticStatus, isOnlyChaoticSource } from '../hooks/useChaoticStatus';
 import { useAppStore } from '../store/internal_store';
+import PackageCardList from './PackageCardList';
+import { usePackageCardList } from '../hooks/usePackageCardList';
 
 
 interface TrendingSectionProps {
@@ -25,7 +25,7 @@ interface TrendingSectionProps {
     listKind?: 'trending' | 'essentials' | 'favorites';
 }
 
-export default function TrendingSection({ title, onSelectPackage, filterIds, limit, onSeeAll, variant = 'grid', onOpenSettings, hideHeader = false, preloadInProgress = false }: TrendingSectionProps) {
+export default function TrendingSection({ title, onSelectPackage, filterIds, limit, onSeeAll, variant = 'grid', onOpenSettings, hideHeader = false, preloadedPackages = [], preloadInProgress = false }: TrendingSectionProps) {
     const { enabled: chaoticEnabled } = useChaoticStatus();
     const packageRegistry = useAppStore((s) => s.packageRegistry);
 
@@ -40,6 +40,17 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
         const effectiveLimit = limit ?? DEFAULT_MAX_ITEMS;
         return safeIds.slice(0, effectiveLimit);
     }, [safeIds, limit]);
+    const { ids: dedupedVisibleIds } = usePackageCardList({
+        source: { mode: 'ids', ids: visibleIds },
+        packageRegistry,
+        sort: 'preserve',
+    });
+    const { packages: directVisiblePackages } = usePackageCardList({
+        source: { mode: 'packages', packages: preloadedPackages.slice(0, limit ?? 80) },
+        packageRegistry,
+        sort: 'preserve',
+    });
+    const shouldRenderDirect = directVisiblePackages.length > 0;
 
     const showSeeAll = limit != null && onSeeAll != null && safeIds.length > limit;
 
@@ -55,13 +66,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
                 )}
                 {isScroll ? (
                     <div className="relative group/scroll max-w-7xl mx-auto">
-                        <div
-                            className="flex gap-6 overflow-x-auto pb-6 scrollbar-hide snap-x"
-                            style={{
-                                maskImage: 'linear-gradient(to right, black 85%, transparent 100%)',
-                                WebkitMaskImage: 'linear-gradient(to right, black 85%, transparent 100%)'
-                            }}
-                        >
+                        <div className="flex gap-6 overflow-x-auto pb-6 scrollbar-hide snap-x">
                             {[...Array(skeletonCount)].map((_, i) => (
                                 <div key={i} className="snap-start flex-shrink-0 w-[280px]">
                                     <PackageCardSkeleton />
@@ -80,7 +85,7 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
         );
     }
 
-    if (visibleIds.length === 0) {
+    if (dedupedVisibleIds.length === 0 && !shouldRenderDirect) {
         return (
             <section>
                 {!hideHeader && title && <h2 className="text-2xl font-bold text-app-fg mb-6">{title}</h2>}
@@ -105,72 +110,31 @@ export default function TrendingSection({ title, onSelectPackage, filterIds, lim
             )}
 
             {isScroll ? (
-                <div className="relative group/scroll max-w-7xl mx-auto">
-                    <div
-                        className="flex gap-6 overflow-x-auto pb-6 scrollbar-hide snap-x relative z-0"
-                        style={{
-                            maskImage: 'linear-gradient(to right, black 85%, transparent 100%)',
-                            WebkitMaskImage: 'linear-gradient(to right, black 85%, transparent 100%)'
-                        }}
-                    >
-                        {visibleIds.map((id) => {
-                            const pkg = packageRegistry[id];
-                            return (
-                                <div key={id} className="snap-start flex-shrink-0 w-[280px]">
-                                    <PackageCard
-                                        pkgId={id}
-                                        onClick={(p) => onSelectPackage(p)}
-
-                                        setupRequired={pkg ? isOnlyChaoticSource(pkg) && !chaoticEnabled : false}
-                                        onConfigureSource={onOpenSettings}
-                                        skipMetadataFetch={!!pkg?.icon}
-                                    />
-                                </div>
-                            );
-                        })}
-                        {showSeeAll && (
-                            <div className="snap-start flex-shrink-0 w-[280px] flex">
-                                <button
-                                    onClick={onSeeAll}
-                                    className="w-full h-full bg-app-card/30 border-2 border-dashed border-app-border rounded-2xl flex flex-col items-center justify-center gap-4 group transition-all min-h-[200px] accent-hover-outline"
-                                >
-                                    <div className="w-12 h-12 rounded-full bg-app-subtle flex items-center justify-center transition-opacity group-hover:opacity-90">
-                                        <span className="text-2xl">→</span>
-                                    </div>
-                                    <span className="font-bold text-app-fg transition-opacity group-hover:opacity-90">View All</span>
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                </div>
+                <PackageCardList
+                    source={shouldRenderDirect
+                        ? { mode: 'packages', packages: directVisiblePackages }
+                        : { mode: 'ids', ids: dedupedVisibleIds }}
+                    onSelectPackage={onSelectPackage}
+                    variant="scroll"
+                    onSeeAll={onSeeAll}
+                    showViewAllCard={showSeeAll}
+                    setupRequiredResolver={(pkg) => isOnlyChaoticSource(pkg) && !chaoticEnabled}
+                    onConfigureSource={onOpenSettings}
+                    surfaceName="TrendingSection"
+                />
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-7xl mx-auto w-full">
-                    {visibleIds.map((id) => {
-                        const pkg = packageRegistry[id];
-                        return (
-                            <PackageCard
-                                key={id}
-                                pkgId={id}
-                                onClick={(p) => onSelectPackage(p)}
-
-                                setupRequired={pkg ? isOnlyChaoticSource(pkg) && !chaoticEnabled : false}
-                                onConfigureSource={onOpenSettings}
-                                skipMetadataFetch={!!pkg?.icon}
-                            />
-                        );
-                    })}
-                    {showSeeAll && (
-                        <button
-                            onClick={onSeeAll}
-                            className="bg-app-card/30 border-2 border-dashed border-app-border rounded-2xl flex flex-col items-center justify-center gap-4 group transition-all p-8 h-full min-h-[220px] accent-hover-outline"
-                        >
-                            <div className="w-12 h-12 rounded-full bg-app-fg/5 flex items-center justify-center transition-opacity group-hover:opacity-90">
-                                <span className="text-2xl">→</span>
-                            </div>
-                            <span className="font-bold text-app-fg transition-opacity group-hover:opacity-90">View All Trending</span>
-                        </button>
-                    )}
-                </div>
+                <PackageCardList
+                    source={shouldRenderDirect
+                        ? { mode: 'packages', packages: directVisiblePackages }
+                        : { mode: 'ids', ids: dedupedVisibleIds }}
+                    onSelectPackage={onSelectPackage}
+                    variant="grid"
+                    onSeeAll={onSeeAll}
+                    showViewAllCard={showSeeAll}
+                    setupRequiredResolver={(pkg) => isOnlyChaoticSource(pkg) && !chaoticEnabled}
+                    onConfigureSource={onOpenSettings}
+                    surfaceName="TrendingSection"
+                />
             )}
         </section>
     );

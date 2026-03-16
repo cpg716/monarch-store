@@ -1,0 +1,111 @@
+   Compiling monarch-gtk v0.1.0 (/home/chris/Downloads/monarch-store/src-tauri/monarch-gtk)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.90s
+     Running `/home/chris/Downloads/monarch-store/src-tauri/target/debug/monarch-gtk`
+
+(monarch-gtk:28838): Gtk-WARNING **: 22:43:22.392: Theme parser error: <data>:305:13-28: No property named "backdrop-filter"
+
+(monarch-gtk:28838): Gtk-WARNING **: 22:43:22.392: Theme parser error: <data>:419:13-28: No property named "backdrop-filter"
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+DEBUG: bind_compact_card start for alacritty
+DEBUG: bind_compact_card start for angband
+DEBUG: bind_compact_card start for atomix
+DEBUG: bind_compact_card start for btrfsassistant
+DEBUG: bind_compact_card start for dolphin
+DEBUG: bind_compact_card start for easyeffects
+DEBUG: bind_compact_card start for ffmpegthumbs
+DEBUG: bind_compact_card start for filelight
+DEBUG: bind_compact_card start for amberol
+DEBUG: bind_compact_card start for apostrophe
+DEBUG: bind_compact_card start for ardour
+DEBUG: bind_compact_card start for audacity
+DEBUG: bind_compact_card start for blender
+DEBUG: bind_compact_card start for calibre
+DEBUG: bind_compact_card start for celluloid
+DEBUG: bind_compact_card start for clapper
+DEBUG: bind_compact_card start for discord
+DEBUG: bind_compact_card start for easyeffects
+DEBUG: bind_compact_card start for firefox
+DEBUG: bind_compact_card start for flameshot
+DEBUG: bind_compact_card start for foliate
+DEBUG: bind_compact_card start for gimp
+DEBUG: bind_compact_card start for inkscape
+DEBUG: bind_compact_card start for kdeconnect
+DEBUG: bind_compact_card start for keepassxc
+DEBUG: bind_compact_card start for krita
+DEBUG: bind_compact_card start for lollypop
+DEBUG: bind_compact_card start for lutris
+DEBUG: bind_compact_card start for newsflash
+DEBUG: bind_compact_card start for obsstudio
+DEBUG: bind_compact_card start for obsidian
+DEBUG: bind_compact_card start for okular
+DEBUG: bind_compact_card start for polari
+DEBUG: bind_compact_card start for ptyxis
+DEBUG: bind_compact_card start for rawtherapee
+DEBUG: bind_compact_card start for signal
+DEBUG: bind_compact_card start for steam
+DEBUG: bind_compact_card start for strawberry
+DEBUG: bind_compact_card start for telegram
+DEBUG: bind_compact_card start for thunderbird
+DEBUG: bind_compact_card start for vlc
+DEBUG: bind_compact_card start for wildcard
+DEBUG: bind_compact_card start for googlechrome
+DEBUG: bind_compact_card start for heroicgameslauncher
+DEBUG: bind_compact_card start for visualstudiocode
+DEBUG: bind_compact_card start for atomix
+DEBUG: bind_compact_card start for blackbox
+DEBUG: bind_compact_card start for discord
+DEBUG: bind_compact_card start for firefox
+DEBUG: bind_compact_card start for fragments
+DEBUG: bind_compact_card start for lutris
+DEBUG: bind_compact_card start for obsstudio
+DEBUG: bind_compact_card start for signal
+DEBUG: bind_compact_card start for solanum
+DEBUG: bind_compact_card start for steam
+DEBUG: bind_compact_card start for telegram
+DEBUG: bind_compact_card start for vlc
+DEBUG: bind_compact_card start for bottles
+DEBUG: bind_compact_card start for googlechrome
+DEBUG: bind_compact_card start for heroicgameslauncher
+DEBUG: bind_compact_card start for spotify
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e4480210 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e42ff460 exceeds AdwBreakpointBin height: requested 757 px, 728 px available
+Adwaita-WARNING: AdwBreakpointBin 0x5557e447d520 does not have a minimum size, set the 'width-request' and 'height-request' properties to specify it
+Adwaita-WARNING: GtkBox 0x5557e443a010 exceeds AdwBreakpointBin height: requested 3590 px, 468 px available
+error: app/org.alacritty.Alacritty/x86_64/master not installed

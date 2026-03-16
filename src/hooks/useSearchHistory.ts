@@ -10,10 +10,13 @@ export function useSearchHistory() {
     const addSearch = useCallback((query: string) => {
         if (!query || query.trim().length === 0) return;
 
-        const filtered = history.filter(q => q !== query);
+        const currentHistory = useAppStore.getState().searchHistory;
+        if (currentHistory[0] === query) return;
+
+        const filtered = currentHistory.filter(q => q !== query);
         const next = [query, ...filtered].slice(0, MAX_HISTORY);
         setHistory(next);
-    }, [history, setHistory]);
+    }, [setHistory]);
 
     const removeSearch = useCallback((query: string) => {
         const next = history.filter(q => q !== query);

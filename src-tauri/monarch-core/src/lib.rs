@@ -1,0 +1,14 @@
+pub mod bootstrap;
+pub mod aur;
+pub mod catalog;
+pub mod flathub_fallback;
+pub mod favorites;
+pub mod flatpak;
+pub mod models;
+pub mod news;
+pub mod odrs;
+pub mod privileged;
+pub mod registry;
+pub mod reviews;
+pub mod settings;
+pub mod supabase;

@@ -1,3 +1,5 @@
+> Historical note: This review document describes a legacy or point-in-time parity snapshot. GTK current-state and release-gate status now live in `docs/GTK_TAURI_PARITY_MATRIX.md` and the GTK-first root docs.
+
 # Onboarding System Review
 
 **Date:** 2026-02-05  
@@ -134,3 +136,11 @@ When `showSystemFixPopup && onboardingReason`:
 - **Persistence:** v3 is the gate for "onboarding done"; v4 and flatpak/reduce prompts/telemetry are set in modal; Settings and onboarding share the same source and security state.
 - **Repair paths:** One-step DB repair overlay vs full onboarding with system-fix message; both feed from `check_initialization_status()`.
 - **Completion:** Modal sets backend and localStorage; App sets v3 and refreshes system health so the infra banner reflects the new state.
+
+---
+
+## 10. Addendum (2026-02-27)
+
+- **One-click recommendation model:** onboarding clearly defaults new users to one-click session auth while preserving system-auth-every-time for advanced users.
+- **Source policy coherence:** Chaotic/AUR/Flatpak selections map directly to Settings behavior after onboarding (no separate hidden state).
+- **Host-adaptive appearance wiring:** system theme/accent detection is now consumed by frontend theme hooks; onboarding theme choices cleanly layer over system-follow mode.

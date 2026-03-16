@@ -26,8 +26,7 @@ export function useDistro() {
                 setDistro(ctx);
                 setLoading(false);
             })
-            .catch(err => {
-                console.error("Failed to detect distro:", err);
+            .catch(() => {
                 setLoading(false);
             });
     }, []);

@@ -6,6 +6,7 @@
 
 import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
 import { commands } from './bindings';
+import { debugWarn } from '../utils/debugLog';
 
 let permissionGranted = false;
 let permissionChecked = false;
@@ -24,7 +25,7 @@ async function ensurePermission(): Promise<boolean> {
         }
         permissionChecked = true;
     } catch (e) {
-        console.warn('[MonARCH] Notifications not available:', e);
+        debugWarn('[MonARCH] Notifications not available:', e);
         permissionChecked = true;
         permissionGranted = false;
     }
@@ -40,7 +41,7 @@ async function showNotification(title: string, body: string): Promise<void> {
         const res = await commands.showDesktopNotification(title, body);
         if (res.status === 'error') throw res.error;
     } catch (e) {
-        console.warn('[MonARCH] Failed to send notification:', e);
+        debugWarn('[MonARCH] Failed to send notification:', e);
     }
 }
 

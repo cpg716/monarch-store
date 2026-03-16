@@ -1,127 +1,131 @@
-# MonARCH Store Architecture & Design
-**Current version:** v0.4.7-alpha  
-**Last updated:** 2026-02-21
+# MonARCH Store Architecture
 
-## Core Philosophy: "Host-Adaptive & Dumb View"
+## Current truth
 
-MonARCH Store v0.4.0+ represents a paradigm shift to **Host-Adaptive Architecture** and **Dumb View Frontend**. 
-1. **Host-Adaptive**: The backend respects the host system's `pacman.conf` and `flatpak` configuration as the single source of truth.
-2. **Dumb View**: The frontend no longer manages data "pre-warming", metadata guesswork, or complex hydration. It relies on the Rust backend to provide fully-enriched **ViewModel** objects via `bindings.ts`.
+MonARCH Store is now a **GTK-first application** built on a Rust backend foundation called **Iron Core**.
 
-## 1. High-Level Overview
+Primary runtime pieces:
+- `monarch-core`: canonical package data, metadata hydration, storefront/search/details logic, settings, updates, and policy-aware source behavior
+- `monarch-gtk`: the current frontend, responsible for rendering backend payloads and collecting user intent
+- `monarch-helper`: the only privileged process allowed to perform ALPM write operations
 
-```mermaid
-graph TD
-    User[User] <--> Frontend[React Frontend - 'Dumb View']
-    Frontend <-->|Tauri IPC / bindings.ts| Backend[Rust Backend - 'Brain']
-    Backend <-->|SQL/ALPM| Registry[SQLite Registry & Metadata]
-    Registry <-->|Local| AppStream[AppStream XMLs]
-    Backend <-->|HTTP| ChaoticAPI[Chaotic-AUR API]
-    Backend <-->|HTTP| AURAPI[AUR RPC]
-    Backend <-->|Command| Flatpak[Flatpak CLI]
-    Backend <-->|Command| Pacman[Pacman / Paru]
-    Frontend <-->|REST| Supabase[Community Reviews]
+Legacy/reference-only:
+- Tauri/React code under `src/`
+
+## Iron Core contract
+
+Iron Core is the single source of truth for package metadata and package identity.
+
+It is responsible for:
+- reading host-aware repo state
+- hydrating metadata from AppStream, Flatpak/Flathub, repo sources, AUR, and local system state
+- building canonical package identities so stable multi-source apps appear as one listing
+- keeping source-specific facts separate while exposing one merged package model to the frontend
+- generating the payloads used by:
+  - Home
+  - Search
+  - Categories
+  - Installed
+  - Updates
+  - Package details
+
+GTK must not reimplement:
+- metadata parsing
+- icon/source inference
+- local category taxonomy rules
+- multi-source merge logic
+
+## High-level model
+
+```text
+User
+  -> monarch-gtk
+      -> monarch-core
+          -> registry / hydration / canonical ids
+          -> ALPM read paths
+          -> Flatpak metadata
+          -> AUR metadata
+          -> distro-aware repo context
+      -> monarch-helper
+          -> privileged ALPM write operations
 ```
 
-## 2. The Host-Adaptive Repository Layer
-**Module:** `repo_manager.rs`
+## Frontend responsibilities
 
-Instead of managing a private database of enabled/disabled repos, MonARCH now uses ALPM (Arch Linux Package Management) to inspect the system state:
-*   **Discovery Mode**: At startup, we read ALPM to see which repositories are *actually* enabled (`cachyos`, `garuda`, `multilib`).
-*   **Safety Guard**: We do not allow enabling `chaotic-aur` on Manjaro systems to prevent glibc incompatibility.
-*   **Distro detection:** We treat `ID=archlinux` as Arch and parse `ID_LIKE`: if it contains `arch` (e.g. ArcoLinux, Archcraft), the distro gets Arch-like capabilities. See `distro_context.rs`.
-*   **Result**: If you enable a repo in `/etc/pacman.conf` manually, MonARCH sees it. If you use our toggle, we write a drop-in file to `/etc/pacman.d/monarch/`.
+`monarch-gtk` is a dumb UI, not a data engine.
 
-### Chaotic-AUR Setup (Interactive Terminal Helper)
-We follow a **safe host policy**: instead of silently modifying system files from the GUI, we provide an interactive terminal helper for sensitive operations. For Chaotic-AUR:
-*   **Terminal Setup**: `open_chaotic_terminal()` launches an auto-detected terminal window (Konsole, GNOME Terminal, Alacritty, etc.) running a self-contained bash script.
-*   **Automated Configuration**: The script handles GPG key reception (`3056513887B78AEB`), keyring installation, and **appending the repository block to `/etc/pacman.conf`** after user confirmation.
-*   **Verification**: A "Final Step" modal in the GUI allows users to "Check Connection" to verify the repository is active in ALPM after the terminal script finishes.
-*   **Traffic light UX**: Settings → Sources shows Chaotic-AUR as Active / Inactive / Blocked. Package cards and details show "Configure Source" when the only source is Chaotic-AUR and it is not enabled.
+GTK is responsible for:
+- rendering cards, pages, onboarding, settings, updates, and details
+- presenting backend-provided screenshots, icons, badges, labels, and action state
+- sending user intent back to `monarch-core`
 
-### CachyOS: Best repo for the user’s CPU
-CachyOS provides CPU-optimized repos (e.g. x86-64-v3, x86-64-v4, Znver4). MonARCH respects the system’s choice and avoids enabling tiers the CPU cannot use:
-*   **Discovery:** Repos are read from `/etc/pacman.conf` (e.g. `cachyos-v4`, `cachyos-core-v4`, `cachyos-extra-v4`). Whatever CachyOS or the user enabled is what we see.
-*   **Smart enable (Settings):** When the user turns on the “CachyOS” repo family, we only enable repos that match the current CPU: `-znver4` → enable only if Znver4-compatible; `-v4` → only if x86-64-v4; `-v3` / `-core` → only if x86-64-v3. So we never enable a v4 repo on a v3-only machine.
-*   **Package ranking:** When resolving which repo provides a package, we rank by CPU tier (`repo_manager.get_all_packages_with_repos`): Znver4-compatible repos first, then v4, then v3, so the UI and install prefer the best tier the CPU supports.
-*   **Install:** We install from the repo that has the package (including fallback across all syncdbs if a single-repo lookup fails). No extra CPU logic in the helper—we use the enabled repos and prefer the same ranking as the UI.
-*   **CPU detection:** `utils::is_cpu_v3_compatible`, `is_cpu_v4_compatible`, `is_cpu_znver4_compatible` (used by Settings and ranking). System info shows the detected tier (e.g. “x86-64-v4 (AVX-512)”).
+GTK is allowed to:
+- resolve an icon name into an actual GTK icon theme asset for display
+- choose layout and visual styling
 
-## 2. Unified Search Aggregator
-**Module:** `search.rs` (Commands), `middleware/aggregation.rs` (Logic)
+**UI reference:** The package detail page (hero, data bar, actions) follows the look and feel of [Bazaar](https://github.com/kolunmi/bazaar) (GNOME’s Flathub app store), with MonARCH-specific additions such as the integrated source selector for multi-source installs.
 
-The search engine now operates as a parallel aggregator (orchestrated by `middleware/aggregation.rs`):
+GTK is not allowed to:
+- merge repo and Flatpak rows into one app locally
+- derive category membership
+- invent source ordering
+- parse metadata files directly
 
-1.  **Frontend Request**: User types "firefox".
-2.  **Parallel Dispatch**: `tokio::join!` launches three concurrent tasks:
-    *   **ALPM/Repo**: Queries local sync databases for official packages.
-    *   **Flathub**: specific CLI/API search for Flatpaks.
-    *   **AUR**: Web query to the AUR RPC interface.
-3.  **Normalization & Merging**: 
-    *   Results are keyed by **canonical merge key** (`utils::canonical_merge_key`): app_id via known map + **first-segment rule** for multi-segment names (e.g. `heroic-games-launcher` and `heroic` → key `heroic`) so one app = one entry without a per-app alias list. Variant suffixes (`-git`, `-bin`) are stripped; then first segment is used when valid.
-    *   **Priority Merge**: Official packages overwrite Flatpaks, which overwrite AUR.
-    *   **Source Tracking**: A single `Package` struct contains `available_sources`; the UI shows a "best" source badge and source selector (Unified Pipeline). Friendly labels come from `labels::get_friendly_label` (distro-aware). **Display names:** After dedup, every package gets a proper name via `preferred_display_name(canonical_id)` or `to_pretty_name(name)` so one app shows one label (e.g. "Heroic Game Launcher"). See `docs/UNIVERSAL_DATA_ENGINE.md`.
+## Canonical package model
 
-## 3. Native Integration Layers
+Core types:
+- `Package`
+- `PackagePresentation`
+- `PackageVariant`
+- `FullPackageDetails`
+- `SearchOptions`
+- `HomeSnapshot`
+- `GtkSettings`
 
-### 📦 Flatpak (The Safety Net)
-**Module:** `flathub_api.rs`
-*   **Integration**: Direct wrapper around the `flatpak` CLI.
-*   **Scope**: User-level operations (`flatpak install --user`) where possible to avoid sudo, or system-level with Polkit.
-*   **Use Case**: Proprietary apps (Spotify, Discord) and sandboxed environments.
+Behavioral expectations:
+- `HomeSnapshot` drives Home rails and category tiles
+- `SearchOptions` drives filtering and ranking from the backend
+- `Package` and `PackagePresentation` provide enough data for cards without GTK hydration
+- `FullPackageDetails` provides enough data for details and source switching without GTK inference
 
-### 🛠️ Native AUR Builder
-**Module:** `aur_api.rs`
-*   **Cloning**: Uses `git2` (libgit2 bindings) for high-performance, native git operations.
-*   **Building**:
-    1.  **Preparation**: Clones to `~/.cache/monarch/aur/<pkg>`.
-    2.  **Inspection**: Parses `.SRCINFO` for dependencies and keys.
-    3.  **Key Import**: Auto-fetches GPG keys (`gpg --recv-keys`).
-    4.  ** Compilation**: Spawns `makepkg` as the **current user** (not root).
-    5.  **Streaming**: Real-time log output is streamed via Tauri Events (`hurd://log`) to the frontend console.
-    6.  **Installation**: Final `.pkg.tar.zst` is installed via the `monarch-helper` (Root/Polkit).
+## Host-adaptive repository policy
 
-## 4. The Installation Pipeline (Iron Core & Safe Guard)
+MonARCH does not treat the machine as a blank appliance.
 
-All system modifications pass through a strict gatekeeper:
+Rules:
+- do not silently rewrite `/etc/pacman.conf`
+- discover sync databases and distro-aware repos from the host
+- respect distro restrictions, especially around Chaotic-AUR on Manjaro
+- allow discovery toggles to hide sources from Home/Search/Categories without breaking Installed/Updates visibility for already-installed apps
 
-*   **GUI (User)**: Prepares the intent (JSON).
-*   **Monarch-Helper (Root)**: Invoked via **Polkit (`pkexec`)** or **`sudo -S`** depending on Settings: when **Reduce password prompts** is on, the app uses a single branded password dialog per session and runs the Helper with `sudo -S`; when off, the Helper is always run with `pkexec` so the user gets the system auth dialog every time. See `helper_client::invoke_helper(..., use_branded_auth)` and `docs/RECENT_CHANGES.md` §8.
-*   **Atomic Transactions**: 
-    *   Standard Installs: `pacman -Syu --needed <pkg>` (Prevents partial upgrades).
-    *   System Update: `pacman -Syu`.
-    *   Lock Guard: Checks `/var/lib/pacman/db.lck`.
-*   **Safe Guard (Install & Update)**:
-    *   **IgnorePkg**: The helper respects host `IgnorePkg`/`IgnoreGroup` (question callback skips install for ignored packages).
-    *   **Update-before-install**: `update_and_install_package` runs a full system upgrade (ExecuteBatch with refresh + upgrade) **before** installing the target package.
-    *   **No silent full upgrade**: If an install fails due to stale DB, the GUI emits `failed_update_required` and returns an error—user must explicitly confirm a system upgrade.
+Source priority is Arch-first:
+1. host-native / distro-aware repo
+2. Arch official repo
+3. Chaotic-AUR
+4. Flatpak
+5. AUR
 
-### 🛡️ FFI Stability (Bulletproof ALPM)
-(v0.4.7 Milestone) To prevent `signal 6 (SIGABRT)` panics during intensive ALPM transactions:
-- **Callback Isolation**: Progress and status callbacks are rigorously validated before dereferencing pointers.
-- **Thread Separation**: High-frequency metadata hydration is decoupled from the primary ALPM transaction thread to prevent lock contention and race conditions.
+## Package-management safety model
 
-## 5. Unified Update System (Operation "Unified State")
-**Modules:** `commands/update.rs`, `transactions.rs`
+`monarch-helper` is the only process that writes ALPM state.
 
-*   **Aggregator**: Parallel `check_updates` fetches from all 3 sources simultaneously.
-*   **Execution Engine**: `apply_updates` enforces the **Safety Lock**:
-    > If ANY official package needs updating, the entire batch runs as a system upgrade (`-Syu`), ensuring consistency.
+Rules:
+- no partial upgrades
+- no `pacman -Sy` alone
+- repo installs must respect update-before-install semantics
+- AUR builds happen unprivileged, then built artifacts are handed to the helper
+- IgnorePkg and IgnoreGroup are respected
 
-### 🔐 Operation "Silent Guard" (Permission Aggregation)
-To solve the "password fatigue" problem (multiple prompts for one action):
-1.  **Protocol**: Frontend sends a `TransactionManifest` (Refresh + Upgrade + Remove + Install) as one packet.
-2.  **Helper**: Acquires the ALPM lock once and executes all steps in sequence.
-3.  **Policy**: Polkit rule `auth_admin_keep` remembers the password for 5 minutes for `com.monarch.store.batch`.
+## GTK parity goals
 
-## 6. Frontend Stack (The Chameleon & Liquid UI)
-**Tech**: React 19, TypeScript, Tailwind 4.
+GTK is the current product surface and should match the MonARCH contract already documented across the repo:
+- one canonical listing per stable app
+- backend-backed categories and curated rails
+- card consistency across Home, Categories, Search, Favorites, Installed, and Updates
+- details page as the single authoritative action/state surface
+- proper source switching and source-aware detail facts
+- rich icon/screenshot fidelity driven by Iron Core
 
-*   **Onboarding Wizard**: Multi-step flow (Welcome → Source Manager → Chaotic-AUR Setup [conditional] → Security & Privacy → Theme → Confirmation). Chaotic-AUR step appears only when the distro is compatible; "Install Keys & Mirrors" opens the same "Final Step" modal as Settings (pacman.conf snippet, Copy, Check Again).
-*   **Theme Detection**: Uses **XDG Desktop Portals** to detect Dark/Light mode on any desktop (GNOME, KDE, Hyprland).
-*   **Wayland Detection**: Adjusts window rendering strategies (flicker prevention) if `WAYLAND_DISPLAY` is present.
-*   **Liquid UI (Responsive)**:
-    *   **Window**: Minimum size 800×600 (tauri.conf.json).
-    *   **Grids**: Browse, Search, Category, and Trending use responsive columns (`grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4`).
-    *   **Mobile**: Bottom navigation bar (`MobileNav`) on small screens; sidebar hidden or collapsed on medium; main content has bottom padding on mobile.
-    *   **Package Details**: Header and actions stack on narrow viewports (`flex-col lg:flex-row`); description and actions are centered on small screens.
+## Legacy Tauri note
+
+The Tauri/React codebase is still present for reference and parity comparison, but it is no longer the product frontend of record. Public docs should not describe it as the active application architecture.

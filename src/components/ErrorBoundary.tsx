@@ -1,4 +1,5 @@
 import { Component, ErrorInfo, ReactNode } from "react";
+import { debugError } from "../utils/debugLog";
 
 interface Props {
     children: ReactNode;
@@ -24,7 +25,7 @@ class ErrorBoundary extends Component<Props, State> {
     }
 
     public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-        console.error("Uncaught error:", error, errorInfo);
+        debugError("Uncaught error:", error, errorInfo);
         // Try to report to ErrorService if available (via window for class components)
         if (typeof window !== 'undefined' && (window as any).__errorService) {
             (window as any).__errorService.reportCritical(error);

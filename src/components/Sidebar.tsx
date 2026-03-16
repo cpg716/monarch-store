@@ -1,9 +1,11 @@
 import React, { useEffect } from 'react';
 import { LayoutGrid, Download, Settings, RefreshCw, Search, Heart, ChevronLeft, ChevronRight, Newspaper, LucideIcon } from 'lucide-react';
 import { clsx } from 'clsx';
-import logoIcon from '../assets/logo.png';
+import logoFull from '../assets/logo_full.png';
+import archLogo from '../assets/arch-logo.png';
 import { motion } from 'framer-motion';
 import { useAppStore } from '../store/internal_store';
+import { useDistro } from '../hooks/useDistro';
 
 interface SidebarProps {
     activeTab: string;
@@ -21,6 +23,7 @@ interface SidebarTab {
 const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
     const isExpanded = useAppStore(s => s.isSidebarExpanded);
     const setSidebarExpanded = useAppStore(s => s.setSidebarExpanded);
+    const { distro } = useDistro();
 
     // Initial Responsive check only (Iron Core: don't fight the user on every resize)
     useEffect(() => {
@@ -34,7 +37,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
     const tabs: SidebarTab[] = [
         { id: 'explore', icon: LayoutGrid, label: 'Explore', desc: 'Browse curated collections' },
         { id: 'search', icon: Search, label: 'Search', desc: 'Find applications' },
-        { id: 'installed', icon: Download, label: 'Manage', desc: 'Installed & Orphans' },
+        { id: 'installed', icon: Download, label: 'Installed', desc: 'Your installed apps' },
         { id: 'favorites', icon: Heart, label: 'Favorites', desc: 'Your saved apps' },
         { id: 'updates', icon: RefreshCw, label: 'Updates', desc: 'Check for system updates', badge: pendingUpdates.total },
         { id: 'news', icon: Newspaper, label: 'News', desc: 'Safety advisories' },
@@ -53,7 +56,16 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                 isExpanded ? "gap-4" : "justify-center px-0"
             )}>
                 <div className="relative shrink-0">
-                    <img src={logoIcon} alt="MonARCH" className="w-10 h-10 object-contain drop-shadow-[0_0_15px_rgba(59,130,246,0.4)] animate-butterfly" />
+                    <img
+                        src={isExpanded ? logoFull : archLogo}
+                        alt="MonARCH"
+                        className={clsx(
+                            "object-contain",
+                            isExpanded
+                                ? "h-10 w-10 rounded-lg"
+                                : "h-10 w-10"
+                        )}
+                    />
                     {!isExpanded && pendingUpdates.total > 0 && (
                         <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-app-sidebar animate-pulse" />
                     )}
@@ -65,11 +77,12 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
                         animate={{ opacity: 1, x: 0 }}
                         className="flex flex-col min-w-0"
                     >
-                        <span className="text-xl font-black tracking-tighter text-app-fg leading-none flex items-center gap-1.5">
-                            MonARCH
-                            <span className="text-[10px] bg-accent/20 text-accent px-1.5 py-0.5 rounded font-black tracking-widest uppercase">PRO</span>
+                        <span className="text-lg font-black tracking-tight text-app-fg leading-none">
+                            MonARCH Store
                         </span>
-                        <span className="text-[9px] font-bold text-app-muted uppercase tracking-widest truncate">Alpha Core v0.4.7</span>
+                        <span className="text-[10px] font-semibold text-app-muted truncate">
+                            {distro.pretty_name || 'Arch-based Linux'}
+                        </span>
                     </motion.div>
                 )}
             </div>
@@ -163,7 +176,6 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
             <div className="px-4 mt-8">
                 <button
                     onClick={() => {
-                        console.log("Toggle Sidebar:", !isExpanded);
                         setSidebarExpanded(!isExpanded);
                     }}
                     className={clsx(

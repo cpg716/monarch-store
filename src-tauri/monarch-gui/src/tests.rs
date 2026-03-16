@@ -1,7 +1,7 @@
 #[cfg(test)]
-mod tests {
+mod aggregation_and_merge_tests {
     use crate::flathub_api::SearchResult;
-    use crate::middleware::aggregation::merge_search_results;
+    use crate::middleware::aggregation::{build_package_view_models_v2, merge_search_results};
     use crate::models::{Package, PackageSource};
     use crate::utils;
 
@@ -70,9 +70,9 @@ mod tests {
 
         let result = utils::merge_and_deduplicate(official, repo);
 
-        // Chaotic has lower priority number (1) than Official (2), so Chaotic wins
+        // Official has higher priority than Chaotic in discovery ranking.
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].name, "brave-bin"); // Chaotic-AUR package wins
+        assert_eq!(result[0].name, "brave");
     }
 
     #[test]
@@ -141,8 +141,29 @@ mod tests {
     }
 
     #[test]
-    fn test_search_aggregation_firefox_variant_merge() {
-        // firefox and firefox-developer-edition are variants; must merge to 1 entry
+    fn test_primary_source_prefers_flatpak_over_aur_when_no_repo() {
+        let official: Vec<Package> = vec![];
+        let aur = vec![make_pkg("obs-studio", PackageSource::aur("obs-studio"), None)];
+        let flatpak = vec![(
+            SearchResult {
+                app_id: "com.obsproject.Studio".to_string(),
+                name: "OBS Studio".to_string(),
+                summary: Some("Streaming".to_string()),
+                icon: None,
+            },
+            Some("latest".to_string()),
+        )];
+        let installed_flatpaks = std::collections::HashSet::new();
+        let registry = crate::registry::RegistryManager::in_memory();
+
+        let result = build_package_view_models_v2(official, aur, flatpak, &registry, &installed_flatpaks);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].source.source_type, "flatpak");
+    }
+
+    #[test]
+    fn test_search_aggregation_firefox_channel_split() {
+        // firefox and firefox-developer-edition are distinct channels/products and must stay separate.
         let official = vec![make_pkg(
             "firefox",
             PackageSource::official("firefox"),
@@ -161,20 +182,11 @@ mod tests {
 
         assert_eq!(
             result.len(),
-            1,
-            "firefox + firefox-developer-edition must merge to 1 entry"
-        );
-        let sources = result[0]
-            .available_sources
-            .as_ref()
-            .expect("available_sources");
-        assert_eq!(
-            sources.len(),
             2,
-            "must have repo + aur in available_sources"
+            "firefox + firefox-developer-edition must remain separate entries"
         );
-        assert!(sources.iter().any(|s| s.source_type == "repo"));
-        assert!(sources.iter().any(|s| s.source_type == "aur"));
+        assert!(result.iter().any(|p| p.name == "firefox"));
+        assert!(result.iter().any(|p| p.name == "firefox-developer-edition"));
     }
 
     #[test]
@@ -205,6 +217,21 @@ mod tests {
         let key2 = utils::canonical_merge_key("discord-bin", None);
         assert_eq!(key1, key2, "discord and discord-bin must still merge");
         assert_eq!(key1, "discord");
+    }
+
+    #[test]
+    fn test_channel_variants_are_distinct() {
+        // Channels must remain separate identities.
+        let chrome = utils::canonical_merge_key("google-chrome", None);
+        let chrome_canary = utils::canonical_merge_key("google-chrome-canary", None);
+        let discord = utils::canonical_merge_key("discord", None);
+        let discord_canary = utils::canonical_merge_key("discord-canary", None);
+        let discord_ptb = utils::canonical_merge_key("discord-ptb", None);
+
+        assert_ne!(chrome, chrome_canary);
+        assert_ne!(discord, discord_canary);
+        assert_ne!(discord, discord_ptb);
+        assert_ne!(discord_canary, discord_ptb);
     }
 
     #[test]

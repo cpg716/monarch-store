@@ -158,6 +158,96 @@ pub struct SystemInfo {
     pub cpu_optimization: String,
 }
 
+#[derive(Serialize, Type)]
+pub struct HostAppearance {
+    pub color_scheme: String, // "dark" | "light" | "system"
+    pub accent_color: Option<String>, // #RRGGBB
+    pub desktop: String,      // gnome/kde/plasma/xfce/unknown
+}
+
+fn detect_desktop_environment() -> String {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .or_else(|_| std::env::var("XDG_SESSION_DESKTOP"))
+        .or_else(|_| std::env::var("DESKTOP_SESSION"))
+        .unwrap_or_else(|_| "unknown".to_string())
+        .to_lowercase();
+
+    if desktop.contains("gnome") {
+        "gnome".to_string()
+    } else if desktop.contains("kde") || desktop.contains("plasma") {
+        "kde".to_string()
+    } else if desktop.contains("xfce") {
+        "xfce".to_string()
+    } else if desktop.contains("cinnamon") {
+        "cinnamon".to_string()
+    } else {
+        desktop
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn rgb_tuple_to_hex((r, g, b): (f64, f64, f64)) -> String {
+    let to_u8 = |v: f64| -> u8 {
+        let clamped = v.clamp(0.0, 1.0);
+        (clamped * 255.0).round() as u8
+    };
+    format!("#{:02x}{:02x}{:02x}", to_u8(r), to_u8(g), to_u8(b))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_host_appearance() -> Result<HostAppearance, String> {
+    let mut color_scheme = "system".to_string();
+    let mut accent_color = None;
+
+    #[cfg(target_os = "linux")]
+    {
+        use ashpd::desktop::settings::Settings;
+        if let Ok(proxy) = Settings::new().await {
+            let mut scheme_value: Option<u8> = None;
+            if let Ok(scheme) = proxy
+                .read::<u32>("org.freedesktop.appearance", "color-scheme")
+                .await
+            {
+                scheme_value = Some(scheme as u8);
+            } else if let Ok(scheme) = proxy
+                .read::<u8>("org.freedesktop.appearance", "color-scheme")
+                .await
+            {
+                scheme_value = Some(scheme);
+            }
+
+            if let Some(scheme) = scheme_value {
+                color_scheme = match scheme {
+                    1 => "dark".to_string(),
+                    2 => "light".to_string(),
+                    _ => "system".to_string(),
+                };
+            }
+
+            if let Ok(rgb) = proxy
+                .read::<(f64, f64, f64)>("org.freedesktop.appearance", "accent-color")
+                .await
+            {
+                accent_color = Some(rgb_tuple_to_hex(rgb));
+            } else if let Ok(rgb) = proxy
+                .read::<Vec<f64>>("org.freedesktop.appearance", "accent-color")
+                .await
+            {
+                if rgb.len() >= 3 {
+                    accent_color = Some(rgb_tuple_to_hex((rgb[0], rgb[1], rgb[2])));
+                }
+            }
+        }
+    }
+
+    Ok(HostAppearance {
+        color_scheme,
+        accent_color,
+        desktop: detect_desktop_environment(),
+    })
+}
+
 /// Typed response for get_cache_size (replaces raw serde_json::json!).
 #[derive(Serialize, Type)]
 pub struct CacheSizeResult {
@@ -399,11 +489,10 @@ pub async fn toggle_repo_family(
     skip_os_sync: Option<bool>,
     password: Option<String>,
 ) -> Result<(), String> {
-    let _password = password;
     let skip = skip_os_sync.unwrap_or(false);
     state
         .inner()
-        .set_repo_family_state(&app, &family, enabled, skip)
+        .set_repo_family_state(&app, &family, enabled, skip, password)
         .await?;
     Ok(())
 }
@@ -544,15 +633,16 @@ pub async fn trigger_repo_sync(
     app: tauri::AppHandle,
     state_repo: State<'_, repo_manager::RepoManager>,
     state_chaotic: State<'_, chaotic_api::ChaoticApiClient>,
-    sync_interval_hours: Option<u64>,
+    sync_interval_hours: Option<u32>,
+    password: Option<String>,
 ) -> Result<String, String> {
     use tauri::Emitter;
-    let interval = sync_interval_hours.unwrap_or(3);
+    let interval = sync_interval_hours.unwrap_or(3) as u64;
 
-    let _ = app.emit("sync-progress", "Syncing repositories...");
+    let _ = app.emit("sync-progress", "Refreshing package sources in background");
     let repo_res = state_repo
         .inner()
-        .sync_all(false, interval, Some(app.clone()))
+        .sync_all(false, interval, Some(app.clone()), password)
         .await?;
 
     let _ = app.emit("sync-progress", "Fetching Chaotic-AUR metadata...");
@@ -665,9 +755,8 @@ pub async fn is_onboarding_completed(
 pub async fn set_onboarding_completed(
     state: State<'_, repo_manager::RepoManager>,
     completed: bool,
-) -> Result<(), String> {
-    state.inner().set_onboarding_completed(completed).await;
-    Ok(())
+) -> Result<bool, String> {
+    Ok(state.inner().set_onboarding_completed(completed).await)
 }
 
 #[tauri::command]
@@ -845,7 +934,6 @@ pub async fn perform_housekeeping(
             manifest: crate::models::TransactionManifest {
                 remove_orphans: true,
                 clear_cache: true,
-                refresh_db: true,
                 ..Default::default()
             },
         },
@@ -1518,8 +1606,9 @@ else
 fi
 
 echo ""
-echo "4. Refreshing Databases..."
-sudo pacman -Sy
+echo "4. Finalization"
+echo "Skipping standalone database refresh to avoid partial-upgrade risk."
+echo "Back in MonARCH, use Check Connection / Refresh Databases."
 
 echo ""
 echo -e "\033[1;32mSuccess! Chaotic-AUR is now enabled.\033[0m"
@@ -1564,9 +1653,7 @@ read -p "Press [Enter] to exit..."
                 cmd.args(["--", "/bin/bash", "-c", script_path]);
             } else if term == "xfce4-terminal" || term == "terminator" {
                 cmd.args(["-x", "/bin/bash", "-c", script_path]);
-            } else if term == "kitty" {
-                cmd.arg(script_path);
-            } else if term == "xdg-terminal-exec" {
+            } else if term == "kitty" || term == "xdg-terminal-exec" {
                 cmd.arg(script_path);
             } else {
                 // konsole -e, alacritty -e, xterm -e, tilix -e

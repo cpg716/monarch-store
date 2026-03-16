@@ -17,7 +17,7 @@ static AUR_SEARCH_CACHE: Lazy<moka::future::Cache<String, Vec<raur::Package>>> =
 
 // Convert raur::Package to our internal Package model
 fn raur_to_package(p: raur::Package) -> Package {
-    let installed = crate::alpm_read::is_package_installed(&p.name);
+    let installed = crate::utils::is_package_or_alias_installed(&p.name);
     Package {
         name: p.name,
         display_name: None,
@@ -59,18 +59,21 @@ where
         match operation().await {
             Ok(res) => return Ok(res),
             Err(e) => {
+                let err_str = e.to_string();
+                // If the error is "Too many package results", it's a permanent failure for this query
+                if err_str.contains("Too many package results") {
+                    return Err(err_str);
+                }
+
                 attempts += 1;
-                // If it's not a 429/5xx, fail fast?
-                // raur::Error is opaque, but usually stringifiable.
-                // Assuming transient errors, we retry.
                 if attempts >= max_attempts {
-                    return Err(e.to_string());
+                    return Err(err_str);
                 }
                 log::warn!(
                     "[AUR] Request failed (attempt {}/{}): {}. Retrying in {:?}...",
                     attempts,
                     max_attempts,
-                    e,
+                    err_str,
                     delay
                 );
                 tokio::time::sleep(delay).await;

@@ -146,6 +146,16 @@ pub fn calculate_package_rank(
 }
 
 impl RepoManager {
+    fn fallback_repo_db_url(db_name: &str) -> Option<String> {
+        match db_name {
+            "cachyos-v4" => Some("https://mirror.cachyos.org/repo/x86_64_v4/cachyos-v4.db".to_string()),
+            "cachyos-core-v4" => Some("https://mirror.cachyos.org/repo/x86_64_v4/cachyos-core-v4.db".to_string()),
+            "cachyos-extra-v4" => Some("https://mirror.cachyos.org/repo/x86_64_v4/cachyos-extra-v4.db".to_string()),
+            "chaotic-aur" => Some("https://cdn-mirror.chaotic.cx/chaotic-aur/x86_64/chaotic-aur.db".to_string()),
+            _ => None,
+        }
+    }
+
     pub fn new() -> Self {
         let config_path = dirs::config_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -189,6 +199,8 @@ impl RepoManager {
         // 2. DISCOVER HOST REPOS via ALPM (system pacman.conf — we do not inject)
         // Register all repo sections from /etc/pacman.conf (and Include'd files) so syncdbs() returns
         // the actual system repos: core, extra, community, multilib, plus Manjaro, Garuda, Chaotic-AUR, CachyOS, etc.
+        let repo_servers_from_conf =
+            crate::alpm_read::get_repo_servers_from_conf("/etc/pacman.conf");
         if let Ok(alpm) = alpm::Alpm::new("/", "/var/lib/pacman") {
             crate::alpm_read::register_syncdbs_from_conf(&alpm, "/etc/pacman.conf");
             let dbs = alpm.syncdbs();
@@ -197,6 +209,13 @@ impl RepoManager {
                 // If it's already in our list, mark it enabled
                 if let Some(existing) = initial_repos.iter_mut().find(|r| r.name == db_name) {
                     existing.enabled = true;
+                    if let Some(url) = repo_servers_from_conf
+                        .get(db_name)
+                        .and_then(|servers| servers.first())
+                        .filter(|s| !s.trim().is_empty())
+                    {
+                        existing.url = url.clone();
+                    }
                 } else {
                     // System repo from pacman.conf we didn't have in default list (e.g. manjaro, chaotic-aur, cachyos, garuda).
                     // Add it; we do not inject — we only discover from system.
@@ -209,7 +228,18 @@ impl RepoManager {
                         "", // Generic repo config has no specific package name
                     );
 
-                    let servers = db.servers().into_iter().next().unwrap_or("").to_string();
+                    let servers = repo_servers_from_conf
+                        .get(db_name)
+                        .and_then(|servers| servers.first())
+                        .cloned()
+                        .or_else(|| {
+                            db.servers()
+                                .into_iter()
+                                .find(|s| !s.trim().is_empty())
+                                .and_then(|s| crate::alpm_read::resolve_server_template_to_db_url(db_name, s))
+                        })
+                        .or_else(|| Self::fallback_repo_db_url(db_name))
+                        .unwrap_or_default();
 
                     initial_repos.push(RepoConfig {
                         name: db_name.to_string(),
@@ -401,6 +431,7 @@ impl RepoManager {
         *w = enabled;
         drop(w);
         self.save_config_async().await;
+        crate::commands::search::cache::clear_search_and_list_caches();
     }
 
     pub async fn is_one_click_enabled(&self) -> bool {
@@ -445,6 +476,7 @@ impl RepoManager {
         *w = enabled;
         drop(w);
         self.save_config_async().await;
+        crate::commands::search::cache::clear_search_and_list_caches();
     }
 
     pub async fn get_repo_priority_order(&self) -> Vec<String> {
@@ -517,11 +549,14 @@ impl RepoManager {
         *self.onboarding_completed.read().await
     }
 
-    pub async fn set_onboarding_completed(&self, completed: bool) {
+    /// Returns the previous value (true if onboarding was already completed).
+    pub async fn set_onboarding_completed(&self, completed: bool) -> bool {
         let mut onboarding = self.onboarding_completed.write().await;
+        let was = *onboarding;
         *onboarding = completed;
         drop(onboarding);
         self.save_config_async().await;
+        was
     }
 
     pub async fn get_theme_mode(&self) -> String {
@@ -639,6 +674,15 @@ impl RepoManager {
         repos.iter().any(|r| r.name == name && r.enabled)
     }
 
+    pub async fn get_enabled_repo_names(&self) -> Vec<String> {
+        let repos = self.repos.read().await;
+        repos
+            .iter()
+            .filter(|r| r.enabled)
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
     pub async fn get_all_repos(&self) -> Vec<RepoConfig> {
         self.repos.read().await.clone()
     }
@@ -701,6 +745,7 @@ impl RepoManager {
         force: bool,
         interval_hours: u64,
         app: Option<tauri::AppHandle>,
+        password: Option<String>,
     ) -> Result<String, String> {
         use tauri::Emitter;
         let repos = self.repos.read().await;
@@ -745,7 +790,7 @@ impl RepoManager {
                 HelperCommand::AlpmSync {
                     enabled_repos: enabled_repo_names,
                 },
-                None,
+                password.clone(),
                 one_click,
             )
             .await;
@@ -844,7 +889,7 @@ impl RepoManager {
                     let mut p = pkg.clone();
                     p.source =
                         PackageSource::from_repo_name(repo_name, &p.version, distro, &p.name);
-                    p.installed = crate::alpm_read::is_package_installed(&p.name);
+                    p.installed = crate::utils::is_package_or_alias_installed(&p.name);
 
                     if results_map.contains_key(&p.name) {
                         // If multiple repos provide same package, keep the first one found (or prioritize?)
@@ -910,7 +955,7 @@ impl RepoManager {
                 // We can't easily check installed status without ALPM, so default to false
                 // or try the CLI fallback if critical. For now, false is safe for a fallback.
                 // Actually, let's try the simple check:
-                p.installed = crate::alpm_read::is_package_installed(&p.name);
+                p.installed = crate::utils::is_package_or_alias_installed(&p.name);
                 return Some(p);
             }
         }
@@ -986,8 +1031,11 @@ impl RepoManager {
         }
 
         self.save_config_async().await;
-        // Apply config and sync so the repo is usable (Apple Store–like)
-        self.apply_os_config(app, None).await?;
+        crate::commands::search::cache::clear_search_and_list_caches();
+        // Discovery toggle for Chaotic is app-local; do not run privileged OS sync here.
+        if name != "chaotic-aur" {
+            self.apply_os_config(app, None).await?;
+        }
         Ok(())
     }
 
@@ -999,6 +1047,7 @@ impl RepoManager {
         family: &str,
         enabled: bool,
         skip_os_sync: bool,
+        password: Option<String>,
     ) -> Result<(), String> {
         let mut repos = self.repos.write().await;
         let family_lower = family.to_lowercase();
@@ -1047,8 +1096,13 @@ impl RepoManager {
         }
 
         self.save_config_async().await;
-        if !skip_os_sync {
-            self.apply_os_config(app, None).await?;
+        crate::commands::search::cache::clear_search_and_list_caches();
+        // Chaotic family toggle is discovery-only; avoid privileged OS sync/prompt loops.
+        let family_lower = family.to_lowercase();
+        let effective_skip_os_sync =
+            skip_os_sync || matches!(family_lower.as_str(), "chaotic" | "chaotic-aur");
+        if !effective_skip_os_sync {
+            self.apply_os_config(app, password).await?;
         }
 
         Ok(())
@@ -1240,15 +1294,15 @@ mod tests {
         let p_aur = make_test_pkg(PackageSource::aur("test-pkg"));
         let distro = crate::distro_context::DistroContext::new(); // Default Arch
 
-        // Rank Check: priority() + 3 = Chaotic(1+3)=4, Official(2+3)=5, Aur(4+3)=7
-        assert_eq!(calculate_package_rank(&p_chaotic, 0, &distro), 4);
+        // Rank Check: Official(2+3)=5, Chaotic(3+3)=6, Aur(5+3)=8
         assert_eq!(calculate_package_rank(&p_official, 0, &distro), 5);
-        assert_eq!(calculate_package_rank(&p_aur, 0, &distro), 7);
+        assert_eq!(calculate_package_rank(&p_chaotic, 0, &distro), 6);
+        assert_eq!(calculate_package_rank(&p_aur, 0, &distro), 8);
 
-        // Verify Chaotic beats Official (Lower rank is better)
+        // Verify Official beats Chaotic (Lower rank is better)
         assert!(
-            calculate_package_rank(&p_chaotic, 0, &distro)
-                < calculate_package_rank(&p_official, 0, &distro)
+            calculate_package_rank(&p_official, 0, &distro)
+                < calculate_package_rank(&p_chaotic, 0, &distro)
         );
     }
 

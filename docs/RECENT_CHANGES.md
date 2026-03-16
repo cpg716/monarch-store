@@ -1,7 +1,61 @@
 # Recent Changes — Full Update
 
-**Report date:** 2026-02-21  
-**Scope:** v0.4.7-alpha Release. Rich Metadata (screenshots, long descriptions), Bulletproof ALPM (FFI stability fixes), Second-pass enrichment, multi-source merging.
+**Report date:** 2026-03-09  
+**Scope:** current change log and historical snapshots. GTK is the active frontend; older Tauri-specific sections are historical unless superseded by newer sections.
+
+> Historical sections below are preserved as release-time snapshots. Where behavior changed later, the newest section takes precedence.
+
+---
+
+## 0. Iron Core + Fluid Identity Hardening (2026-02-27)
+
+### Catalog Stabilization (Deterministic SSOT for Card + Details)
+- Unified identity/merge pipeline for discovery/search/details seeds:
+  - New shared builder: `build_package_view_models_v2(...)`
+  - Used to produce one canonical package identity with deterministic source ordering.
+- Source priority is now consistent end-to-end:
+  - `distro-native repo > Arch Official > Chaotic-AUR > Flatpak > AUR`.
+- Removed synthetic source pollution:
+  - Metadata enrichment no longer appends Flathub to `available_sources` unless source matching is already trusted by canonical identity flow.
+- Frontend store now treats backend payload as authoritative SSOT for package records:
+  - Removed stale `available_sources` preservation logic that caused source “bouncing”.
+- Details source selector stability:
+  - Fixed stale-closure race when backend variants arrive.
+  - Selector now resolves from backend variant payload deterministically.
+- Registry hardening:
+  - Added catalog schema version gate with one-time rebuild on mismatch.
+  - `bulk_upsert_packages` now refreshes package fields more comprehensively and always rewrites `package_sources` rows per package (eliminates stale source ghosts).
+- Source variant list in details now built from canonical `available_sources` slots (deduped), with source-specific metadata fallback from alternatives.
+- **Files:** `src-tauri/monarch-gui/src/middleware/aggregation.rs`, `src-tauri/monarch-gui/src/commands/search/core.rs`, `src-tauri/monarch-gui/src/commands/search/discovery.rs`, `src-tauri/monarch-gui/src/registry.rs`, `src-tauri/monarch-gui/src/utils.rs`, `src-tauri/monarch-gui/src/commands/package.rs`, `src/store/internal_store.ts`, `src/pages/PackageDetailsFresh.tsx`, `src/App.tsx`.
+
+### Non-blocking transaction completion (95%/finalizing hang reduction)
+- **Helper ExecuteBatch** now emits completion immediately and schedules orphan housekeeping in a detached background task.
+- Post-install finalization is no longer inline in the main transaction return path, reducing perceived hangs near completion.
+- **InstallMonitor** now explicitly surfaces `Finalizing` messaging when housekeeping is running in background.
+- **Files:** `src-tauri/monarch-helper/src/main.rs`, `src/components/InstallMonitor.tsx`.
+
+### Host-adaptive appearance (Portal-driven)
+- Added typed backend command **`get_host_appearance`** (Specta + ACL + bindings) to expose:
+  - portal color scheme (`dark`/`light`/`system`)
+  - portal accent color (`#RRGGBB`, when available)
+  - detected desktop environment (`gnome`/`kde`/etc).
+- Startup portal bridge now emits both `system-theme-changed` and `system-accent-changed`.
+- Frontend `useTheme` now consumes host appearance and applies CSS vars:
+  - `--system-accent`
+  - `--system-bg`
+  - branded accent blending for premium MonARCH look.
+- **Files:** `src-tauri/monarch-gui/src/commands/system.rs`, `src-tauri/monarch-gui/src/lib.rs`, `src-tauri/monarch-gui/src/specta_gen.rs`, `src-tauri/monarch-gui/permissions/app-commands-read.toml`, `src/services/bindings.ts`, `src/hooks/useTheme.ts`, `src/App.css`.
+
+### Native-feeling title bar behavior
+- `TitleBar.tsx` now adapts control placement by host desktop profile:
+  - GNOME-style: centered controls
+  - KDE/Windows-style: right-aligned controls.
+- **File:** `src/components/TitleBar.tsx`.
+
+### Card rendering recovery path
+- `PackageCard` fallback recovery now retries by canonical ID and then by name (`get_packages_by_names`) if registry hydration missed the card key.
+- This reduces cases where cards stay on skeletons due transient registry misses.
+- **File:** `src/components/PackageCard.tsx`.
 
 ---
 
@@ -24,7 +78,7 @@
 **See:** `docs/UNIVERSAL_DATA_ENGINE.md` for full spec.
 
 ### Canonical key (no per-app alias list)
-- **First-segment rule:** Multi-segment names (e.g. `heroic-games-launcher`, `obs-studio`) use the **first segment** as the canonical key when valid (length ≥ 3, not `lib`/`org`/`com` etc.), so "heroic" and "heroic-games-launcher" merge without a per-app map. App ID path applies the same rule to `known_app_id_to_canonical` result (e.g. `heroic-games-launcher` → key `heroic`).
+- **First-segment rule (historical at the time):** Multi-segment names were grouped by first segment. This behavior is superseded by the 2026-02-27 channel-aware canonical identity rules.
 - **Removed:** `known_name_alias_to_canonical` and the single `"heroic"` → `"heroicgameslauncher"` entry; merge key is now fully generic.
 
 ### One proper name per app
@@ -44,8 +98,8 @@
 
 ### Backend
 - **Deduplication:** `utils::deduplicate_by_canonical_key` used in `get_packages_by_names`, `get_trending`, `get_category_packages_paginated` so the same app never appears twice (e.g. Discord from appstream + featured inject → one card).
-- **Canonical key:** `utils::canonical_merge_key(name, app_id)` — app_id via known map + first-segment rule; package name with suffix stripping and first-segment rule for multi-segment names. See §1 (Universal Data Engine) and `docs/UNIVERSAL_DATA_ENGINE.md`.
-- **Model:** `Package` has `canonical_id` and `available_sources`; primary `source` from `best_primary_source()` (Official/Repo > Flatpak > AUR).
+- **Canonical key (historical at the time):** `utils::canonical_merge_key(name, app_id)` used first-segment grouping. This was later superseded by channel-aware canonical identity rules in the 2026-02-27 stabilization pass.
+- **Model (historical at the time):** `Package` had `canonical_id` and `available_sources` with older primary-source ordering; current ordering is documented in section 0.
 - **Files:** `src-tauri/monarch-gui/src/commands/search.rs`, `utils.rs`, `models.rs`.
 
 ### Frontend
@@ -191,7 +245,65 @@ To improve code organization and testability, the core aggregation logic was ext
 - **Optimized Hydration**: Decoupled high-frequency metadata hydration from the mission-critical ALPM operation thread to prevent race conditions during heavy IO.
 
 ### UI & Configuration
-- **Settings & Sidebar**: Hardcoded version strings updated to `v0.4.7-alpha`.
+- **Settings & Sidebar**: Hardcoded version strings updated to `v0.4.8-alpha`.
 - **Labels**: Refined `SourceSelector` labels for better clarity across different variants.
 
 **Files:** `middleware/aggregation.rs`, `commands/search.rs`, `registry.rs`, `helper_client.rs`, `monarch-helper/main.rs`, `SettingsPage.tsx`, `Sidebar.tsx`.
+
+---
+
+## 12. Updates Hardening: Partial Success + Structured Progress (2026-02-27)
+
+### Backend (truthful completion model)
+- `perform_system_update` now emits a typed `update-complete` payload:
+  - `overall`: `success | partial | failed`
+  - `summary`: per-source status (`repo`, `aur`, `flatpak`), succeeded package names, failed package list with reasons, warnings, duration.
+- Repo failure is treated as a hard failure and aborts AUR/Flatpak phases (Arch safety preserved).
+- AUR/Flatpak failures are recorded as partial failures instead of being reported as blanket success.
+
+### Backend (structured source progress)
+- Added `update-source-progress` event for source-native progress:
+  - `source`: `repo | aur | flatpak`
+  - `stage`, `current`, `total`, optional `package`
+- Existing `update-status` remains for human-readable text.
+
+### Frontend (Updates UX)
+- Updates page now consumes typed `update-complete` and `update-source-progress` events.
+- One-Click flow asks for branded session password up front when enabled; user can still choose system prompt fallback.
+- Added beginner-friendly summary card after completion:
+  - updated count
+  - failed count
+  - failed items list with retry action.
+- Added optional **Advanced Controls** drawer:
+  - per-source scope toggles for current run
+  - per-package include/exclude
+  - retry failed-only path.
+
+### Notes
+- Command signatures remained stable (`perform_system_update(password, include_aur, include_flatpak)` unchanged).
+- Update detection semantics remain source-inclusive for installed apps across repo/AUR/Flatpak.
+# 2026-02-27 (Stability Pass: Catalog Truth, Details Loop, and Source Provenance)
+
+- Fixed homepage Essentials hydration so partial canonical-id hits no longer suppress the rest of the list; missing items now fall back to `getPackagesByNames(...)` instead of returning a half-populated result.
+- Removed the `PackageDetailsFresh` refetch loop that was repeatedly re-triggering `getFullPackageDetails(...)` and re-hitting Flathub metadata during StrictMode and normal source switching.
+- Discovery/search/category commands now require backend-enabled source state for Chaotic/AUR/Flatpak instead of letting stale frontend flags re-enable hidden sources.
+- Added hard timeouts around Chaotic fetches in shared aggregation and variant lookup paths so search, details, and discovery surfaces degrade gracefully instead of stalling on remote Chaotic latency.
+- Source toggles for Chaotic-AUR, AUR, and Flatpak now invalidate backend search/list caches immediately so discovery surfaces do not keep serving stale source combinations after a user changes visibility settings. The Settings UI also skips unnecessary repo syncs when toggling Chaotic because that toggle is discovery-only.
+- Source normalization now runs inside the shared deduplication pass itself, and `available_sources` are sorted deterministically by backend priority before the primary source is selected. This removes route-specific differences where Trending could keep a stale first-inserted source while Search/Details showed the correct priority.
+- `PackageCard` and `PackageDetailsFresh` no longer re-sort source lists on the frontend. They now filter hidden sources but preserve backend order, so the UI follows the backend’s SSOT priority instead of recomputing its own.
+- Frontend registry upserts now preserve richer backend metadata (`long_description`, screenshots, icon, display name, app ID, maintainer, license) when a later lightweight backend payload omits those fields. This prevents search/trending/category refreshes from wiping details already hydrated by `getFullPackageDetails`.
+- Added duplicate-request guards for startup and category loading: app startup initialization now runs once per mount lifecycle, and `CategoryView` suppresses in-flight duplicate requests for the same category/filter/page key so StrictMode and rapid state churn do not trigger redundant identical fetches.
+- Registry-sync events in `App.tsx` are now debounced and coalesced before invoking backend sync, and `PackageDetailsFresh` now coalesces repeated detail refreshes (including `install-complete` refreshes) so overlapping requests do not pile up and re-flap details state.
+- Fixed dark theme startup background regression by pinning the dark app background instead of temporarily inheriting a light portal/system surface color.
+- Fixed installed package provenance in ALPM reads: repo origin now prefers `%INSTALLED_DB%` from pacman's local database, and packages installed from local files without repo provenance are labeled `local` instead of being misclassified as Chaotic-AUR.
+- **Files:** `src/App.tsx`, `src/App.css`, `src/components/PackageCard.tsx`, `src/pages/CategoryView.tsx`, `src/pages/PackageDetailsFresh.tsx`, `src/hooks/useSettings.ts`, `src/store/internal_store.ts`, `src-tauri/monarch-gui/src/commands/package.rs`, `src-tauri/monarch-gui/src/commands/search/core.rs`, `src-tauri/monarch-gui/src/commands/search/discovery.rs`, `src-tauri/monarch-gui/src/commands/search/categories.rs`, `src-tauri/monarch-gui/src/middleware/aggregation.rs`, `src-tauri/monarch-gui/src/alpm_read.rs`, `src-tauri/monarch-gui/src/repo_manager.rs`.
+
+# 2026-02-27 (Stability Pass: Card Hydration, Alias-Aware Installed State, and Details De-Flapping)
+
+- Removed Framer Motion layout interpolation from `PackageCard`, which was causing visible card overlap/ghosting during rapid list updates and registry refreshes.
+- Fixed `PackageDetailsFresh` stale-closure writes: details/reviews now read the current package from refs instead of re-upserting an old `pkg` snapshot, which was causing package info to bounce back to stale values after a later review/details response landed.
+- `PackageDetailsFresh` no longer rebinds its backend details refresh to every incidental `pkg` object mutation or source preference change; detail refresh is now keyed to the package identity instead of unstable object references.
+- Ratings hydration is now more robust for repo-first packages that do not initially carry an `app_id`: frontend rating lookups expand known package-name aliases to likely app IDs, and registry rating merges also match against those known app IDs.
+- Installed detection is now alias-aware across discovery/search/details instead of exact-name only. Canonical app families like VS Code (`visual-studio-code` vs `code`) now check known repo aliases before deciding that a package is not installed.
+- Applied alias-aware installed detection to shared search/discovery/aggregation paths so `PackageCard` surfaces can show installed state without requiring a prior details-page open.
+- **Files:** `src/components/PackageCard.tsx`, `src/pages/PackageDetailsFresh.tsx`, `src/store/internal_store.ts`, `src/utils/packageKey.ts`, `src-tauri/monarch-gui/src/utils.rs`, `src-tauri/monarch-gui/src/commands/package.rs`, `src-tauri/monarch-gui/src/commands/search/core.rs`, `src-tauri/monarch-gui/src/commands/search/discovery.rs`, `src-tauri/monarch-gui/src/middleware/aggregation.rs`, `src-tauri/monarch-gui/src/aur_api.rs`, `src-tauri/monarch-gui/src/repo_manager.rs`.

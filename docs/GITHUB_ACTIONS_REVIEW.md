@@ -1,3 +1,5 @@
+> Historical note: This review document describes a legacy or point-in-time parity snapshot. GTK current-state and release-gate status now live in `docs/GTK_TAURI_PARITY_MATRIX.md` and the GTK-first root docs.
+
 # GitHub Actions Review
 
 Review of `.github/workflows/` for monarch-store (v0.4.5-alpha).  

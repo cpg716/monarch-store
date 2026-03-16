@@ -14,9 +14,10 @@ const MIN_NOTIFY_INTERVAL_MS = 2 * 60 * 60 * 1000;
 
 /**
  * Hook that performs background update checking.
- * Pass includeAur/includeFlatpak from Settings so the update count matches what "Update All" would run.
+ * Updates include installed packages from all supported sources (repo/AUR/Flatpak),
+ * independent of discovery toggles.
  */
-export function useUpdateChecker(includeAur?: boolean, includeFlatpak?: boolean) {
+export function useUpdateChecker(enabled = true) {
     const refreshPendingUpdates = useAppStore((s) => s.refreshPendingUpdates);
     const pendingUpdates = useAppStore((s) => s.pendingUpdates);
     const updateNotificationsEnabled = useAppStore((s) => s.updateNotificationsEnabled);
@@ -25,21 +26,23 @@ export function useUpdateChecker(includeAur?: boolean, includeFlatpak?: boolean)
     const lastNotifyRef = useRef(0);
     const previousTotalRef = useRef(0);
 
-    const runRefresh = () => refreshPendingUpdates(includeAur, includeFlatpak);
+    const runRefresh = () => refreshPendingUpdates(true, true);
 
     // Initial check on mount
     useEffect(() => {
-        const timeout = setTimeout(runRefresh, 10000);
+        if (!enabled) return;
+        const timeout = setTimeout(runRefresh, 45000);
         return () => clearTimeout(timeout);
-    }, [refreshPendingUpdates, includeAur, includeFlatpak]);
+    }, [enabled, refreshPendingUpdates]);
 
     // Periodic background checks
     useEffect(() => {
+        if (!enabled) return;
         const interval = setInterval(() => {
             if (!isUpdating) runRefresh();
         }, CHECK_INTERVAL_MS);
         return () => clearInterval(interval);
-    }, [refreshPendingUpdates, isUpdating, includeAur, includeFlatpak]);
+    }, [enabled, refreshPendingUpdates, isUpdating]);
 
     // Send notification when new updates are found
     useEffect(() => {

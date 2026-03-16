@@ -1,8 +1,8 @@
 # MonARCH Store Roadmap 🗺️
 
-**Last updated:** 2026-02-21 (v0.4.7-alpha)
+**Last updated:** 2026-02-27 (v0.4.8-alpha)
 
-This document outlines the planned trajectory for MonARCH Store. As an alpha-stage project, our focus is on building a rock-solid, host-adaptive foundation first.
+This document outlines the planned trajectory for MonARCH Store. As an alpha-stage project, our focus is on building a rock-solid, host-adaptive foundation first. **The current product frontend is GTK** (`monarch-gtk`); feature parity with the documented contract is tracked in [docs/GTK_TAURI_PARITY_MATRIX.md](docs/GTK_TAURI_PARITY_MATRIX.md).
 
 ---
 
@@ -18,6 +18,9 @@ This document outlines the planned trajectory for MonARCH Store. As an alpha-sta
 *   [x] **One card per app**: Backend `deduplicate_by_canonical_key` and `canonical_id`; frontend list keys so browse/trending/category show exactly one card per app; details dropdown always includes card source and prefers it for selection.
 *   [x] **Operation Chaotic Good**: Chaotic-AUR safe toggle (read-only pacman.conf); traffic light in Settings (Active/Inactive/Blocked); onboarding wizard (Welcome → Sources → Chaotic-AUR [conditional] → Security & Theme → Confirmation); "Configure Source" on cards/details when only source is Chaotic-AUR and not enabled.
 *   [x] **UI/UX (labels & dropdown)**: RepoSelector AUR entries show pkg_name; "Other repository" shows repo id; Arch Official label; PackageCard version selector spacing.
+*   [x] **Catalog Stabilization (2026-02-27)**: Canonical merge pipeline unified across discovery/search/details seeds; deterministic source ordering and enabled-source gating.
+*   [x] **Installed Source Truth (2026-02-27)**: Installed-source labeling hardened against false Chaotic/Flatpak attribution using ALPM/localdb + syncdb matching.
+*   [x] **Updates Hardening (2026-02-27)**: Structured per-source progress, partial-success summaries, retry-failed workflows, and one-click upfront auth path.
 
 ---
 

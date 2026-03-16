@@ -20,6 +20,7 @@ pub(crate) mod repair;
 pub(crate) mod repo_db;
 pub(crate) mod repo_manager;
 pub(crate) mod scm_api;
+#[cfg(debug_assertions)]
 pub(crate) mod specta_gen;
 pub(crate) mod utils;
 
@@ -157,6 +158,48 @@ pub fn run() {
 
                 let handle_clone = handle.clone();
                 tauri::async_runtime::spawn(async move {
+                    {
+                        let state_meta = handle_clone.state::<metadata::MetadataState>();
+                        let state_repo = handle_clone.state::<RepoManager>();
+                        let state_chaotic = handle_clone.state::<chaotic_api::ChaoticApiClient>();
+                        let state_flathub =
+                            handle_clone.state::<flathub_api::FlathubApiClient>();
+                        let state_discovery =
+                            handle_clone.state::<discovery_manager::DiscoveryManager>();
+                        let state_registry = handle_clone.state::<registry::RegistryState>();
+
+                        if let Err(e) = crate::commands::search::build_discovery_home_snapshot_impl(
+                            state_meta.inner(),
+                            state_chaotic.inner(),
+                            state_repo.inner(),
+                            state_flathub.inner(),
+                            state_discovery.inner(),
+                            state_registry.inner(),
+                        )
+                        .await
+                        {
+                            log::warn!("[DISCOVERY] Startup home snapshot prewarm failed: {}", e);
+                        } else {
+                            log::info!("[DISCOVERY] Startup home snapshot prewarm complete");
+                        }
+
+                        crate::commands::search::prewarm_core_category_snapshots(
+                            state_meta.inner(),
+                            state_registry.inner(),
+                        )
+                        .await;
+
+                        if let Err(e) = crate::commands::search::prewarm_search_snapshot(
+                            state_registry.inner(),
+                        )
+                        .await
+                        {
+                            log::warn!("[SEARCH] Startup search snapshot prewarm failed: {}", e);
+                        } else {
+                            log::info!("[SEARCH] Startup search snapshot prewarm complete");
+                        }
+                    }
+
                     // Give the frontend 5 seconds to finish initial Essentials/Trending calls
                     // This prevents locking the Registry DB during the first frames of the app.
                     // tokio::time::sleep(std::time::Duration::from_secs(5)).await; // REMOVED: Iron Core Atomic Hydration makes this safe.
@@ -184,17 +227,46 @@ pub fn run() {
                                 log::error!("[REGISTRY] AppStream sync failed: {}", e);
                             } else {
                                 log::info!("[REGISTRY] AppStream sync complete.");
+                                crate::commands::search::invalidate_runtime_search_caches();
                                 state_registry.manager.trigger_bulk_sync();
                             }
                         })
                         .await;
+
+                        let state_meta = handle_clone.state::<metadata::MetadataState>();
+                        let state_repo = handle_clone.state::<RepoManager>();
+                        let state_chaotic = handle_clone.state::<chaotic_api::ChaoticApiClient>();
+                        let state_flathub =
+                            handle_clone.state::<flathub_api::FlathubApiClient>();
+                        let state_discovery =
+                            handle_clone.state::<discovery_manager::DiscoveryManager>();
+                        let state_registry = handle_clone.state::<registry::RegistryState>();
+
+                        let _ = crate::commands::search::build_discovery_home_snapshot_impl(
+                            state_meta.inner(),
+                            state_chaotic.inner(),
+                            state_repo.inner(),
+                            state_flathub.inner(),
+                            state_discovery.inner(),
+                            state_registry.inner(),
+                        )
+                        .await;
+                        crate::commands::search::prewarm_core_category_snapshots(
+                            state_meta.inner(),
+                            state_registry.inner(),
+                        )
+                        .await;
+                        let _ =
+                            crate::commands::search::prewarm_search_snapshot(state_registry.inner())
+                                .await;
                     }
 
-                    // v0.2.41: WARMUP OPTIMIZATION
-                    // Fetch Trending + AUR Top and seed the Registry so they are enriched immediately.
+                    // v0.2.41+: lighter startup warmup
+                    // Seed a smaller slice of popular items so cold boot stays responsive.
                     let state_discovery =
                         handle_clone.state::<discovery_manager::DiscoveryManager>();
-                    let discovery_names = state_discovery.inner().get_all_popular_names().await;
+                    let mut discovery_names = state_discovery.inner().get_all_popular_names().await;
+                    discovery_names.truncate(120);
 
                     if !discovery_names.is_empty() {
                         log::info!(
@@ -218,8 +290,8 @@ pub fn run() {
                                 &state_flathub,
                                 &state_registry.manager,
                                 items,
-                                true,  // include_flatpak
-                                true,  // include_aur
+                                false, // defer Flatpak-heavy enrichment until on-demand
+                                false, // defer AUR-heavy enrichment until on-demand
                                 true,  // include_chaotic
                                 false, // installed_lookup
                             )
@@ -229,7 +301,47 @@ pub fn run() {
                                 "[REGISTRY] Warmup complete, upserting {} packages",
                                 pkgs.len()
                             );
-                            let _ = state_registry.manager.bulk_upsert_packages(&pkgs);
+                            let warm_entries = {
+                                let loader = match state_meta.loader.lock() {
+                                    Ok(loader) => loader,
+                                    Err(_) => {
+                                        let _ = state_registry.manager.bulk_upsert_packages(&pkgs);
+                                        state_registry.manager.trigger_bulk_sync();
+                                        return;
+                                    }
+                                };
+
+                                pkgs.into_iter()
+                                    .map(|pkg| {
+                                        let categories = loader.resolve_categories_for_package(
+                                            &pkg.name,
+                                            pkg.app_id.as_deref(),
+                                        );
+                                        (pkg, categories)
+                                    })
+                                    .collect::<Vec<_>>()
+                            };
+                            let _ = state_registry
+                                .manager
+                                .bulk_upsert_packages_with_categories(&warm_entries);
+                            crate::commands::search::invalidate_runtime_search_caches();
+                            let _ = crate::commands::search::build_discovery_home_snapshot_impl(
+                                state_meta.inner(),
+                                state_chaotic.inner(),
+                                state_repo.inner(),
+                                state_flathub.inner(),
+                                state_discovery.inner(),
+                                state_registry.inner(),
+                            )
+                            .await;
+                            crate::commands::search::prewarm_core_category_snapshots(
+                                state_meta.inner(),
+                                state_registry.inner(),
+                            )
+                            .await;
+                            let _ =
+                                crate::commands::search::prewarm_search_snapshot(state_registry.inner())
+                                    .await;
                             state_registry.manager.trigger_bulk_sync();
                         }
                     }
@@ -270,20 +382,66 @@ pub fn run() {
                         Ok(proxy) => {
                             // namespace: org.freedesktop.appearance, key: color-scheme
                             // 0: No pref, 1: Dark, 2: Light
-                            match proxy
+                            let mut scheme_value: Option<u8> = None;
+                            if let Ok(scheme) = proxy
+                                .read::<u32>("org.freedesktop.appearance", "color-scheme")
+                                .await
+                            {
+                                scheme_value = Some(scheme as u8);
+                            } else if let Ok(scheme) = proxy
                                 .read::<u8>("org.freedesktop.appearance", "color-scheme")
                                 .await
                             {
-                                Ok(scheme) => {
-                                    let mode = match scheme {
-                                        1 => "dark",
-                                        2 => "light",
-                                        _ => "auto",
-                                    };
-                                    log::info!("Portal Theme Detected: {}", mode);
-                                    let _ = handle_theme.emit("system-theme-changed", mode);
+                                scheme_value = Some(scheme);
+                            }
+
+                            if let Some(scheme) = scheme_value {
+                                let mode = match scheme {
+                                    1 => "dark",
+                                    2 => "light",
+                                    _ => "auto",
+                                };
+                                log::info!("Portal Theme Detected: {}", mode);
+                                let _ = handle_theme.emit("system-theme-changed", mode);
+                            }
+
+                            let rgb_opt = if let Ok(rgb) = proxy
+                                .read::<(f64, f64, f64)>(
+                                    "org.freedesktop.appearance",
+                                    "accent-color",
+                                )
+                                .await
+                            {
+                                Some(rgb)
+                            } else if let Ok(rgb) = proxy
+                                .read::<Vec<f64>>(
+                                    "org.freedesktop.appearance",
+                                    "accent-color",
+                                )
+                                .await
+                            {
+                                if rgb.len() >= 3 {
+                                    Some((rgb[0], rgb[1], rgb[2]))
+                                } else {
+                                    None
                                 }
-                                Err(e) => log::warn!("Failed to read Portal theme: {}", e),
+                            } else {
+                                None
+                            };
+
+                            if let Some((r, g, b)) = rgb_opt {
+                                let to_u8 = |v: f64| -> u8 {
+                                    let clamped = v.clamp(0.0, 1.0);
+                                    (clamped * 255.0).round() as u8
+                                };
+                                let hex = format!(
+                                    "#{:02x}{:02x}{:02x}",
+                                    to_u8(r),
+                                    to_u8(g),
+                                    to_u8(b)
+                                );
+                                log::info!("Portal Accent Detected: {}", hex);
+                                let _ = handle_theme.emit("system-accent-changed", hex);
                             }
                         }
                         Err(e) => log::warn!("Failed to connect to Settings Portal: {}", e),
@@ -296,10 +454,15 @@ pub fn run() {
             // Search Commands
             commands::search::search_aur,
             commands::search::search_packages,
+            commands::search::search_packages_rich,
             commands::search::get_packages_by_names,
+            commands::search::get_packages_by_canonical_ids,
             commands::search::get_chaotic_package_info,
             commands::search::get_chaotic_packages_batch,
             commands::search::get_trending,
+            commands::search::get_trending_snapshot,
+            commands::search::get_essentials_snapshot,
+            commands::search::get_discovery_home_snapshot,
             commands::search::get_package_variants,
             commands::search::get_category_packages_paginated,
             // Package Commands
@@ -312,8 +475,10 @@ pub fn run() {
             commands::update::perform_system_update,
             commands::update::get_system_update_command,
             commands::update::check_updates,
+            commands::update::get_update_snapshot,
             commands::update::apply_updates,
             commands::package::fetch_pkgbuild,
+            commands::package::get_installed_catalog,
             commands::package::get_installed_packages,
             commands::package::check_for_updates,
             commands::package::check_reboot_required,
@@ -335,11 +500,15 @@ pub fn run() {
             // Package Commands
             // System Commands
             commands::system::get_system_info,
+            commands::system::get_host_appearance,
             commands::system::get_infra_stats,
             commands::system::get_repo_counts,
             commands::system::get_repo_states,
             commands::system::check_chaotic_status,
+            commands::system::get_snapshot_status,
+            commands::system::create_system_snapshot,
             commands::system::prepare_chaotic_components,
+            commands::system::open_chaotic_terminal,
             commands::system::prepare_flatpak,
             commands::system::ensure_flathub_remote,
             commands::system::is_aur_enabled,
@@ -367,6 +536,7 @@ pub fn run() {
             commands::system::set_notifications_enabled,
             commands::system::show_desktop_notification,
             commands::system::set_telemetry_enabled,
+            commands::telemetry::track_telemetry_event,
             commands::system::is_sync_on_startup_enabled,
             commands::system::set_sync_on_startup_enabled,
             commands::system::check_and_clear_refresh_requested,
@@ -404,7 +574,10 @@ pub fn run() {
             commands::system::set_active_tab,
             // Utils Commands
             commands::cmd_helpers::get_package_icon,
+            commands::cmd_helpers::clear_metadata_caches,
+            commands::cmd_helpers::rebuild_metadata_index,
             commands::cmd_helpers::clear_cache,
+            commands::cmd_helpers::launch_package,
             commands::cmd_helpers::launch_app,
             commands::cmd_helpers::track_event,
             // External Module Commands (Pre-refactor)
@@ -432,6 +605,8 @@ pub fn run() {
             repo_manager::apply_os_config,
             commands::system::emit_sync_progress,
             commands::package::get_flatpak_permissions,
+            commands::package::get_full_package_details,
+            commands::package::get_full_package_details_by_canonical_id,
             // Identity Matrix Command
             distro_context::get_distro_context,
         ])

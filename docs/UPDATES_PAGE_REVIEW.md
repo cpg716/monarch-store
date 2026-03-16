@@ -1,3 +1,5 @@
+> Historical note: This review document describes a legacy or point-in-time parity snapshot. GTK current-state and release-gate status now live in `docs/GTK_TAURI_PARITY_MATRIX.md` and the GTK-first root docs.
+
 # Updates Page — Review
 
 **Date:** 2026-02-05  
@@ -57,3 +59,16 @@
 | refreshPendingUpdates after actions | Fixed | Service restart passes isAurEnabled, isFlatpakEnabled |
 
 The Updates page is feature-complete and aligned with the update system (see `docs/UPDATE_SYSTEM_REVIEW.md`). The only behavioral fixes were passing the modal password, using `pkgName` for reboot, and passing AUR/Flatpak settings into `refreshPendingUpdates` after restarting services.
+
+---
+
+## 6. Addendum (2026-02-27)
+
+The Updates page has been hardened since this original review:
+
+- **Typed completion payload:** `update-complete` now includes `overall` + structured `summary` (repo/aur/flatpak state, succeeded packages, failed packages, warnings, duration).
+- **Structured source progress:** `update-source-progress` drives per-source badges and stage text instead of brittle string parsing.
+- **One-click upfront auth:** when session auth is enabled, branded password prompt is requested at start of run; fallback to system auth remains available.
+- **Partial-success truth model:** failures in AUR/Flatpak phases are surfaced as partial outcomes (not blanket success).
+- **Advanced controls drawer:** per-source scope, include/exclude controls, and retry-failed-only path are now built into the page.
+- **Beginner summary card:** post-run summary clearly reports updated count, failed count, and actionable retry info.

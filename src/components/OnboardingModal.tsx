@@ -18,6 +18,7 @@ import {
     Activity,
     Sun,
     Moon,
+    Monitor,
     Palette,
     CheckCircle2,
     AlertTriangle,
@@ -49,7 +50,16 @@ type StepKey = (typeof STEP_KEYS)[number];
 
 export default function OnboardingModal({ onComplete, reason }: OnboardingModalProps) {
     const [stepIndex, setStepIndex] = useState(0);
-    const { themeMode, setThemeMode, accentColor, setAccentColor } = useTheme();
+    const {
+        themeMode,
+        setThemeMode,
+        accentColor,
+        setAccentColor,
+        hostAccentColor,
+        resolvedTheme,
+        effectiveAccentColor,
+        isFollowingSystemTheme,
+    } = useTheme();
     const { requestSessionPassword } = useSessionPassword();
     const errorService = useErrorService();
     const { distro } = useDistro();
@@ -59,7 +69,6 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         setFlatpakEnabled,
         setOneClickEnabled,
         setOnboardingCompleted,
-        setReducePasswordPrompts,
         setTelemetry,
         telemetryEnabled
     } = useAppStore();
@@ -70,6 +79,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
     const [localTelemetry, setLocalTelemetry] = useState(telemetryEnabled);
     const [oneClickEnabledLocal, setOneClickEnabledLocal] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
+    const [finishError, setFinishError] = useState<string | null>(null);
 
     // System Checks
     const [missingBins, setMissingBins] = useState<string[]>([]);
@@ -81,6 +91,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
 
     const supportsChaotic = distro.capabilities.chaotic_aur_support !== 'blocked';
     const chaoticNative = distro.capabilities.chaotic_aur_support === 'native';
+    const ACCENT_PRESETS = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'];
 
     // Dynamic step list based on distro capabilities
     const steps: StepKey[] = [
@@ -122,6 +133,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
 
     const handleFinish = async () => {
         setIsSaving(true);
+        setFinishError(null);
         try {
             // Push wizard state to backend and store
             // Iron Core: Ensure backend is updated before completing
@@ -130,21 +142,25 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                 setFlatpakEnabled(isFlatpakEnabledLocal),
                 setOneClickEnabled(oneClickEnabledLocal),
                 setTelemetry(localTelemetry),
-                setReducePasswordPrompts(oneClickEnabledLocal)
             ]);
 
-            // Persist core flags to backend
-            await setOnboardingCompleted(true);
+            // Persist core flags to backend (returns true if was already completed)
+            const wasAlreadyCompleted = await setOnboardingCompleted(true);
+
+            const sessionPassword = oneClickEnabledLocal
+                ? await requestSessionPassword()
+                : null;
 
             // Infrastructure Setup (if enabled)
-            if (isFlatpakEnabledLocal && !missingBins.includes('flatpak')) {
-                // Ensure Flathub is added if flatpak is present
+            if (isFlatpakEnabledLocal) {
+                // Ensure Flatpak runtime + Flathub remote are ready during onboarding.
+                await commands.prepareFlatpak(sessionPassword ?? null).then(unwrap).catch(() => { });
                 await commands.ensureFlathubRemote().then(unwrap).catch(() => { });
             }
 
             if (oneClickEnabledLocal) {
-                // Inject the Polkit policy for "One-Click" / Silent Guard
-                await commands.installMonarchPolicy(null).then(unwrap).catch(() => { });
+                // Inject the Polkit policy for "One-Click Authentication"
+                await commands.installMonarchPolicy(sessionPassword ?? null).then(unwrap).catch(() => { });
             }
 
             commands.trackTelemetryEvent('onboarding_completed', {
@@ -153,12 +169,15 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                 telemetry_enabled: localTelemetry,
                 one_click_enabled: oneClickEnabledLocal
             }).catch(() => { });
+            if (!wasAlreadyCompleted) {
+                commands.trackTelemetryEvent('store_installed', {}).catch(() => { });
+            }
 
             await new Promise((r) => setTimeout(r, 600));
             onComplete();
         } catch (e) {
             errorService.reportError(e as Error | string);
-            onComplete();
+            setFinishError('Setup could not be completed. Please retry.');
         } finally {
             setIsSaving(false);
         }
@@ -181,8 +200,10 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         setChaoticError(null);
         setChaoticSetupRunning(true);
         try {
-            // Request session password if and only if needed (Operation Silent Guard)
-            const password = oneClickEnabledLocal ? await requestSessionPassword() : null;
+            // Reuse the session password when One-Click Authentication is enabled.
+            const password = oneClickEnabledLocal
+                ? await requestSessionPassword()
+                : null;
             await commands.prepareChaoticComponents(password).then(unwrap);
             // After successful preparation, we also open the terminal for the user to finish mirror setup
             await commands.openChaoticTerminal().then(unwrap);
@@ -198,7 +219,10 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
     const chaoticCheckAgainClick = async () => {
         setChaoticCheckAgain(true);
         try {
-            unwrap(await commands.forceRefreshDatabases(null));
+            const refreshPassword = oneClickEnabledLocal
+                ? await requestSessionPassword()
+                : null;
+            unwrap(await commands.forceRefreshDatabases(refreshPassword ?? null));
             const s = unwrap(await commands.checkChaoticStatus());
             if (s?.chaotic_in_alpm) {
                 setChaoticAlreadyInAlpm(true);
@@ -218,7 +242,7 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
         flatpak: { title: 'Flatpak Support', subtitle: 'Universal & Sandboxed.', color: 'bg-sky-600', icon: <Globe size={24} className="text-white" /> },
         aur: { title: 'Arch User Repository', subtitle: 'Community-driven software.', color: 'bg-amber-600', icon: <Terminal size={24} className="text-white" /> },
         chaotic: { title: 'Chaotic-AUR Setup', subtitle: 'Pre-built community apps.', color: 'bg-purple-600', icon: <Zap size={24} className="text-white" /> },
-        security: { title: 'Silent Guard Auth', subtitle: 'One-click transactions.', color: 'bg-teal-600', icon: <Lock size={24} className="text-white" /> },
+        security: { title: 'One-Click Authentication', subtitle: 'Session unlock for privileged actions.', color: 'bg-teal-600', icon: <Lock size={24} className="text-white" /> },
         theme: { title: 'Appearance', subtitle: 'Light, dark & accent.', color: 'bg-pink-600', icon: <Palette size={24} className="text-white" /> },
         confirm: { title: 'Ready for Launch', subtitle: 'Review and continue.', color: 'bg-emerald-600', icon: <CheckCircle2 size={24} className="text-white" /> },
     }[currentStepKey] ?? { title: '', subtitle: '', color: '', icon: null };
@@ -358,30 +382,43 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                     <div className="p-4 rounded-2xl bg-teal-500/5 border border-teal-500/20 space-y-3">
                                         <div className="flex items-center gap-2">
                                             <Lock size={18} className="text-teal-500" />
-                                            <h3 className="font-bold text-teal-600 dark:text-teal-400 text-sm">Operation Silent Guard</h3>
+                                            <h3 className="font-bold text-teal-600 dark:text-teal-400 text-sm">One-Click Authentication</h3>
                                         </div>
                                         <p className="text-xs text-app-muted leading-relaxed">
-                                            Tired of password prompts? Enable <strong>Silent Guard</strong> to authorize MonARCH once per session. We inject a secure Polkit policy that allows seamless transactions for 12 hours or until app close.
+                                            Enable <strong>One-Click Authentication</strong> to unlock MonARCH once per app session. Your password stays in memory only, is cleared when MonARCH closes, and the system prompt remains available for per-action approval.
                                         </p>
                                         <div className="pt-1 px-3 py-2 bg-white/5 rounded-lg border border-white/5 text-[10px] text-app-muted italic">
-                                            Note: AUR builds may require re-auth for specific build actions for maximum security.
+                                            Note: some advanced actions may still fall back to the system prompt when MonARCH needs a separate approval path.
                                         </div>
                                     </div>
-                                    <ConfigOption icon={Fingerprint} label="Enable Silent Guard" description="Single password per session (Highly Recommended)" checked={oneClickEnabledLocal} onChange={setOneClickEnabledLocal} accentColor={accentColor} />
+                                    <ConfigOption icon={Fingerprint} label="Enable One-Click Authentication" description="Use MonARCH's prompt once per app session (Recommended)" checked={oneClickEnabledLocal} onChange={setOneClickEnabledLocal} accentColor={accentColor} />
                                     <ConfigOption icon={Activity} label="Anonymous Telemetry" description="Help refine the store experience. No personal data." checked={localTelemetry} onChange={setLocalTelemetry} accentColor={accentColor} />
                                 </motion.div>
                             )}
 
                             {currentStepKey === 'theme' && (
                                 <motion.div key="theme" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }} className="space-y-5">
-                                    <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid grid-cols-3 gap-3">
                                         <ThemeButton label="Light" icon={<Sun size={20} />} active={themeMode === 'light'} onClick={() => setThemeMode('light')} />
                                         <ThemeButton label="Dark" icon={<Moon size={20} />} active={themeMode === 'dark'} onClick={() => setThemeMode('dark')} />
+                                        <ThemeButton label="System" icon={<Monitor size={20} />} active={themeMode === 'system'} onClick={() => setThemeMode('system')} />
+                                    </div>
+                                    <div className="text-xs text-app-muted">
+                                        Effective theme: <strong className="text-app-fg">{resolvedTheme}</strong>
+                                        {isFollowingSystemTheme && ' (following host)'}
                                     </div>
                                     <div className="flex justify-center gap-2 mt-4">
-                                        {['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'].map(c => (
+                                        {ACCENT_PRESETS.map(c => (
                                             <button key={c} onClick={() => setAccentColor(c)} className={clsx('w-8 h-8 rounded-full border-2 transition-transform', accentColor === c ? 'border-app-fg scale-110' : 'border-transparent hover:scale-105')} style={{ backgroundColor: c }} />
                                         ))}
+                                        {hostAccentColor && (
+                                            <button
+                                                onClick={() => setAccentColor(hostAccentColor)}
+                                                className="ml-2 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-bold text-app-fg hover:bg-app-subtle transition-colors"
+                                            >
+                                                Use Host Accent
+                                            </button>
+                                        )}
                                     </div>
                                 </motion.div>
                             )}
@@ -391,9 +428,10 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                                     <p className="text-app-muted">Review your selection to continue.</p>
                                     <div className="space-y-2">
                                         <SummaryItem label="Sources" value={`${isFlatpakEnabledLocal ? 'Flatpak' : ''} ${isAurEnabledLocal ? '· AUR' : ''}`} />
-                                        <SummaryItem label="Security" value={oneClickEnabledLocal ? 'Reduced Prompts' : 'Standard'} />
+                                        <SummaryItem label="Authentication" value={oneClickEnabledLocal ? 'One-Click Authentication' : 'System Prompt'} />
                                         <SummaryItem label="Telemetry" value={localTelemetry ? 'Enabled' : 'Disabled'} />
                                         <SummaryItem label="Theme" value={themeMode} />
+                                        <SummaryItem label="Effective Look" value={`${resolvedTheme} / ${isFollowingSystemTheme ? 'Host-adaptive' : 'Manual'}`} />
                                     </div>
                                 </motion.div>
                             )}
@@ -403,8 +441,13 @@ export default function OnboardingModal({ onComplete, reason }: OnboardingModalP
                     {/* Footer */}
                     <div className="p-4 border-t border-app-border bg-app-bg flex items-center justify-between">
                         <button onClick={prevStep} disabled={stepIndex === 0 || isSaving} className={clsx('px-4 py-2 rounded-lg text-xs font-bold transition-all text-app-muted hover:bg-app-fg/5', stepIndex === 0 && 'invisible')}>Back</button>
-                        <span className="text-[10px] text-app-muted font-medium">Step {stepIndex + 1} of {totalSteps}</span>
-                        <button onClick={nextStep} disabled={isSaving} className="px-5 py-2 rounded-lg text-xs font-bold text-white shadow-lg transition-all" style={{ backgroundColor: accentColor }}>
+                        <div className="flex flex-col items-center">
+                            <span className="text-[10px] text-app-muted font-medium">Step {stepIndex + 1} of {totalSteps}</span>
+                            {finishError && (
+                                <span className="text-[10px] text-red-500 mt-1">{finishError}</span>
+                            )}
+                        </div>
+                        <button onClick={nextStep} disabled={isSaving} className="px-5 py-2 rounded-lg text-xs font-bold text-white shadow-lg transition-all" style={{ backgroundColor: effectiveAccentColor }}>
                             {isSaving ? 'Finalizing…' : isLastStep ? 'Start Using MonARCH' : 'Next'}
                         </button>
                     </div>

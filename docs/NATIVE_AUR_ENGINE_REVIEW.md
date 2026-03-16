@@ -1,3 +1,5 @@
+> Historical note: This review document describes a legacy or point-in-time parity snapshot. GTK current-state and release-gate status now live in `docs/GTK_TAURI_PARITY_MATRIX.md` and the GTK-first root docs.
+
 # Native AUR Engine — Full Review
 
 **Date:** 2026-02-05  
@@ -55,7 +57,7 @@
    - Cwd: temp dir’s `{name}` (clone output).  
    - Stdout/stderr streamed to `install-output`; stderr lines prefixed with `MAKEPKG:`.  
    - Progress: percentage-like tokens in stderr parsed and emitted as `update-progress` (download).
-6. **PGP recovery:** If makepkg fails and missing key IDs are detected in stderr (unknown public key, not found in keychain, etc.), keys are imported via `gpg --keyserver ... --recv-keys` (keyserver.ubuntu.com, keys.openpgp.org, pgp.mit.edu). Then `rm -rf src pkg` in pkg_dir and makepkg is re-run once. If retry still fails or no keys could be imported, a clear error is returned (e.g. “PGP verification failed. Could not import required keys: …”).
+6. **PGP recovery:** If makepkg fails and missing key IDs are detected in stderr (unknown public key, not found in keychain, etc.), keys are imported via `gpg --keyserver ... --recv-keys` (keyserver.ubuntu.com, keys.openpgp.org, pgp.mit.edu). Then `rm -rf src pkg` in pkg_dir and makepkg is re-run once. The native engine in **monarch-core** implements this same PGP recovery flow (key detection from stderr, multi-keyserver import, single retry). If retry still fails or no keys could be imported, a clear error is returned (e.g. “PGP verification failed. Could not import required keys: …”).
 7. **Non-PGP failure:** If build failed and no missing keys were found, last “ERROR:” line is surfaced; if it’s “unknown error has occurred,” the message suggests base-devel, git, and `scripts/monarch-permission-sanitizer.sh`.
 8. **Artifact:** Directory is scanned for `*.pkg.tar.zst`; the first match is returned as the built package path. No multi-package handling (split packages yield one path; that’s acceptable for install).
 

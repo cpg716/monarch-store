@@ -4,7 +4,7 @@ import { ArrowLeft, LayoutGrid } from 'lucide-react';
 import clsx from 'clsx';
 import { commands, CategoryQuery } from '../services/bindings';
 import type { Package } from '../services/bindings';
-import PackageCard from '../components/PackageCard';
+import PackageCardList from '../components/PackageCardList';
 import PackageCardSkeleton from '../components/PackageCardSkeleton';
 import EmptyState from '../components/EmptyState';
 import { CATEGORIES } from '../components/CategoryGrid';
@@ -14,8 +14,10 @@ import { useSettings } from '../hooks/useSettings';
 import { getPackageListKey } from '../utils/packageKey';
 import { useAppStore } from '../store/internal_store';
 import { getSourceFamilyId, getSourceFamilyLabel } from '../utils/repoHelper';
+import { usePackageCardList } from '../hooks/usePackageCardList';
 
 import { unwrap } from '../utils/specta';
+import { debugWarn } from '../utils/debugLog';
 
 /** Stable empty array for store selectors to avoid getSnapshot reference changes (infinite loop). */
 const EMPTY_CATEGORY_IDS: string[] = [];
@@ -53,13 +55,15 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
     const [totalPackages, setTotalPackages] = useState(0);
     const [loading, setLoading] = useState(true);
     const [initialLoad, setInitialLoad] = useState(true);
-    const retryCountRef = useRef(0);
     const [sortBy, setSortBy] = useState<'featured' | 'name' | 'updated'>('featured');
     const [repoFilter, setRepoFilter] = useState<string[]>(['all']);
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
     const [enabledRepos, setEnabledRepos] = useState<RepoState[]>([]);
+    const [categoryPackages, setCategoryPackages] = useState<Package[]>([]);
     const [error, setError] = useState<string | null>(null);
+    const requestSeqRef = useRef(0);
+    const inFlightKeyRef = useRef<string | null>(null);
 
     // Constant limit for backend pagination
     const LIMIT = 50;
@@ -89,19 +93,37 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
     }, [errorService]);
 
     // Fetch Logic
-    const CATEGORY_FETCH_TIMEOUT_MS = 45_000;
     const fetchApps = useCallback(async (reset: boolean = false) => {
+        const currentPage = reset ? 1 : page;
+        const repo_filter_val = repoFilter.includes('all') ? null : repoFilter;
+        const requestKey = JSON.stringify({
+            category,
+            repo_filter: repo_filter_val,
+            sort_by: sortBy,
+            page: currentPage,
+            limit: LIMIT,
+            flatpak: isFlatpakEnabled ?? true,
+            aur: isAurEnabled,
+            chaotic: isChaoticEnabled,
+            reset
+        });
+
+        if (inFlightKeyRef.current === requestKey) {
+            return;
+        }
+        inFlightKeyRef.current = requestKey;
+
         if (reset) {
             setLoading(true);
             setInitialLoad(true);
-            setPage(1);
+            if (page !== 1) setPage(1);
             setError(null);
         }
+        const requestId = ++requestSeqRef.current;
 
-        const currentPage = reset ? 1 : page;
-
-        const fetchWithTimeout = () => {
-            const query: any = {
+        try {
+            let res: any;
+            res = await commands.getCategoryPackagesPaginated({
                 category,
                 repo_filter: repo_filter_val,
                 sort_by: sortBy,
@@ -113,70 +135,62 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                     chaotic_enabled: isChaoticEnabled,
                     for_installed_lookup: false
                 }
-            };
-            const req = commands.getCategoryPackagesPaginated(query).then(unwrap);
-            return Promise.race([
-                req,
-                new Promise<never>((_, rej) =>
-                    setTimeout(() => rej(new Error('Category load timed out')), CATEGORY_FETCH_TIMEOUT_MS)
-                ),
-            ]);
-        };
-
-        const repo_filter_val = repoFilter.includes('all') ? null : repoFilter;
-
-        try {
-            console.debug(`[CategoryView] Fetching ${category} page=${currentPage}...`);
-            const res = (await fetchWithTimeout()) as any;
-            console.debug(`[CategoryView] Fetch success for ${category}. Got ${res.packages.length} apps.`);
+            } as any).then(unwrap);
+            if (requestId !== requestSeqRef.current) return;
 
             setTotalPackages(parseInt(res.total, 10));
+            if ((res.packages?.length ?? 0) === 0) {
+                debugWarn('[CategoryView] Backend returned no packages after fallback', {
+                    category,
+                    repoFilter: repo_filter_val,
+                    sortBy,
+                });
+            }
             upsertPackages(res.packages as any);
+            setCategoryPackages((prev) => (reset ? (res.packages as Package[]) : [...prev, ...(res.packages as Package[])]));
 
-            // Safe batch rating fetch using IDs OR names (merges into live registry)
-            const appIds = (res.packages as any[]).map(p => p.app_id || p.name).filter(id => !!id) as string[];
+            // Safe batch rating fetch: use both app_id (ODRS canonical) and name (fallback)
+            const appIds = Array.from(new Set(
+                (res.packages as any[]).flatMap((p: any) =>
+                    [p.app_id, p.name].filter((id: any): id is string => !!id && id.length > 0)
+                )
+            ));
             if (appIds.length > 0) {
                 fetchRatingsForPackages(appIds);
             }
 
             // One card per app: dedupe by list key so Arch + Flatpak never show as two cards.
-            const ids = Array.from(new Set(res.packages.map((p: any) => getPackageListKey(p as any)))) as string[];
+            const ids = Array.from(
+                new Set(res.packages.map((p: any) => getPackageListKey(p as any)).filter(Boolean))
+            ) as string[];
             if (reset) {
                 setCategoryIds(category, ids);
-                if (res.packages.length === 0 && parseInt(res.total, 10) === 0 && retryCountRef.current < 2) {
-                    retryCountRef.current += 1;
-                    console.warn(`[CategoryView] Empty results for ${category}. Retrying (${retryCountRef.current}/2)...`);
-                    setTimeout(() => fetchApps(true), retryCountRef.current === 1 ? 3000 : 6000);
-                }
             } else {
                 appendCategoryIds(category, ids);
             }
             setHasMore(res.packages.length === LIMIT);
             setError(null);
         } catch (err: any) {
-            console.error(`[CategoryView] Error loading category ${category}:`, err);
+            if (requestId !== requestSeqRef.current) return;
             const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
             setError(errorMsg);
-
-            // If it's a timeout, we might want to automatically retry once more with a longer delay
-            if (errorMsg.includes('timed out') && retryCountRef.current < 1) {
-                retryCountRef.current += 1;
-                console.warn(`[CategoryView] Timeout detected. Auto-retrying once...`);
-                setTimeout(() => fetchApps(true), 2000);
-            }
+            errorService.reportError(errorMsg);
         } finally {
+            if (inFlightKeyRef.current === requestKey) {
+                inFlightKeyRef.current = null;
+            }
+            if (requestId !== requestSeqRef.current) return;
             setLoading(false);
             setInitialLoad(false);
         }
-    }, [category, repoFilter, sortBy, page, isFlatpakEnabled, LIMIT, CATEGORY_FETCH_TIMEOUT_MS, upsertPackages, setCategoryIds, appendCategoryIds]);
+    }, [category, repoFilter, sortBy, page, isFlatpakEnabled, isAurEnabled, isChaoticEnabled, LIMIT, upsertPackages, setCategoryIds, appendCategoryIds]);
 
     // Triggers
     // 1. Reset when Category/Filter/Sort changes
     useEffect(() => {
-        retryCountRef.current = 0;
         fetchApps(true);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [category, repoFilter, sortBy, isFlatpakEnabled]); // Removed fetchApps to break dependency loop
+    }, [category, repoFilter, sortBy, isFlatpakEnabled, isAurEnabled, isChaoticEnabled]); // Removed fetchApps to break dependency loop
 
     // 2. Load More when page increments (but NOT on page 1, which is handled by reset)
     useEffect(() => {
@@ -229,6 +243,17 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
         }
         return options;
     }, [enabledRepos, isFlatpakEnabled, totalPackages]);
+    const { ids: visibleCategoryIds } = usePackageCardList({
+        source: { mode: 'ids', ids: categoryIds },
+        packageRegistry,
+        sort: 'preserve',
+    });
+    const { packages: directCategoryPackages } = usePackageCardList({
+        source: { mode: 'packages', packages: categoryPackages },
+        packageRegistry,
+        sort: 'preserve',
+    });
+    const useDirectPackages = directCategoryPackages.length > 0;
 
     const toggleFilter = (id: string) => {
         if (id === 'all') {
@@ -245,7 +270,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
     return (
         <div className="h-full flex flex-col bg-app-bg animate-in slide-in-from-right duration-300 overflow-hidden transition-colors">
             {/* Header ... */}
-            <div className="p-8 border-b border-app-border flex items-center justify-between bg-app-card/50 backdrop-blur-xl z-10 transition-colors">
+            <div className="p-6 border-b border-app-border flex items-center justify-between bg-app-card z-10 transition-colors">
                 {/* ... existing header code ... */}
                 <div className="flex items-center gap-4">
                     <button
@@ -261,8 +286,8 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                         </h1>
                         <p className="text-app-muted text-sm">
                             {totalPackages > 0
-                                ? `${totalPackages} Packages Total - ${categoryIds.length} Showing`
-                                : `${categoryIds.length} packages loaded`
+                                ? `${totalPackages} Packages Total - ${(useDirectPackages ? directCategoryPackages.length : visibleCategoryIds.length)} Showing`
+                                : `${(useDirectPackages ? directCategoryPackages.length : categoryIds.length)} packages loaded`
                             }
                             {repoFilter.includes('all')
                                 ? ''
@@ -315,7 +340,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
 
             <div className="flex-1 overflow-y-auto p-8">
                 <div className="max-w-7xl mx-auto w-full">
-                    {initialLoad && categoryIds.length === 0 ? (
+                    {initialLoad && categoryIds.length === 0 && categoryPackages.length === 0 ? (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                             {[...Array(24)].map((_, i) => (
                                 <PackageCardSkeleton key={i} />
@@ -329,7 +354,7 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                             actionLabel="Retry"
                             onAction={() => fetchApps(true)}
                         />
-                    ) : categoryIds.length === 0 ? (
+                    ) : visibleCategoryIds.length === 0 && !useDirectPackages ? (
                         <EmptyState
                             title="No apps found"
                             description={`No applications found${!repoFilter.includes('all') ? ` in selected repos` : ' in this category'}. Try selecting a different repo.`}
@@ -341,52 +366,54 @@ const CategoryView: React.FC<CategoryViewProps> = ({ category, onBack, onSelectP
                             {/* Conditional Featured Section */}
                             {(() => {
                                 const showFeaturedSplit = sortBy === 'featured';
-                                const featuredIds = showFeaturedSplit ? categoryIds.filter((id) => packageRegistry[id]?.is_featured) : [];
-                                const otherIds = showFeaturedSplit ? categoryIds.filter((id) => !packageRegistry[id]?.is_featured) : categoryIds;
+                                const featuredPackages = showFeaturedSplit
+                                    ? (useDirectPackages
+                                        ? directCategoryPackages.filter((pkg) => pkg.is_featured)
+                                        : visibleCategoryIds
+                                            .map((id) => packageRegistry[id])
+                                            .filter((pkg): pkg is Package => !!pkg && !!pkg.is_featured))
+                                    : [];
+                                const otherPackages = showFeaturedSplit
+                                    ? (useDirectPackages
+                                        ? directCategoryPackages.filter((pkg) => !pkg.is_featured)
+                                        : visibleCategoryIds
+                                            .map((id) => packageRegistry[id])
+                                            .filter((pkg): pkg is Package => !!pkg && !pkg.is_featured))
+                                    : (useDirectPackages
+                                        ? directCategoryPackages
+                                        : visibleCategoryIds
+                                            .map((id) => packageRegistry[id])
+                                            .filter((pkg): pkg is Package => !!pkg));
 
                                 return (
                                     <>
-                                        {showFeaturedSplit && featuredIds.length > 0 && (
+                                        {showFeaturedSplit && featuredPackages.length > 0 && (
                                             <div className="mb-8">
                                                 <h2 className="text-lg font-bold text-app-fg mb-4 flex items-center gap-2">
                                                     <span className="text-yellow-500">★</span> Featured Applications
                                                 </h2>
-                                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                                    {featuredIds.map((id) => {
-                                                        const pkg = packageRegistry[id];
-                                                        return (
-                                                            <PackageCard
-                                                                key={id}
-                                                                pkgId={id}
-                                                                pkg={pkg}
-                                                                onClick={() => handleSelectPackage(pkg)}
-                                                                skipMetadataFetch={!!pkg?.icon}
-                                                            />
-                                                        );
-                                                    })}
-                                                </div>
+                                                <PackageCardList
+                                                    source={{ mode: 'packages', packages: featuredPackages }}
+                                                    onSelectPackage={handleSelectPackage}
+                                                    variant="grid"
+                                                    setupRequiredResolver={(pkg) => isOnlyChaoticSource(pkg) && !chaoticEnabled}
+                                                    onConfigureSource={onOpenSettings}
+                                                    surfaceName="CategoryViewFeatured"
+                                                />
                                                 <div className="h-px bg-app-border/50 my-6" />
                                                 <h2 className="text-lg font-bold text-app-fg mb-4">All Applications</h2>
                                             </div>
                                         )}
 
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                            {otherIds.map((id, index) => {
-                                                const pkg = packageRegistry[id];
-                                                const isLast = index === otherIds.length - 1;
-                                                return (
-                                                    <div key={id} ref={isLast ? lastElementRef : null}>
-                                                        <PackageCard
-                                                            pkgId={id}
-                                                            onClick={(p) => handleSelectPackage(p)}
-                                                            setupRequired={pkg ? isOnlyChaoticSource(pkg) && !chaoticEnabled : false}
-                                                            onConfigureSource={onOpenSettings}
-                                                            skipMetadataFetch={!!pkg?.icon}
-                                                        />
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
+                                        <PackageCardList
+                                            source={{ mode: 'packages', packages: otherPackages }}
+                                            onSelectPackage={handleSelectPackage}
+                                            variant="grid"
+                                            setupRequiredResolver={(pkg) => isOnlyChaoticSource(pkg) && !chaoticEnabled}
+                                            onConfigureSource={onOpenSettings}
+                                            surfaceName="CategoryView"
+                                        />
+                                        {hasMore && <div ref={lastElementRef} className="h-4" />}
                                     </>
                                 );
                             })()}

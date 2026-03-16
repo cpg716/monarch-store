@@ -62,7 +62,9 @@ async fn fetch_aur_top(limit: usize) -> Vec<Package> {
 
     // Multi-key fallback: "popular" is often empty/weird in AUR RPC.
     // Try "popular" -> "bin" (high volume for apps) -> "git" (dev tools)
-    let keywords = vec!["popular", "bin", "git", "desktop"];
+    let keywords = vec![
+        "popular", "portal", "launcher", "browser", "editor", "player",
+    ];
     let mut all_found = Vec::new();
 
     for kw in keywords {

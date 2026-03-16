@@ -3,6 +3,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Minus, Square, X, Copy } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { commands } from '../services/bindings';
+import { unwrap } from '../utils/specta';
 
 export function cn(...inputs: (string | undefined | null | false)[]) {
     return twMerge(clsx(inputs));
@@ -10,6 +12,7 @@ export function cn(...inputs: (string | undefined | null | false)[]) {
 
 export default function TitleBar() {
     const [isMaximized, setIsMaximized] = useState(false);
+    const [desktopLayout, setDesktopLayout] = useState<'centered' | 'right'>('right');
     const appWindow = getCurrentWindow();
 
     useEffect(() => {
@@ -17,6 +20,14 @@ export default function TitleBar() {
             setIsMaximized(await appWindow.isMaximized());
         };
         updateState();
+
+        commands.getHostAppearance()
+            .then(unwrap)
+            .then((appearance) => {
+                const desktop = String(appearance.desktop || '').toLowerCase();
+                setDesktopLayout(desktop.includes('gnome') ? 'centered' : 'right');
+            })
+            .catch(() => { });
 
         // Listen for resize events to update maximized state icon
         const unlisten = appWindow.onResized(() => {
@@ -38,7 +49,7 @@ export default function TitleBar() {
 
     return (
         <div
-            className="h-10 bg-app-bg/95 backdrop-blur-md flex items-center justify-between px-4 select-none border-b border-white/5 fixed top-0 left-0 right-0 z-[100]"
+            className="h-10 bg-app-bg flex items-center justify-between px-4 select-none border-b border-white/5 fixed top-0 left-0 right-0 z-[100]"
         >
             {/* Left: Branding */}
             <div className="flex items-center gap-3 pointer-events-none" data-tauri-drag-region>
@@ -52,8 +63,15 @@ export default function TitleBar() {
             {/* Center: Drag Region - Flex 1 fills remaining space */}
             <div className="flex-1 h-full" data-tauri-drag-region />
 
-            {/* Right: Window Controls - Explicit Z-index to float above drag layer */}
-            <div className="flex items-center gap-1.5 relative z-50">
+            {/* Host-adaptive controls: GNOME-centered vs KDE/Windows right-aligned */}
+            <div
+                className={cn(
+                    "flex items-center gap-1.5 relative z-50",
+                    desktopLayout === 'centered'
+                        ? "absolute left-1/2 -translate-x-1/2"
+                        : "ml-auto"
+                )}
+            >
                 <TitleBarButton onClick={minimize} aria-label="Minimize">
                     <Minus size={14} strokeWidth={3} />
                 </TitleBarButton>

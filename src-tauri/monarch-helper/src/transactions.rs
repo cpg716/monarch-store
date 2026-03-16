@@ -371,8 +371,9 @@ pub fn execute_alpm_check_updates_safe(_alpm: &mut Alpm) {
 
     emit_simple_progress(20, "Syncing Safe DBs...");
 
+    let dbpath = temp_path.to_string_lossy();
     let sync_status = std::process::Command::new("pacman")
-        .args(["-Sy", "--dbpath", temp_path.to_str().unwrap()])
+        .args(["-Sy", "--dbpath", dbpath.as_ref()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
@@ -381,7 +382,7 @@ pub fn execute_alpm_check_updates_safe(_alpm: &mut Alpm) {
         Ok(s) if s.success() => {
             emit_simple_progress(50, "Checking for updates...");
             let qu_out = std::process::Command::new("pacman")
-                .args(["-Qu", "--dbpath", temp_path.to_str().unwrap()])
+                .args(["-Qu", "--dbpath", dbpath.as_ref()])
                 .output();
 
             if let Ok(qu) = qu_out {
@@ -450,143 +451,6 @@ pub fn execute_alpm_uninstall(
     }
 }
 
-pub fn execute_alpm_upgrade(packages: Option<Vec<String>>, alpm: &mut Alpm) -> Result<(), String> {
-    if packages.is_some() {
-        logger::info(
-            "AlpmUpgrade with package list: doing full system upgrade (Arch does not support partial upgrades).",
-        );
-    }
-
-    emit_simple_progress(5, "Resolving dependencies for system upgrade...");
-    // RETRY LOOP: Scoped manually to avoid borrow checker issues
-    let mut retry_needed = false;
-
-    // Attempt 1
-    {
-        emit_simple_progress(5, "Synchronizing databases...");
-        if let Err(e) = alpm.syncdbs_mut().update(false) {
-            logger::warn(&format!("Database sync warning (continuing): {}", e));
-        }
-
-        setup_progress_callbacks(alpm)?;
-
-        emit_simple_progress(10, "Calculating upgrades...");
-        if let Err(e) = alpm.trans_init(TransFlag::ALL_DEPS) {
-            return Err(e.to_string());
-        }
-
-        if let Err(e) = alpm.sync_sysupgrade(false) {
-            let _ = alpm.trans_release();
-            return Err(e.to_string());
-        }
-
-        emit_simple_progress(20, "Preparing transaction...");
-
-        let prepare_err = match alpm.trans_prepare() {
-            Ok(_) => None,
-            Err(e) => Some(e.to_string()),
-        };
-
-        if let Some(msg) = prepare_err {
-            let _ = alpm.trans_release();
-
-            if is_corrupt_db_error(&msg) {
-                logger::warn(&format!(
-                    "Upgrade failed due to corrupt DB: {}. triggered retry.",
-                    msg
-                ));
-                retry_needed = true;
-            } else {
-                cleanup_partial_downloads();
-                return Err(format!("Transaction preparation failed: {}", msg));
-            }
-        } else if !retry_needed {
-            // Success path (only if no error)
-            emit_simple_progress(50, "Upgrading system...");
-            match alpm.trans_commit() {
-                Ok(_) => {
-                    emit_simple_progress(100, "System upgrade complete!");
-                    return Ok(());
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    let classified = classify_alpm_error(&msg);
-                    emit_progress_event(AlpmProgressEvent {
-                        event_type: "error".to_string(),
-                        package: None,
-                        percent: None,
-                        downloaded: None,
-                        total: None,
-                        message: serde_json::to_string(&classified).unwrap_or(msg.clone()),
-                    });
-                    return Err(msg);
-                }
-            }
-        }
-    }
-
-    // Attempt 2 (Recovery)
-    if retry_needed {
-        emit_simple_progress(0, "Attempting self-repair of corrupted databases...");
-
-        if let Err(e) = force_refresh_sync_dbs(alpm) {
-            logger::error(&format!("Failed to refresh DBs during recovery: {}", e));
-            return Err(format!("Database repair failed: {}", e));
-        }
-
-        emit_simple_progress(5, "Synchronizing databases...");
-        if let Err(e) = alpm.syncdbs_mut().update(false) {
-            logger::warn(&format!("Database sync warning (continuing): {}", e));
-        }
-
-        setup_progress_callbacks(alpm)?;
-        emit_simple_progress(10, "Calculating upgrades...");
-
-        if let Err(e) = alpm.trans_init(TransFlag::ALL_DEPS) {
-            return Err(e.to_string());
-        }
-        if let Err(e) = alpm.sync_sysupgrade(false) {
-            let _ = alpm.trans_release();
-            return Err(e.to_string());
-        }
-
-        emit_simple_progress(20, "Preparing transaction...");
-
-        let prepare_err = match alpm.trans_prepare() {
-            Ok(_) => None,
-            Err(e) => Some(e.to_string()),
-        };
-
-        if let Some(msg) = prepare_err {
-            let _ = alpm.trans_release();
-            cleanup_partial_downloads();
-            return Err(format!("Transaction preparation failed (Retry): {}", msg));
-        }
-
-        emit_simple_progress(50, "Upgrading system...");
-        match alpm.trans_commit() {
-            Ok(_) => {
-                emit_simple_progress(100, "System upgrade complete!");
-                return Ok(());
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                emit_progress_event(AlpmProgressEvent {
-                    event_type: "error".to_string(),
-                    package: None,
-                    percent: None,
-                    downloaded: None,
-                    total: None,
-                    message: msg.clone(),
-                });
-                return Err(msg);
-            }
-        }
-    }
-
-    Ok(())
-}
-
 pub fn execute_alpm_install_files(paths: Vec<String>, alpm: &mut Alpm) -> Result<(), String> {
     ensure_keyrings_updated(alpm)?;
     emit_simple_progress(5, "Initializing local install...");
@@ -653,7 +517,6 @@ extern "C" fn safe_dl_cb(
     _data: *mut std::ffi::c_void,
 ) {
     if filename.is_null() {
-        return;
     }
 }
 
@@ -753,25 +616,4 @@ fn lookup_packages<'a>(
         }
     }
     found_packages
-}
-pub fn find_orphans(alpm: &Alpm) -> Vec<String> {
-    alpm.localdb()
-        .pkgs()
-        .iter()
-        .filter(|pkg| pkg.reason() == alpm::PackageReason::Depend)
-        .filter(|pkg| {
-            // Check if required by anything
-            let req_by = pkg.required_by();
-            if !req_by.is_empty() {
-                return false;
-            }
-            // Check if optionally required by anything
-            let opt_for = pkg.optional_for();
-            if !opt_for.is_empty() {
-                return false;
-            }
-            true
-        })
-        .map(|pkg| pkg.name().to_string())
-        .collect()
 }

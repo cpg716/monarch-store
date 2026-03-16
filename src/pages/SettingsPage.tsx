@@ -3,7 +3,7 @@ import {
     Settings, Globe, Terminal,
     RefreshCw, Trash2, Key, Info, Lock,
     Moon, Sun, Monitor,
-    Eye, Zap, AlertTriangle,
+    Eye, Zap, AlertTriangle, Palette,
     Activity, HardDrive, Fingerprint,
     type LucideIcon,
 } from 'lucide-react';
@@ -12,7 +12,7 @@ import { useTheme } from '../hooks/useTheme';
 import { useToast } from '../context/ToastContext';
 import { useSettings } from '../hooks/useSettings';
 import { useDistro } from '../hooks/useDistro';
-import { useAppStore } from '../store/internal_store';
+import { useSessionPassword } from '../context/useSessionPassword';
 import { commands } from '../services/bindings';
 import { unwrap } from '../utils/specta';
 
@@ -58,11 +58,29 @@ function SectionHeader({
 }
 
 export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: SettingsPageProps) {
-    const { themeMode, setThemeMode } = useTheme();
+    const {
+        themeMode,
+        setThemeMode,
+        accentColor,
+        setAccentColor,
+        hostAccentColor,
+        resolvedTheme,
+        isFollowingSystemTheme,
+    } = useTheme();
     const { success, error, show } = useToast();
     const { distro } = useDistro();
-    const { telemetryEnabled, toggleTelemetry, advancedMode, toggleAdvancedMode, automaticHousekeepingEnabled, toggleAutomaticHousekeeping, performHousekeeping } = useSettings();
-    const { reducePasswordPrompts, setReducePasswordPrompts } = useAppStore();
+    const { requestSessionPassword } = useSessionPassword();
+    const {
+        telemetryEnabled,
+        toggleTelemetry,
+        advancedMode,
+        toggleAdvancedMode,
+        automaticHousekeepingEnabled,
+        toggleAutomaticHousekeeping,
+        performHousekeeping,
+        oneClickEnabled,
+        updateOneClick,
+    } = useSettings();
 
     const [missingRequiredBins, setMissingRequiredBins] = useState<string[]>([]);
     const [isRefreshingKeyring, setIsRefreshingKeyring] = useState(false);
@@ -76,8 +94,9 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
         onConfirm: () => { },
     });
 
-    const pkgVersion = '0.4.7-alpha';
+    const pkgVersion = '0.4.8-alpha';
     const installMode = 'system';
+    const ACCENT_PRESETS = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'];
 
     useEffect(() => {
         commands.getMissingRequiredBins()
@@ -87,14 +106,19 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
     }, []);
 
     const handleClearCache = async () => {
-        unwrap(await commands.clearCache());
+        unwrap(await commands.clearMetadataCaches());
+    };
+
+    const handleRebuildMetadataIndex = async () => {
+        unwrap(await commands.rebuildMetadataIndex());
     };
 
     const handleRepairKeyring = async () => {
         setIsRefreshingKeyring(true);
         show('Initializing keyring repair sequence...');
         try {
-            unwrap(await commands.fixKeyringIssues(null));
+            const pwd = await requestSessionPassword();
+            unwrap(await commands.fixKeyringIssues(pwd ?? null));
             success('Keyring issues resolved successfully.');
             if (onRepairComplete) await onRepairComplete();
         } catch (e) {
@@ -107,7 +131,8 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
     const handleUnlockPacman = async () => {
         setIsRepairingLock(true);
         try {
-            unwrap(await commands.repairUnlockPacman(null));
+            const pwd = await requestSessionPassword();
+            unwrap(await commands.repairUnlockPacman(pwd ?? null));
             success('Pacman database unlocked.');
             if (onRepairComplete) await onRepairComplete();
         } catch (e) {
@@ -127,10 +152,13 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                     </div>
                     <div>
                         <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black text-slate-900 dark:text-white tracking-tight leading-none">
-                            Mission Control
+                            Settings
                         </h1>
                         <p className="text-slate-500 dark:text-app-muted font-medium text-sm mt-1">
-                            Configure your MonARCH experience and system preferences.
+                            Configure trusted sources, workflow, privacy, maintenance, and appearance.
+                        </p>
+                        <p className="text-slate-500 dark:text-app-muted/80 text-xs mt-1">
+                            These controls change how MonARCH discovers software and how it behaves during installs, updates, and maintenance.
                         </p>
                     </div>
                 </div>
@@ -146,7 +174,7 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                             icon={Eye}
                             iconClassName="bg-indigo-500/10 text-indigo-600 dark:text-indigo-400"
                             title="Appearance"
-                            description="Theme and display"
+                            description="Host-adaptive and user theme preferences"
                         />
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                             {[
@@ -177,6 +205,57 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                                 </button>
                             ))}
                         </div>
+                        <div className="rounded-2xl border border-app-border bg-app-card p-4 space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+                                    <Palette size={16} className="text-indigo-500" />
+                                    Accent Color
+                                </div>
+                                <div className="text-[11px] text-slate-600 dark:text-app-muted">
+                                    {isFollowingSystemTheme
+                                        ? `System-managed (${resolvedTheme})`
+                                        : `Manual (${resolvedTheme})`}
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {ACCENT_PRESETS.map((c) => (
+                                    <button
+                                        key={c}
+                                        type="button"
+                                        onClick={() => setAccentColor(c)}
+                                        className={clsx(
+                                            'w-8 h-8 rounded-full border-2 transition-transform',
+                                            accentColor === c ? 'border-app-fg scale-110' : 'border-transparent hover:scale-105'
+                                        )}
+                                        style={{ backgroundColor: c }}
+                                        title={`Set accent ${c}`}
+                                        aria-label={`Set accent ${c}`}
+                                    />
+                                ))}
+                                {hostAccentColor && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setAccentColor(hostAccentColor)}
+                                        className="ml-2 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-bold text-slate-700 dark:text-white/80 hover:bg-app-subtle transition-colors"
+                                    >
+                                        Use Host Accent
+                                    </button>
+                                )}
+                            </div>
+                            <div className="text-[11px] text-slate-600 dark:text-app-muted flex items-center gap-2">
+                                <span>Current:</span>
+                                <span className="inline-block w-3 h-3 rounded-full border border-app-border" style={{ backgroundColor: accentColor }} />
+                                <code>{accentColor}</code>
+                                {hostAccentColor && (
+                                    <>
+                                        <span className="opacity-50">|</span>
+                                        <span>Host:</span>
+                                        <span className="inline-block w-3 h-3 rounded-full border border-app-border" style={{ backgroundColor: hostAccentColor }} />
+                                        <code>{hostAccentColor}</code>
+                                    </>
+                                )}
+                            </div>
+                        </div>
                     </section>
 
                     {/* --- Security & Privacy --- */}
@@ -201,9 +280,9 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                             <ToggleSetting
                                 icon={<Key size={20} className="text-amber-500" />}
                                 title="One-Click Authentication"
-                                description="Authorize MonARCH once per session instead of system prompting for every action. Password is cached for up to 12 hours."
-                                enabled={reducePasswordPrompts}
-                                onToggle={() => setReducePasswordPrompts(!reducePasswordPrompts)}
+                                description="Use MonARCH's in-app password prompt once per app session instead of the system auth dialog for every privileged action. The password stays in memory only and clears when MonARCH closes."
+                                enabled={oneClickEnabled}
+                                onToggle={() => updateOneClick(!oneClickEnabled)}
                             />
                             <ToggleSetting
                                 icon={<Activity size={20} className="text-indigo-500" />}
@@ -291,19 +370,34 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                                     icon={<RefreshCw className="text-emerald-500" />}
                                     onClick={async () => {
                                         success('Syncing package databases...');
-                                        unwrap(await commands.syncSystemDatabases(null));
+                                        const pwd = await requestSessionPassword();
+                                        unwrap(await commands.syncSystemDatabases(pwd ?? null));
                                     }}
                                 />
                                 <RepairAction
-                                    title="System Cleanup"
-                                    description="Clear local metadata and chaotic-AUR caches."
+                                    title="Clear Metadata Caches"
+                                    description="Clear in-memory metadata, search, and API caches only."
                                     icon={<Trash2 className="text-orange-500" />}
                                     loading={isCleaningCache}
                                     onClick={async () => {
                                         setIsCleaningCache(true);
                                         try {
                                             await handleClearCache();
-                                            success('Metadata cache cleared.');
+                                            success('Metadata caches cleared.');
+                                        } finally {
+                                            setIsCleaningCache(false);
+                                        }
+                                    }}
+                                />
+                                <RepairAction
+                                    title="Rebuild Metadata Index"
+                                    description="Reinitialize local metadata without syncing repositories."
+                                    icon={<RefreshCw className="text-sky-500" />}
+                                    onClick={async () => {
+                                        setIsCleaningCache(true);
+                                        try {
+                                            await handleRebuildMetadataIndex();
+                                            success('Metadata index rebuilt.');
                                         } finally {
                                             setIsCleaningCache(false);
                                         }
@@ -316,9 +410,13 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                                     description="Manually remove orphans and refresh sync databases now."
                                     icon={<Zap className="text-yellow-500" />}
                                     onClick={async () => {
-                                        success('Starting housekeeping sequence...');
-                                        await performHousekeeping();
-                                        success('Housekeeping complete.');
+                                        try {
+                                            success('Starting housekeeping sequence...');
+                                            await performHousekeeping();
+                                            success('Housekeeping complete.');
+                                        } catch (e) {
+                                            error('Housekeeping failed: ' + String(e));
+                                        }
                                     }}
                                 />
                             </div>
@@ -329,9 +427,9 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                                             <AlertTriangle size={24} />
                                         </div>
                                         <div>
-                                            <h3 className="font-bold text-slate-900 dark:text-white">Advanced Repository Mode</h3>
+                                            <h3 className="font-bold text-slate-900 dark:text-white">Expert Repo Overrides</h3>
                                             <p className="text-sm text-slate-500 dark:text-white/50 max-w-md mt-1">
-                                                Enable &quot;God Mode&quot; to bypass safety checks. WARNING: Can cause system breakage on hybrid distros (Manjaro).
+                                                Enables high-risk distro compatibility overrides intended for experienced users. Default users should keep this off.
                                             </p>
                                         </div>
                                     </div>
@@ -341,18 +439,18 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                                             if (!advancedMode) {
                                                 setModalConfig({
                                                     isOpen: true,
-                                                    title: 'Enable Advanced Repository Mode?',
+                                                    title: 'Enable Expert Repo Overrides?',
                                                     message:
-                                                        '⚠ CRITICAL WARNING ⚠\n\nYou are about to disable Distro-Safety Locks.\n\nOnly proceed if you are an expert capable of recovering a broken system.',
+                                                        '⚠ CRITICAL WARNING ⚠\n\nThis enables high-risk repository overrides on blocked distros.\n\nOnly continue if you can recover dependency and pacman breakage manually.',
                                                     variant: 'danger',
                                                     onConfirm: () => {
                                                         toggleAdvancedMode(true);
-                                                        success('Advanced Mode Enabled. Safety locks removed.');
+                                                        success('Expert overrides enabled.');
                                                     },
                                                 });
                                             } else {
                                                 toggleAdvancedMode(false);
-                                                success('Safety locks re-engaged.');
+                                                success('Expert overrides disabled.');
                                             }
                                         }}
                                         className={clsx(
@@ -386,7 +484,7 @@ export default function SettingsPage({ onRestartOnboarding, onRepairComplete }: 
                             </div>
                             <div>
                                 <h3 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">MonARCH Store</h3>
-                                <p className="text-slate-500 dark:text-white/40 font-medium">Operation Mission Control</p>
+                                <p className="text-slate-500 dark:text-white/40 font-medium">Distro-aware package management</p>
                             </div>
                             <div className="flex flex-wrap justify-center gap-3">
                                 <span className="px-4 py-1.5 bg-slate-100 dark:bg-white/10 text-slate-600 dark:text-white/60 text-xs font-mono font-bold rounded-full">

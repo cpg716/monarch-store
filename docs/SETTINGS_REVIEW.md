@@ -1,3 +1,5 @@
+> Historical note: This review document describes a legacy or point-in-time parity snapshot. GTK current-state and release-gate status now live in `docs/GTK_TAURI_PARITY_MATRIX.md` and the GTK-first root docs.
+
 # Settings Page — Full Review & Redesign
 
 **Date:** 2026-02-05  
@@ -65,3 +67,10 @@ The new layout fits the app’s Liquid UI and glassmorphism, reduces navigation 
 
 - **Chaotic-AUR (Sources):** The "Final step" modal copy was updated for new Linux users: open `/etc/pacman.conf` in a text editor (e.g. `sudo nano /etc/pacman.conf`), add the two lines at the end, save and exit, then click **Check Again**. Same wording as in Onboarding.
 - **Auth:** All privileged actions (including Chaotic prepare, sync, refresh) use **one-click** from `RepoManager`: when "Reduce password prompts" is on, the app uses the branded password dialog and `sudo -S`; when off, Polkit (`pkexec`) is used. See `docs/RECENT_CHANGES.md` §8 and `docs/STARTUP_AND_PERMISSIONS_REVIEW.md`.
+
+## 7. Addendum (2026-02-27)
+
+- **Source toggle semantics clarified:** source toggles govern discovery visibility in app surfaces (Search/Trending/Essentials/Categories), while installed updates remain visible in Updates.
+- **Chaotic state stability:** Chaotic discovery toggle no longer rolls back because of background sync failures.
+- **Distro-aware profile card:** Mission Control now shows host profile and capability signals (repo access mode, Chaotic policy, CPU tier) consistently with backend distro context.
+- **Theme integration:** Settings appearance controls coexist with host-adaptive portal theme/accent; system-follow mode maps host values into global CSS variables.

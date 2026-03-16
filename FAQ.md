@@ -1,7 +1,7 @@
 # Frequently Asked Questions (FAQ) ❓
 
-**Current Version: v0.4.7-alpha
-Last updated: 2026-02-21
+**Current Version:** v0.4.8-alpha  
+**Last updated:** 2026-02-27
 
 ### 1. What does "Host-Adaptive" mean?
 Unlike other app stores that might try to force a specific configuration or enable dozens of repositories by default, MonARCH respects your system's existing state. We read your `/etc/pacman.conf` and only show you what your system is actually set up to handle. We adapt to YOU, not the other way around.
@@ -16,7 +16,8 @@ Those are **AUR (Arch User Repository)** packages. Unlike standard packages that
 Manjaro uses slightly different versions of core system libraries (like `glibc`) than vanilla Arch. Using the pre-built binaries from Chaotic-AUR on Manjaro is a common cause of system breakage. MonARCH includes a "Manjaro Guard" to prevent these incompatible configurations for your own safety.
 
 ### 4b. How do I enable Chaotic-AUR (on Arch, CachyOS, Garuda, etc.)?
-Go to **Settings → Sources**. If Chaotic-AUR shows as **Inactive**, turn the toggle on, click **Install Keys & Mirrors** (MonARCH installs the keyring and mirrorlist), then add the repo block to `/etc/pacman.conf` as shown in the "Final Step" modal. Use **Copy to Clipboard** and **Check Again** when done. MonARCH never edits pacman.conf for you—you add the repo manually. See [User Guide → Sources](USER_GUIDE.md).
+Go to **Settings → Sources**. If Chaotic-AUR is not system-ready, run setup (keyring/mirrorlist + pacman.conf activation), then click **Check Connection**.  
+The Chaotic toggle controls discovery visibility (Search/Trending/Categories). You can keep Chaotic system-ready but hidden from discovery.
 
 ### 5. Does MonARCH Store replace Pacman?
 No. MonARCH is a companion to your system tools. It uses the same library (`libalpm`) as Pacman, meaning they share the same database. Anything you do in MonARCH is visible to Pacman, and vice-versa.
@@ -26,6 +27,9 @@ By default, MonARCH clones and builds AUR packages in `~/.cache/monarch/aur/`. Y
 
 ### 7. Why does MonARCH run a full system upgrade when I install one package?
 To avoid **partial upgrades** (mixing old and new libraries), we run a full system upgrade first, then install your package. This keeps your system consistent. If you prefer not to upgrade everything, use Pacman directly for that single package.
+
+### 9. Why did an app show as "Chaotic installed" when I installed it from another source?
+Older builds could infer install origin from weak metadata in edge cases. Current builds classify installed source from ALPM/localdb + syncdb matching, which removes those false labels.
 
 ### 8. How do I report a bug?
 Please open an issue on our [GitHub repository](https://github.com/cpg716/monarch-store/issues). Provide as much detail as possible, including your distribution and any logs from the Detailed Console.

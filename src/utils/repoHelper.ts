@@ -1,15 +1,35 @@
 import type { PackageSource } from '../services/bindings';
 
 /** Normalize source ID for comparison (lowercase, alphanumeric only). matches backend `canonical_merge_key` logic roughly. */
-export function normalizeSourceId(id: string): string {
+export function normalizeSourceId(id: unknown): string {
+    if (typeof id !== 'string') return '';
     return id.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 /** Compare two sources (string or PackageSource); e.g. "flatpak" matches { id: "flathub", source_type: "flatpak" } but not flathub-beta. */
-export function isSameSource(a: PackageSource | string, b: PackageSource | string): boolean {
+export function isSameSource(a: PackageSource | string | null | undefined, b: PackageSource | string | null | undefined): boolean {
+    if (!a || !b) return false;
     if (typeof a === 'string' && typeof b === 'string') return normalizeSourceId(a) === normalizeSourceId(b);
-    if (typeof a !== 'string' && typeof b !== 'string') return normalizeSourceId(a.id) === normalizeSourceId(b.id) && normalizeSourceId(a.source_type) === normalizeSourceId(b.source_type);
-    const str = typeof a === 'string' ? a : (b as string);
+    if (typeof a !== 'string' && typeof b !== 'string') {
+        const normAId = normalizeSourceId(a.id);
+        const normBId = normalizeSourceId(b.id);
+        const normAType = normalizeSourceId(a.source_type);
+        const normBType = normalizeSourceId(b.source_type);
+        // Happy path: exact id + type match
+        if (normAId === normBId && normAType === normBType) return true;
+        // Compatibility: 'local' (legacy AUR-localdb result) matches any 'aur' or non-flatpak 'repo' source
+        const aIsLocal = normAId === 'local';
+        const bIsLocal = normBId === 'local';
+        if (aIsLocal || bIsLocal) {
+            const otherType = aIsLocal ? normBType : normAType;
+            return otherType === 'aur' || otherType === 'repo';
+        }
+        if (normAType === 'repo' && normBType === 'repo' && getSourceFamilyId(a) === getSourceFamilyId(b)) {
+            return true;
+        }
+        return false;
+    }
+    const str = typeof a === 'string' ? a : (typeof b === 'string' ? b : '');
     const obj = typeof a === 'string' ? (b as PackageSource) : (a as PackageSource);
     if (typeof obj !== 'object' || obj === null) return false;
 
@@ -19,11 +39,16 @@ export function isSameSource(a: PackageSource | string, b: PackageSource | strin
 
     if (normObjId === normStr) return true;
     if (normObjType === normStr) return normStr !== 'flatpak' || normObjId === 'flathub'; // "flatpak" string = stable only
+    if (normObjType === 'repo' && getSourceFamilyId(obj) === normStr) return true;
+    // Compatibility: 'local' matches 'aur' string and vice-versa
+    if (normStr === 'aur' && normObjId === 'local') return true;
+    if (normStr === 'local' && (normObjType === 'aur' || normObjType === 'repo')) return true;
     return false;
 }
 
 /** Normalize string (legacy) to PackageSource for tier/letter. */
 export function toPackageSource(source: PackageSource | string): PackageSource {
+    if (!source) return { source_type: 'repo', id: 'unknown', version: '', label: 'Unknown Source', package_name: null };
     if (typeof source === 'object') return source;
     const s = (source as string).toLowerCase();
     const base = { package_name: null };

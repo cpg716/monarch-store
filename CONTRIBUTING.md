@@ -1,108 +1,88 @@
-# Contributing — MonARCH Store
+# Contributing to MonARCH Store
 
-**Current version:** v0.4.7-alpha  
-**Last updated:** 2026-02-21
-Project architecture features (**Iron Core Purge**, **The Chameleon**, **Mission Control**, **Silent Guard**, **Safe Guard**, **Liquid UI**, **Unified Pipeline**, **Operation Chaotic Good**) are documented across the repository. Contributors should prioritize the [**Developer Guide**](docs/DEVELOPER.md) and [**Architecture**](ARCHITECTURE.md) for deep dives. For a concise summary of recent changes (one card per app, details dropdown, Chaotic-AUR safe toggle, onboarding, labels), see [**Recent Changes**](docs/RECENT_CHANGES.md).
+**Current frontend:** GTK  
+**Last updated:** 2026-03-09
 
-First off, thanks for taking the time to contribute! 🎉
+MonARCH Store is now a **GTK-first** product built on:
+- `monarch-core` for canonical package identity, metadata hydration, and discovery/search/detail payloads
+- `monarch-helper` for privileged ALPM writes
+- `monarch-gtk` as the active frontend
 
-The following is a set of guidelines for contributing to MonARCH Store. These are predominantly guidelines, not rules. Use your best judgment, and feel free to propose changes to this document in a pull request.
+The older Tauri/React code remains in the repo as historical/reference material while GTK reaches full parity.
 
-## Code of Conduct
+## Before you contribute
 
-This project and everyone participating in it is governed by our Code of Conduct. By participating, you are expected to uphold this code.
+Read these first:
+- [README.md](/home/chris/Downloads/monarch-store/README.md)
+- [ARCHITECTURE.md](/home/chris/Downloads/monarch-store/ARCHITECTURE.md)
+- [docs/DEVELOPER.md](/home/chris/Downloads/monarch-store/docs/DEVELOPER.md)
+- [docs/GTK_TAURI_PARITY_MATRIX.md](/home/chris/Downloads/monarch-store/docs/GTK_TAURI_PARITY_MATRIX.md)
+- [AGENTS.md](/home/chris/Downloads/monarch-store/AGENTS.md)
+- [.cursorrules](/home/chris/Downloads/monarch-store/.cursorrules)
 
-## How Can I Contribute?
+## Contribution priorities
 
-### Reporting Bugs
+Priority order:
+1. Preserve Iron Core as the single source of truth
+2. Keep Arch-safe package behavior intact
+3. Close GTK parity gaps against the documented MonARCH product contract
+4. Keep docs aligned with the actual shipped GTK product
 
-This section guides you through submitting a bug report. Following these guidelines helps maintainers and the community understand your report, reproduce the behavior, and find related reports.
+## Critical rules
 
-- **Use a clear and descriptive title** for the issue to identify the problem.
-- **Describe the exact steps which reproduce the problem** in as much detail as possible.
-- **Provide specific examples to demonstrate the steps**. Include links to files or GitHub projects, or copy/pasteable snippets, which you use in those examples.
+### Iron Core rules
+- Do not move metadata parsing or source-merge logic into GTK
+- Do not create GTK-side category inference, icon guessing, or source-truth logic
+- Cards and details must render backend-provided models
 
-### Suggesting Enhancements
+### Package-management safety
+- Never run `pacman -Sy` by itself
+- Only `monarch-helper` may perform ALPM writes
+- AUR builds stay unprivileged and are installed via the helper
+- Respect host `IgnorePkg` and `IgnoreGroup`
 
-This section guides you through submitting an enhancement suggestion, including completely new features and minor improvements to existing functionality.
+### Product truth
+- GTK is the current product
+- Tauri/React is legacy/reference-only unless a doc explicitly says otherwise
+- Public docs must describe current GTK truth, not aspirational parity
 
-- **Use a clear and descriptive title** for the issue to identify the suggestion.
-- **Provide a step-by-step description of the suggested enhancement** in as much detail as possible.
-- **Explain why this enhancement would be useful** to most MonARCH Store users.
+## Development workflow
 
-### Pull Requests
+Primary GTK workflow:
 
-- Fill in the required template
-- Do not include issue numbers in the PR title
-- Include screenshots and animated GIFs in your pull request whenever possible.
-- End all files with a newline
+```bash
+cd src-tauri && cargo check
+cd src-tauri && cargo test -p monarch-core
+cd src-tauri && cargo run -p monarch-gtk
+```
 
-### ⚠️ REPO SAFETY RULES (CRITICAL)
+Use Tauri only for historical/reference comparison work.
 
-**Any modification to package management logic (pacman/makepkg wrappers, root command execution) requires MANDATORY Security Review.** See [AGENTS.md](AGENTS.md) for full rules.
+## Pull requests
 
-- **No Arbitrary Command Execution:** Never construct shell commands from unsanitized user input. Validate package names with `utils::validate_package_name()` before shell ops.
-- **Root Privileges:** Privileged operations go through **monarch-helper** via `pkexec`; command passed via temp file (path only in argv).
-- **Partial Upgrades:** **NEVER** run `pacman -Sy` alone. All sync operations MUST use **SafeUpdateTransaction** (Iron Core) which enforces `-Syu` at the Rust level.
+Include:
+- a clear problem statement
+- the product surface affected
+- screenshots when UI changes are involved
+- test evidence (`cargo check`, `cargo test -p monarch-core`, and GTK runtime notes)
+- docs updates when behavior changes
 
-Violating these rules will result in immediate PR closure.
+If you touch discovery, search, categories, source switching, icons, or canonical identity, update the parity matrix if the status changed.
 
-## Styleguides
+## Style
 
-### Git Commit Messages
+### Rust
+- `cargo fmt`
+- `cargo clippy`
+- prefer explicit, stable, backend-owned package models
 
-- Use the present tense ("Add feature" not "Added feature")
-- Use the imperative mood ("Move cursor to..." not "Moves cursor to...")
-- Limit the first line to 72 characters or less
-- Reference issues and pull requests liberally after the first line
+### GTK
+- keep the frontend dumb
+- prefer consistent shared card/detail composition
+- do not add widget-local truth that competes with backend data
+- package detail layout (hero, data bar, actions) uses [Bazaar](https://github.com/kolunmi/bazaar) as UI reference; preserve that alignment when changing the detail page
 
-### Rust Styleguide
-
-- Use `cargo fmt` before committing.
-- Use `cargo clippy` to catch common mistakes.
-
-### TypeScript/React Styleguide
-
-- Use Functional Components with Hooks.
-- Use strict type annotations.
-
-## Development Setup
-
-1.  **Prerequisites**:
-    *   Rust (latest stable)
-    *   Node.js (LTS) & NPM
-    *   System dependencies: `webkit2gtk`, `base-devel`, `curl`, `wget`, `file`, `openssl`, `appmenu-gtk-module`, `gtk3`, `libappindicator-gtk3`, `librsvg`, `libvips`, `xdg-desktop-portal` (for native dark mode & dialogs)
-    *   **Faster linking** (recommended): `mold` and `clang` for up to 7x faster development builds:
-      ```bash
-      sudo pacman -S mold clang
-      ```
-      The project is configured to use `mold` by default. If you encounter linker errors, see `src-tauri/.cargo/config.toml` for fallback options (`lld` or `gcc`).
-
-2.  **Installation**:
-
-    ```bash
-    git clone https://github.com/cpg716/monarch-store.git
-    cd monarch-store
-    npm install
-    ```
-
-3.  **Running Locally**:
-
-    ```bash
-    npm run tauri dev
-    ```
-
-4.  **Building for Production**:
-
-    ```bash
-    npm run tauri build
-    ```
-
-## Architecture Overview
-
-- [**USER_GUIDE.md**](USER_GUIDE.md) — Fundamental app usage and feature overview for end-users.
-- [**docs/DEVELOPER.md**](docs/DEVELOPER.md) — **Developer documentation**: setup, project structure, code style, critical rules (single reference for contributors).
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Core philosophy, Host-Adaptive model, Butterfly engine, installer pipeline.
-- [AGENTS.md](AGENTS.md) — Build commands, code style, package management rules.
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — User-facing issues (GPG, db lock, etc.)
-- [SECURITY.md](SECURITY.md) — Security policy and reporting.
+### Documentation
+- write GTK-first docs
+- label Tauri material as legacy/reference
+- avoid stale feature claims

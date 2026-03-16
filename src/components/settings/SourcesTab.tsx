@@ -8,6 +8,7 @@ import { useDistro } from '../../hooks/useDistro';
 import { useSettings } from '../../hooks/useSettings';
 import { useSessionPassword } from '../../context/useSessionPassword';
 import { useErrorService } from '../../context/ErrorContext';
+import ConfirmationModal from '../ConfirmationModal';
 
 const CHAOTIC_PACMAN_CONF_SNIPPET = `[chaotic-aur]
 Include = /etc/pacman.d/chaotic-mirrorlist`;
@@ -21,7 +22,8 @@ export default function SourcesTab() {
         isFlatpakEnabled, toggleFlatpak,
         repos, toggleRepo,
         repoCounts,
-        refresh
+        refresh,
+        advancedMode
     } = useSettings();
     const { requestSessionPassword } = useSessionPassword();
     const errorService = useErrorService();
@@ -33,13 +35,21 @@ export default function SourcesTab() {
     const [chaoticError, setChaoticError] = useState<string | null>(null);
     const [checkingAgain, setCheckingAgain] = useState(false);
     const [copied, setCopied] = useState(false);
+    const [confirmBlockedChaoticEnable, setConfirmBlockedChaoticEnable] = useState(false);
 
     const chaoticRepo = repos.find(r => r.name.toLowerCase() === 'chaotic-aur' || r.id === 'chaotic-aur');
     const isChaoticBlocked = chaoticStatus ? !chaoticStatus.compatible : distro.capabilities.chaotic_aur_support === 'blocked';
-    const chaoticActive = chaoticStatus ? (chaoticStatus.compatible && chaoticStatus.chaotic_in_alpm) : (chaoticRepo?.enabled ?? false);
-    const chaoticInactive = chaoticStatus ? (chaoticStatus.compatible && !chaoticStatus.chaotic_in_alpm) : !chaoticRepo?.enabled && !isChaoticBlocked;
-    const chaoticSupportedByDistro = chaoticActive && distro.capabilities.chaotic_aur_support === 'native';
-    const chaoticPreConfigured = chaoticActive && distro.capabilities.chaotic_aur_support !== 'native';
+    // Distinguish "system availability" from "discovery visibility":
+    // - system ready: chaotic is available in ALPM/pacman.conf
+    // - active toggle: chaotic is visible in MonARCH discovery surfaces
+    const chaoticSystemReady = chaoticStatus
+        ? (chaoticStatus.compatible && chaoticStatus.chaotic_in_alpm)
+        : (chaoticRepo?.enabled ?? false);
+    const chaoticActive = chaoticRepo?.enabled ?? false;
+    const chaoticInactive = !chaoticActive;
+    const chaoticSupportedByDistro = chaoticSystemReady && distro.capabilities.chaotic_aur_support === 'native';
+    const chaoticPreConfigured = chaoticSystemReady && distro.capabilities.chaotic_aur_support !== 'native';
+    const chaoticToggleBlocked = isChaoticBlocked && !advancedMode;
 
     useEffect(() => {
         let cancelled = false;
@@ -62,29 +72,45 @@ export default function SourcesTab() {
         }
     };
 
+    const runChaoticSetup = async () => {
+        setChaoticError(null);
+        setPreparingChaotic(true);
+        try {
+            const password = await requestSessionPassword();
+            await commands.prepareChaoticComponents(password ?? null).then(unwrap);
+            await commands.openChaoticTerminal().then(unwrap);
+            setShowChaoticFinalModal(true);
+        } catch (e) {
+            errorService.reportError(e as Error | string);
+            setChaoticError(String(e));
+        } finally {
+            setPreparingChaotic(false);
+        }
+    };
+
     const handleChaoticToggle = async () => {
         if (chaoticActive && chaoticRepo) {
             toggleRepo(chaoticRepo.id);
             return;
         }
-        if (chaoticInactive) {
-            setChaoticError(null);
-            setPreparingChaotic(true);
-            try {
-                await commands.openChaoticTerminal().then(unwrap);
-                setShowChaoticFinalModal(true);
-            } catch (e) {
-                errorService.reportError(e as Error | string);
-                setChaoticError(String(e));
-            } finally {
-                setPreparingChaotic(false);
+        if (chaoticInactive && !chaoticSystemReady) {
+            if (isChaoticBlocked && advancedMode) {
+                setConfirmBlockedChaoticEnable(true);
+                return;
             }
+            await runChaoticSetup();
+            return;
+        }
+        if (chaoticRepo) {
+            toggleRepo(chaoticRepo.id);
         }
     };
 
     const handleCheckAgain = async () => {
         setCheckingAgain(true);
         try {
+            const password = await requestSessionPassword();
+            unwrap(await commands.forceRefreshDatabases(password ?? null));
             const s = await fetchChaoticStatus();
             if (s?.chaotic_in_alpm) {
                 setShowChaoticFinalModal(false);
@@ -165,24 +191,33 @@ export default function SourcesTab() {
                     <SourceToggle
                         title="Chaotic-AUR"
                         description={
-                            isChaoticBlocked ? "Not available on this distro (Manjaro)." :
-                                chaoticActive ? "Community-prebuilt binaries. High speed, no local compilation. Recommended for saving time." :
-                                    "Pre-built community packages. One-time setup: initialize MonARCH polkit policy, install keys, then enable."
+                            (isChaoticBlocked && !advancedMode) ? "Not available on this distro (Manjaro)." :
+                                (isChaoticBlocked && advancedMode) ? "Expert Override is active. Setup is allowed but unsafe on blocked distros." :
+                                    chaoticActive ? "Community-prebuilt binaries are visible in discovery and search." :
+                                        chaoticSystemReady
+                                            ? "Chaotic-AUR is available on your system but hidden from discovery."
+                                            : "Pre-built community packages. One-time setup: initialize MonARCH polkit policy, install keys, then enable."
                         }
                         enabled={chaoticActive}
                         onToggle={handleChaoticToggle}
-                        disabled={isChaoticBlocked}
-                        tooltip={isChaoticBlocked ? "Not available on Manjaro due to fixed-branch stability risks." : undefined}
+                        disabled={chaoticToggleBlocked}
+                        tooltip={chaoticToggleBlocked ? "Not available on this distro unless Expert Override is enabled in Settings." : undefined}
                         icon={<Globe size={20} className="text-purple-500" />}
                         count={repoCounts['chaotic-aur']}
                         loading={loadingChaoticStatus || preparingChaotic}
                         statusBadge={
-                            isChaoticBlocked ? 'blocked' :
+                            chaoticToggleBlocked ? 'blocked' :
                                 chaoticActive ? 'active' : 'inactive'
                         }
-                        notice={chaoticSupportedByDistro ? 'Supported by your distro' : chaoticPreConfigured ? 'Pre-configured in pacman.conf' : undefined}
+                        notice={isChaoticBlocked && advancedMode ? 'Expert Override active' : (chaoticSupportedByDistro ? 'Supported by your distro' : chaoticPreConfigured ? 'Pre-configured in pacman.conf' : undefined)}
                         inlineError={chaoticError}
-                        warning={!isChaoticBlocked && chaoticActive ? "Disabling hides binaries from search; updates for installed packages still run." : "Setup involves automated keyring installation."}
+                        warning={
+                            isChaoticBlocked && advancedMode
+                                ? "Expert Override can destabilize blocked distros. Proceed only if you can recover a broken pacman state."
+                                : (!isChaoticBlocked && chaoticActive
+                                    ? "Disabling hides Chaotic from search/trending/categories; updates for installed packages still run."
+                                    : "Setup involves automated keyring installation.")
+                        }
                     />
 
                     {/* Flatpak */}
@@ -246,6 +281,20 @@ export default function SourcesTab() {
                     </div>
                 </div>
             )}
+
+            <ConfirmationModal
+                isOpen={confirmBlockedChaoticEnable}
+                onClose={() => setConfirmBlockedChaoticEnable(false)}
+                onConfirm={() => {
+                    setConfirmBlockedChaoticEnable(false);
+                    void runChaoticSetup();
+                }}
+                variant="danger"
+                title="Enable Chaotic-AUR on blocked distro?"
+                message="This override is for experienced users only and can break dependency resolution on fixed-branch distros. Continue only if you can recover your system manually."
+                confirmLabel="Enable Anyway"
+                cancelLabel="Cancel"
+            />
         </div>
     );
 }

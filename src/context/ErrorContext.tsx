@@ -1,7 +1,8 @@
-import { createContext, useContext, useState, useCallback, useRef, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useMemo, useRef, ReactNode } from 'react';
 import { commands } from '../services/bindings';
 import { useToast } from './ToastContext';
 import { friendlyError, FriendlyError } from '../utils/friendlyError';
+import { debugError } from '../utils/debugLog';
 
 /**
  * Error severity levels that determine how errors are displayed
@@ -160,7 +161,7 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
     ) => {
         const normalized = normalizeError(error);
         if (normalized.title === 'Backend Response Error' && normalized.raw) {
-            console.error('[MonARCH] Backend Response Error (raw):', normalized.raw);
+            debugError('[MonARCH] Backend Response Error (raw):', normalized.raw);
         }
         const report: ErrorReport = {
             id: `error-${Date.now()}-${Math.random()}`,
@@ -214,7 +215,7 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
         }
 
         // Log to console for debugging
-        console.error('[ErrorService]', {
+        debugError('[ErrorService]', {
             severity,
             title: normalized.title,
             description: normalized.description,
@@ -246,7 +247,7 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
         setCriticalError(null);
     }, []);
 
-    const contextValue: ErrorContextType = {
+    const contextValue: ErrorContextType = useMemo(() => ({
         report,
         reportCritical,
         reportError,
@@ -254,7 +255,7 @@ export function ErrorProvider({ children }: { children: ReactNode }) {
         reportInfo,
         currentCriticalError: criticalError,
         dismissCritical
-    };
+    }), [report, reportCritical, reportError, reportWarning, reportInfo, criticalError, dismissCritical]);
 
     // Expose to window for ErrorBoundary (class component) access
     if (typeof window !== 'undefined') {

@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { useAppStore } from '../store/internal_store';
+import { normalizeCanonicalId } from '../utils/packageKey';
 
 /** Thin wrapper over global store: favorites live in internal_store; persistence in store actions. */
 export function useFavorites() {
@@ -7,9 +8,10 @@ export function useFavorites() {
     const toggleFavorite = useAppStore((s) => s.toggleFavorite);
 
     const isFavorite = useCallback(
-        (pkgNameOrId: string) => {
-            const norm = pkgNameOrId.toLowerCase().trim();
-            return favorites.some((f) => f.toLowerCase() === norm);
+        (pkgNameOrId: string | undefined | null) => {
+            if (!pkgNameOrId) return false;
+            const norm = normalizeCanonicalId(pkgNameOrId);
+            return !!norm && favorites.some((f) => normalizeCanonicalId(f) === norm);
         },
         [favorites]
     );

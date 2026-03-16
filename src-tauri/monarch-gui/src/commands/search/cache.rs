@@ -20,10 +20,40 @@ pub(crate) static CATEGORY_CACHE: Lazy<Cache<String, Vec<models::Package>>> = La
         .build()
 });
 
+// Cache for interactive text search results (full merged payload).
+// TTL: 5 minutes to keep results fresh while making repeated typing/backspacing instant.
+pub(crate) static SEARCH_RESULTS_CACHE: Lazy<Cache<String, Vec<models::Package>>> =
+    Lazy::new(|| {
+        Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(5 * 60))
+            .build()
+    });
+
+// Cache for the canonical search snapshot used by the in-memory fast path.
+// TTL: 5 minutes keeps the snapshot fresh without rebuilding on every query.
+pub(crate) static SEARCH_SNAPSHOT_CACHE: Lazy<Cache<&'static str, Vec<models::Package>>> =
+    Lazy::new(|| {
+        Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(5 * 60))
+            .build()
+    });
+
+// Cache for the unified Home discovery snapshot.
+// TTL: 5 minutes so Home reads stay fast during a session while remaining fresh.
+pub(crate) static HOME_DISCOVERY_CACHE: Lazy<Cache<&'static str, models::DiscoveryHomeSnapshot>> =
+    Lazy::new(|| {
+        Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(5 * 60))
+            .build()
+    });
+
 /// Cache for large get_packages_by_names results (e.g. Essentials). TTL 7 days.
 pub(crate) const PACKAGES_CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
-/// Bump to invalidate old caches (one-card-per-app, variants, etc.). Users not seeing fixes should restart the app.
-pub(crate) const PACKAGES_CACHE_VERSION: u32 = 5;
+/// Bump to invalidate old caches when canonical publication semantics change.
+/// v7 invalidates caches created before stable canonical rail publication.
+/// Trending/Essentials payloads should now only be reused after they were
+/// built from a full canonical expansion pass, not discovery fragments.
+pub(crate) const PACKAGES_CACHE_VERSION: u32 = 7;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct PackagesListCache {
@@ -39,8 +69,7 @@ pub(crate) struct PackagesListCache {
 #[tauri::command]
 #[specta::specta]
 pub fn clear_search_and_list_caches() {
-    TRENDING_CACHE.invalidate_all();
-    CATEGORY_CACHE.invalidate_all();
+    invalidate_runtime_search_caches();
     // Delete disk caches so next startup is also fresh
     if let Some(dir) = dirs::cache_dir().map(|d| d.join("monarch-store")) {
         // Remove all category disk caches
@@ -59,6 +88,14 @@ pub fn clear_search_and_list_caches() {
         }
         let _ = std::fs::remove_file(dir.join("essentials_packages_cache.json"));
     }
+}
+
+pub(crate) fn invalidate_runtime_search_caches() {
+    TRENDING_CACHE.invalidate_all();
+    CATEGORY_CACHE.invalidate_all();
+    SEARCH_RESULTS_CACHE.invalidate_all();
+    SEARCH_SNAPSHOT_CACHE.invalidate_all();
+    HOME_DISCOVERY_CACHE.invalidate_all();
 }
 
 pub(crate) fn packages_list_cache_path() -> Option<std::path::PathBuf> {
@@ -93,11 +130,18 @@ pub(crate) fn try_get_packages_from_cache(names: &[String]) -> Option<Vec<models
         "[DISK CACHE] Loaded essentials from disk ({} packages)",
         cache.packages.len()
     );
+    if cache.packages.is_empty() {
+        log::warn!("[DISK CACHE] Ignoring empty essentials disk cache");
+        return None;
+    }
     Some(cache.packages)
 }
 
 pub(crate) fn write_packages_cache(names: &[String], packages: &[models::Package]) {
     if names.len() < 30 {
+        return;
+    }
+    if packages.is_empty() {
         return;
     }
     let path = match packages_list_cache_path() {
@@ -139,7 +183,7 @@ pub(crate) fn trending_cache_path(
 ) -> Option<std::path::PathBuf> {
     dirs::cache_dir().map(|d| {
         d.join("monarch-store").join(format!(
-            "trending_cache_v7_{}_{}_{}.json",
+            "trending_cache_v8_{}_{}_{}.json",
             include_flatpak, include_aur, include_chaotic
         ))
     })
@@ -171,6 +215,15 @@ pub(crate) fn try_read_trending_disk(
         include_chaotic,
         cache.packages.len()
     );
+    if cache.packages.is_empty() {
+        log::warn!(
+            "[DISK CACHE] Ignoring empty trending disk cache (flatpak={}, aur={}, chaotic={})",
+            include_flatpak,
+            include_aur,
+            include_chaotic
+        );
+        return None;
+    }
     Some(cache.packages)
 }
 
@@ -180,6 +233,9 @@ pub(crate) fn write_trending_disk(
     include_chaotic: bool,
     packages: &[models::Package],
 ) {
+    if packages.is_empty() {
+        return;
+    }
     let path = match trending_cache_path(include_flatpak, include_aur, include_chaotic) {
         Some(p) => p,
         None => return,
@@ -251,10 +307,20 @@ pub(crate) fn try_read_category_disk(cache_key: &str) -> Option<Vec<models::Pack
         cache_key,
         cache.packages.len()
     );
+    if cache.packages.is_empty() {
+        log::warn!(
+            "[DISK CACHE] Ignoring empty category disk cache '{}'",
+            cache_key
+        );
+        return None;
+    }
     Some(cache.packages)
 }
 
 pub(crate) fn write_category_disk(cache_key: &str, packages: &[models::Package]) {
+    if packages.is_empty() {
+        return;
+    }
     let path = match category_cache_path(cache_key) {
         Some(p) => p,
         None => return,

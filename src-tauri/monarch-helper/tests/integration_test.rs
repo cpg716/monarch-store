@@ -2,7 +2,6 @@
 /// These tests verify the helper can parse commands correctly without needing root or the full GUI
 ///
 /// Run with: `cargo test --test integration_test`
-use serde_json;
 use std::io::Write;
 
 use tempfile::NamedTempFile;
@@ -40,7 +39,7 @@ fn test_helper_can_parse_install_command_from_file() {
 
     // Verify file content is valid JSON
     let contents = std::fs::read_to_string(file.path()).expect("Should read");
-    let parsed: Result<HelperCommand, _> = serde_json::from_str(&contents.trim());
+    let parsed: Result<HelperCommand, _> = serde_json::from_str(contents.trim());
     assert!(parsed.is_ok(), "Helper should be able to parse this JSON");
 }
 

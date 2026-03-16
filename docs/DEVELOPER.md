@@ -1,330 +1,136 @@
-# MonARCH Store: Developer Guide (v0.4.7-alpha)
+# MonARCH Store Developer Guide
 
-**Last updated:** 2026-02-14 (v0.4.6-alpha)
+**Current frontend:** GTK  
+**Last updated:** 2026-03-09
 
-Single reference for developers working on MonARCH Store: setup, architecture, code style, and critical rules. For a full summary of recent changes (Universal Data Engine, unification, Operation Chaotic Good, onboarding, labels), see [RECENT_CHANGES.md](RECENT_CHANGES.md) and [UNIVERSAL_DATA_ENGINE.md](UNIVERSAL_DATA_ENGINE.md).
+This is the active engineering guide for MonARCH Store.
 
----
+GTK is the current frontend. Tauri/React remains in the repository only as legacy/reference implementation material while parity work is completed.
 
-## 1. Overview
+## 1. Product architecture
 
-MonARCH Store is a **Host-Adaptive software store** for Arch, Manjaro, Garuda, and CachyOS. It provides:
+MonARCH has three active layers:
 
-- **Host-Adaptive** repositories: We respect `/etc/pacman.conf` as the source of truth instead of managing internal state.
-- **Unified Search**: Aggregates Official, AUR, and Flatpak results; variant merging via `canonical_merge_key` (first-segment rule, no per-app list); friendly labels from `labels::get_friendly_label`. See `docs/UNIVERSAL_DATA_ENGINE.md`.
-- **Native AUR Builder**: User-level `makepkg` builds with streaming logs.
-- **The Iron Core (v0.3.6+):** Implemented `SafeUpdateTransaction` for atomic, borrow-safe ALPM operations. Enforces `-Syu` for all transactions. **Iron Core Purge (v0.4.6):** Fully offloaded metadata hydration to the backend; frontend is now a **Dumb View**.
-- **Safe Guard (Install & Update):** Helper respects host `IgnorePkg`/`IgnoreGroup`; update-and-install runs full system upgrade **before** installing target; on stale-DB install failure, GUI emits `failed_update_required` (no silent full upgrade).
-- **Silent Guard (Atomic Batch):** Use `TransactionManifest` to bundle multiple operations (Refresh, Upgrade, Install) into a single helper invocation, reducing password prompts.
-- **Unified Pipeline & Dumb View:** Frontend uses `bindings.ts` types for the `Package` struct. Most hydration hooks (`usePackageMetadata`, `useRatings`, `usePrewarmCards`) have been deleted.
-- **One card per app / one proper name:** Backend `deduplicate_by_canonical_key` and `canonical_id` on `Package`; first-segment canonical key and `preferred_display_name` so one app has one card and one label (e.g. "Heroic Game Launcher"); list keys use `canonical_id`.
-- **Operation Chaotic Good:** Chaotic-AUR safe toggle—we do **not** edit `/etc/pacman.conf`. `check_chaotic_status` / `prepare_chaotic_components` (Helper installs keyring + mirrorlist only); Settings SourcesTab shows Active/Inactive/Blocked and "Final Step" modal; onboarding wizard includes conditional Chaotic-AUR step. Package cards/details: when only source is Chaotic-AUR and not enabled, show "Configure Source" (opens Settings).
-- **Liquid UI:** Min window 800×600; responsive grids; mobile bottom nav; responsive package details.
-- **Wayland Ghost Protocol:** Automated flicker/artifact prevention on Wayland sessions.
-- **Chameleon Theme Engine:** Native dark mode detection via XDG Portals (`ashpd`).
-- **Two-process backend**: GUI (user) + Helper (root via Polkit) so ALPM writes are isolated.
+### `monarch-core`
+The backend source of truth.
 
-**Tech stack:**
+Responsibilities:
+- canonical package identity
+- metadata hydration
+- source merging
+- search/discovery/category payloads
+- settings state used by GTK
+- detail payloads and source-specific variants
 
-| Layer      | Stack |
-|-----------|--------|
-| Frontend  | React 19, TypeScript, Tailwind CSS 4, Vite 7, Zustand, Framer Motion |
-| Backend   | Tauri 2, Rust workspace: **monarch-gui** (user) + **monarch-helper** (root) |
-| IPC       | Tauri `invoke()` from `@tauri-apps/api/core` |
+Important types:
+- `Package`
+- `PackagePresentation`
+- `PackageVariant`
+- `FullPackageDetails`
+- `SearchOptions`
+- `HomeSnapshot`
+- `GtkSettings`
 
----
+### `monarch-helper`
+The only privileged writer.
 
-## 2. Project Structure
+Responsibilities:
+- ALPM write transactions
+- safe update/install/remove flows
+- lock handling
+- privileged maintenance operations
 
-```
-monarch-store/
-├── src/                          # Frontend (React + TS)
-│   ├── components/               # Reusable UI (Sidebar, PackageCard, InstallMonitor, …)
-│   ├── pages/                    # Route-level views (HomePage, PackageDetailsFresh, …)
-│   ├── hooks/                    # useFavorites, useSettings, useSmartEssentials, …
-│   ├── store/                    # Zustand: internal_store.ts
-│   ├── context/                  # ToastContext, RepoStatusContext, ErrorContext
-│   ├── services/                 # reviewService.ts (ODRS + Supabase)
-│   ├── utils/                    # friendlyError, iconHelper, versionHelper
-│   ├── constants.ts
-│   ├── App.tsx, main.tsx
-│   └── App.css
-├── src-tauri/
-│   ├── Cargo.toml                # Workspace root (monarch-gui, monarch-helper)
-│   ├── monarch-gui/              # Tauri app (user process)
-│   │   ├── src/
-│   │   │   ├── commands/         # package, search, system, update, reviews, utils
-│   │   │   ├── middleware/       # aggregation.rs (unification logic)
-│   │   │   ├── helper_client.rs # Temp-file + pkexec → monarch-helper
-│   │   │   ├── alpm_read.rs      # Read-only ALPM
-│   │   │   ├── error_classifier.rs
-│   │   │   ├── repo_manager.rs, repo_setup.rs
-│   │   │   ├── aur_api.rs, chaotic_api.rs, odrs_api.rs, flathub_api.rs
-│   │   │   ├── metadata.rs, models.rs, utils.rs
-│   │   │   └── lib.rs, main.rs
-│   │   ├── tauri.conf.json
-│   │   ├── capabilities/, permissions/, icons/
-│   │   └── build.rs
-│   ├── monarch-helper/           # Privileged binary (root via Polkit)
-│   │   └── src/
-│   │       ├── main.rs           # Reads JSON from temp file, runs ALPM
-│   │       ├── transactions.rs   # Install, uninstall, sysupgrade
-│   │       ├── alpm_errors.rs, self_healer.rs, logger.rs
-│   │       └── …
-│   ├── rules/                    # Polkit 10-monarch-store.rules
-│   ├── scripts/                  # monarch-store-refresh-cache, monarch-wrapper
-│   └── pacman-hooks/
-├── scripts/
-│   ├── capture-screenshots.mjs   # Playwright: README screenshots
-│   └── release-finalize-pkgbuild.sh
-├── docs/                         # ARCHITECTURE, TROUBLESHOOTING, INSTALL_UPDATE_AUDIT, …
-├── package.json, vite.config.ts
-└── tsconfig.json
+### `monarch-gtk`
+The active frontend.
 
-## 4. Helper Protocol (v0.4.0)
+Responsibilities:
+- render Iron Core payloads
+- provide GTK navigation and interaction surfaces
+- never re-implement metadata hydration or source truth
 
-We use a "Batch Transaction" model to minimize password prompts.
+**UI/design reference:** Package detail layout (hero, data bar, action row) is aligned with [Bazaar](https://github.com/kolunmi/bazaar). When changing that UI, keep Bazaar in mind for consistency; MonARCH extends it with source selection and multi-source behaviour.
 
-### `TransactionManifest`
-Defined in `monarch-gui/src/models.rs` and `monarch-helper/src/transactions.rs`.
+## 2. Project structure
 
-```rust
-pub struct TransactionManifest {
-    pub update_system: bool,        // Run -Syu?
-    pub refresh_db: bool,           // Run -Sy?
-    pub install_targets: Vec<String>, // Official Repo packages
-    pub remove_targets: Vec<String>,  // Packages to remove
-    pub local_paths: Vec<String>,     // Pre-built .pkg.tar.zst files
-}
+```text
+src-tauri/
+  monarch-core/   backend truth and package/catalog logic
+  monarch-helper/ privileged helper
+  monarch-gtk/    active GTK frontend
+
+src/              legacy/reference Tauri frontend
 ```
 
-**Usage (Client):**
-```rust
-use crate::helper_client::commit_transaction;
-let manifest = TransactionManifest { ... };
-commit_transaction(&app_handle, manifest, password).await?;
-```
+Treat `src/` as legacy/reference unless you are doing parity comparison or archival maintenance.
 
-```
+## 3. Core engineering rules
 
----
+### Iron Core contract
+- GTK must consume backend package models directly
+- no GTK-side metadata parsing
+- no GTK-side source merge logic
+- no GTK-side taxonomy guessing
+- no duplicate canonical identity logic in the frontend
 
-## 3. Development Setup
+### Canonical identity
+Every stable app should appear once across:
+- Home
+- Search
+- Categories
+- Installed
+- Updates
+- Details
 
-### Prerequisites
+Channel builds remain distinct.
 
-- **Rust** (latest stable)
-- **Node.js** (LTS) and npm
-- **System (Arch):**  
-  `webkit2gtk`, `base-devel`, `curl`, `wget`, `file`, `openssl`, `appmenu-gtk-module`, `gtk3`, `libappindicator-gtk3`, `librsvg`, `libvips`, `xdg-desktop-portal` (for native dark mode & dialogs)
-- **Faster linking (optional):** `mold` + `clang`  
-  `sudo pacman -S mold clang` — project uses mold by default; see `src-tauri/.cargo/config.toml` for fallbacks.
+### Helper-only writes
+Only `monarch-helper` may write to `/var/lib/pacman` or perform ALPM transactions.
 
-### Install & run
+### AUR build split
+AUR builds remain unprivileged and are installed through the helper afterward.
+
+## 4. Current development commands
+
+Run from [src-tauri](/home/chris/Downloads/monarch-store/src-tauri):
 
 ```bash
-git clone https://github.com/cpg716/monarch-store.git
-cd monarch-store
-npm install
-npm run tauri dev
+cargo check
+cargo test -p monarch-core
+cargo run -p monarch-gtk
 ```
 
-- **Frontend only:** `npm run dev` (Vite on port **1420**; no Tauri).
-- **Production build:** `npm run tauri build`.
+Use these as the default GTK workflow.
 
-### Rust checks
+Tauri commands are legacy/reference-only and should not be treated as the primary validation path for the current product.
 
-Run from **`src-tauri/`** (workspace root):
+## 5. GTK parity expectations
 
-```bash
-cd src-tauri && cargo check
-```
+GTK is expected to match the documented MonARCH product contract in these areas:
+- backend-fed Home rails
+- backend-fed category results
+- canonical search results with merged stable sources
+- compact Flathub-style cards outside search
+- screenshot-style cards in search
+- details as the single source/action surface
+- settings, onboarding, updates, and news reflecting current backend capabilities
 
-`cargo check` from repo root will fail because the workspace `Cargo.toml` is in `src-tauri/`.
+Track open gaps in [docs/GTK_TAURI_PARITY_MATRIX.md](/home/chris/Downloads/monarch-store/docs/GTK_TAURI_PARITY_MATRIX.md).
 
----
+## 6. Documentation policy
 
-## 4. Build Commands Reference
+Docs must follow current truth:
+- GTK is primary
+- Tauri is legacy/reference-only unless explicitly labeled archival
+- public docs should not describe stale Tauri behavior as current
 
-| Command | Purpose |
-|--------|--------|
-| `npm run dev` | Vite dev server (frontend only), port 1420 |
-| `npm run build` | `tsc` + Vite build (frontend) |
-| `npm run tauri dev` | Full app with hot reload (Vite + Tauri) |
-| `npm run tauri build` | Production Tauri build |
-| `npm run screenshots` | Capture README screenshots (Playwright); starts Vite on fallback port if 1420 busy |
-| `cd src-tauri && cargo check` | Check Rust backend |
-| `cd src-tauri && cargo fmt` | Format Rust |
-| `cd src-tauri && cargo clippy` | Lint Rust |
+When changing product behavior:
+- update the relevant user/developer docs
+- update the parity matrix if status changed
 
-**Why does `tauri dev` compile every time?**  
-Tauri needs a compiled binary. First run (or after `cargo clean`) does a full compile; later runs use incremental build. Use **`npm run tauri dev`** (not `npx tauri dev` from another cwd) so `CARGO_TARGET_DIR` and `CARGO_INCREMENTAL` are set and the same `src-tauri/target/` is reused.
+## 7. Related docs
 
-**Why does `tauri dev` build monarch-helper first?**  
-The npm script runs `(cd src-tauri && cargo build -p monarch-helper)` before `tauri dev`. That avoids a deadlock: `monarch-gui/build.rs` must not run `cargo build` (the parent Cargo already holds the target lock). The pre-step ensures the helper binary exists before the main workspace build.
-
-**Why must we NOT set `target-dir` in `src-tauri/.cargo/config.toml`?**  
-The npm script sets `CARGO_TARGET_DIR=src-tauri/target`. If config overrides with `target-dir = "../target"`, the pre-step would build the helper to `project_root/target/` while the app looks in `src-tauri/target/` and can run a stale or wrong helper (e.g. without AlpmInstall). Install/update would then fail. The app and onboarding use a single source of truth for the dev helper path: `utils::get_dev_helper_path()`.
-
----
-
-## 5. Architecture (Summary)
-
-### Host-Adaptive Model (v0.4.0)
-
-- **System:** We read `/etc/pacman.conf` via ALPM to know which repositories are enabled.
-- **UI:** We only show packages from repositories that are actually enabled on the host.
-- **Toggling:** We only offer a toggle for `chaotic-aur`. All other repos must be managed by the user in `pacman.conf`.
-
-### Priority Hierarchy
-
-1. Official Repositories
-2. Flatpak (Sandboxed)
-3. AUR (Source Build)
-
-### Two-process backend
-
-- **monarch-gui (user):** Read-only ALPM, search, AUR builds (unprivileged makepkg), config. Builds a JSON command, writes to temp file, runs `pkexec monarch-helper <path>`.
-- **monarch-helper (root):** Reads command from file, runs ALPM. v0.3.6 introduces `SafeUpdateTransaction.rs` which encapsulates all safety and update logic in a borrow-safe Rust implementation.
-
-### Polkit & helper path
-
-- **Production:** Helper at `/usr/lib/monarch-store/monarch-helper`; policy and rules reference this path for passwordless install/update.
-- **Development:** Helper from `target/debug/monarch-helper`; path does not match policy, so Polkit may prompt for password unless you install the package and use the system helper.
-
-Details: [docs/INSTALL_UPDATE_AUDIT.md](INSTALL_UPDATE_AUDIT.md).
-
----
-
-## 6. Code Style
-
-### TypeScript / React
-
-- **Strict:** `strict: true`, `noUnusedLocals`, `noUnusedParameters`.
-- **Components:** Functional components + hooks; icons from `lucide-react`.
-- **State:** Zustand in `src/store/`; local state with `useState`.
-- **Imports:** React first, then `@tauri-apps/*`, then components/hooks/utils.
-- **Classes:** `clsx` + `tailwind-merge` for conditional class names.
-- **IPC:** `invoke()` from `@tauri-apps/api/core`.
-
-### Rust
-
-- **Workspace:** `src-tauri/Cargo.toml` (monarch-gui, monarch-helper).
-- **Profiles:**  
-  - **Dev:** `incremental = true`, `lto = false`, fast compile.  
-  - **Release:** `lto = true` (fat), `strip = true`, `panic = "abort"`.
-- **Concurrency:** Use `spawn_blocking` for `std::process::Command` in async code.
-- **Validation:** Use `utils::validate_package_name()` before any shell/ALPM use of package names.
-- **Mutex:** Prefer `if let Ok(guard) = mutex.lock()` over `.unwrap()`.
-- **Format:** `cargo fmt`; lint with `cargo clippy`.
-
----
-
-## 7. Critical Package Management Rules
-
-**Any change to package/install/update logic must follow these; violations risk PR closure.**
-
-1. **Never run `pacman -Sy` alone.**  
-   Partial sync without full upgrade can cause partial upgrades.  
-   - Repo installs: **`pacman -Syu --needed <pkg>`** (single transaction).  
-   - System update: **single `pacman -Syu`** (never split -Sy and -Syu).
-
-2. **Repo installs/updates** go through **Helper** (`monarch-helper/transactions.rs`): one transaction, no split -Sy/-Syu.
-
-3. **AUR:** Build in GUI (unprivileged `makepkg`). Copy built `.pkg.tar.zst` to `/tmp/monarch-install/`; Helper runs `pacman -U`. Never run makepkg in Helper.
-
-4. **Input safety:** Validate all package names with `utils::validate_package_name()` before shell/ALPM. No arbitrary command execution from user input.
-
-5. **Error handling:**  
-   - Backend: `error_classifier.rs` (GUI), `alpm_errors.rs` (Helper).  
-   - Frontend: `src/utils/friendlyError.ts`.
-
----
-
-## 8. Security & Polkit
-
-- **Privilege:** Only Helper runs as root; invoked via `pkexec` with path matching policy.
-- **Command passing:** JSON written to temp file; only file path passed to Helper (avoids argv truncation).
-- **Helper path:** Hard-locked to `/usr/lib/monarch-store/monarch-helper` in production; Polkit policy and rules must match.
-- **CSP:** Content Security Policy in `tauri.conf.json`.
-- **IPC:** Tauri commands with validated inputs; system-altering actions require Helper (pkexec).
-
-See [INSTALL_UPDATE_AUDIT.md](INSTALL_UPDATE_AUDIT.md) and [SECURITY.md](../SECURITY.md).
-
----
-
-## 9. Key Frontend Flows
-
-- **Install:** `InstallMonitor` → `invoke('install_package', …)` → GUI `package.rs` → Helper client → temp file → `pkexec monarch-helper <path>`.
-- **System update:** `invoke('perform_system_update', …)` → `update.rs` → Helper `Sysupgrade` (repos), then `check_aur_updates()` (filter by sync repo) and AUR build/install for AUR-only packages.
-- **Search:** `invoke('search_packages', { query })` → `search.rs`; results merged/deduplicated and sorted by relevance.
-- **Health/onboarding:** `check_initialization_status`, `check_security_policy`; repair via Helper commands and onboarding wizard.
-
----
-
-## 10. Key Backend Modules (monarch-gui)
-
-| Module | Role |
-|--------|------|
-| `commands/package.rs` | Install/uninstall; builds command, calls helper client |
-| `commands/search.rs` | Search entry point (calls middleware) |
-| `middleware/aggregation.rs` | Core aggregation logic: merge/dedup, relevance sort |
-| `commands/update.rs` | System update: Sysupgrade (repos) + AUR-only batch (filter by `is_in_sync_repos`) |
-| `commands/system.rs` | Repo sync, health, repair |
-| `helper_client.rs` | Build JSON command, write temp file, spawn pkexec helper |
-| `alpm_read.rs` | Read-only ALPM (installed list, etc.) |
-| `error_classifier.rs` | Classify errors for recovery UI |
-| `repo_manager.rs`, `repo_setup.rs` | Repo state and onboarding setup |
-| `metadata.rs`, `flathub_api.rs`, `odrs_api.rs` | Metadata/icons and ratings |
-
----
-
-## 11. Versioning & Release
-
-- **Version string:** e.g. `0.3.5-alpha` in npm/tauri; `0.3.5_alpha` for `pkgver` in PKGBUILD.
-- **Update in:** `package.json`, `src-tauri/monarch-gui/tauri.conf.json`, `src-tauri/monarch-gui/Cargo.toml`, `src-tauri/monarch-helper/Cargo.toml`, `src-tauri/monarch-store.metainfo.xml`, and relevant docs.
-- **Release:** Tag (e.g. `v0.3.5_alpha`), push, then run `scripts/release-finalize-pkgbuild.sh` after tag is on GitHub to switch PKGBUILD to tarball and refresh checksums.
-
-See [RELEASE_PUSH_STEPS.md](RELEASE_PUSH_STEPS.md) and [RELEASE_NOTES.md](../RELEASE_NOTES.md).
-
----
-
-## 12. Screenshots & Scripts
-
-- **README screenshots:** `npm run screenshots`.  
-  Uses Playwright; if port 1420 is in use, starts Vite on 1520/1521/1522. Writes to `screenshots/` (home, browse, library, settings, loading).  
-  Loading screen uses `?screenshot=loading` (see `main.tsx`).
-
-- **PKGBUILD finalization:** `scripts/release-finalize-pkgbuild.sh` (run after pushing release tag).
-
----
-
-## 13. Troubleshooting (Developer-Facing)
-
-- **Build errors (e.g. `cargo metadata`):** See `arch_fix.sh`; install deps (e.g. `webkit2gtk`), clean if needed.
-- **Port 1420 in use:** Use `npm run dev` in one terminal and `npm run screenshots` in another; or let the screenshot script start Vite on a fallback port.
-- **Polkit / password prompts:** [INSTALL_UPDATE_AUDIT.md](INSTALL_UPDATE_AUDIT.md) — policy path must match helper path; dev uses target binary so path may not match.
-- **Database locked:** Another pacman/updater is running, or stale `db.lck`; see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-- **Full rebuild every time:** Use `npm run tauri dev` from repo root so `CARGO_TARGET_DIR` is set; don’t delete `src-tauri/target/`.
-
----
-
-## 14. Documentation Index
-
-| Doc | Purpose |
-|-----|--------|
-| [AGENTS.md](../AGENTS.md) | Build commands, code style, package rules (concise) |
-| [ARCHITECTURE.md](../ARCHITECTURE.md) | Product philosophy, Soft Disable, Butterfly |
-| [docs/ARCHITECTURE.md](ARCHITECTURE.md) | System architecture (Tauri, GUI vs Helper) |
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | How to contribute, PR rules, styleguides |
-| [docs/APP_AUDIT.md](APP_AUDIT.md) | Full UI/UX and feature reference |
-| [docs/INSTALL_UPDATE_AUDIT.md](INSTALL_UPDATE_AUDIT.md) | Install/update flow, Polkit, passwordless |
-| [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) | User-facing issues (GPG, db lock, etc.) |
-| [DOCUMENTATION.md](../DOCUMENTATION.md) | High-level technical overview |
-| [SECURITY.md](../SECURITY.md) | Security policy and reporting |
-| [docs/SECURITY_AUDIT_FORT_KNOX.md](SECURITY_AUDIT_FORT_KNOX.md) | Security & Arch compliance audit |
-| [docs/RELEASE_PUSH_STEPS.md](RELEASE_PUSH_STEPS.md) | Release tag, PKGBUILD finalization |
-
----
-
-*For day-to-day coding, keep [AGENTS.md](../AGENTS.md) and this file (DEVELOPER.md) handy; use the other docs for deep dives and audits.*
+- [ARCHITECTURE.md](/home/chris/Downloads/monarch-store/ARCHITECTURE.md)
+- [docs/PACKAGING_AND_METADATA_FLOW.md](/home/chris/Downloads/monarch-store/docs/PACKAGING_AND_METADATA_FLOW.md)
+- [docs/UNIVERSAL_DATA_ENGINE.md](/home/chris/Downloads/monarch-store/docs/UNIVERSAL_DATA_ENGINE.md)
+- [docs/GTK_TAURI_PARITY_MATRIX.md](/home/chris/Downloads/monarch-store/docs/GTK_TAURI_PARITY_MATRIX.md)
+- [TESTING.md](/home/chris/Downloads/monarch-store/TESTING.md)
