@@ -1,4 +1,5 @@
 # Release: build GTK-only MonARCH Store (monarch-gtk) and publish draft release.
+# Uses native Ubuntu runner so apt can install libadwaita-1-dev and libalpm-dev (container had no libadwaita).
 name: Release
 on:
   push:
@@ -11,49 +12,39 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-22.04
-    container:
-      image: ghcr.io/cpg716/monarch-store-builder:latest
-      options: --user root
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Git Safe Directory
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Rust stable
-        run: rustup default stable
-
-      - name: Install system dependencies
+      - name: Install libadwaita and build dependencies
         run: |
-          set -e
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            xdg-utils \
+          sudo apt-get update
+          sudo apt-get install -y \
+            libadwaita-1-dev \
+            libgtk-4-dev \
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
-            libgtk-4-dev \
-            libadwaita-1-dev
-          echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
-          pkg-config --exists libadwaita-1 || (echo "libadwaita-1.pc not found after install:"; find /usr -name 'libadwaita*.pc' 2>/dev/null; exit 1)
+            xdg-utils \
+            pkg-config \
+            build-essential
+          pkg-config --exists libadwaita-1 && echo "libadwaita-1 OK"
 
-      - name: Install libadwaita-1 dependencies (for libadwaita-sys)
+      - name: Install libalpm (for monarch-helper / monarch-core)
         run: |
-          apt-get update
-          apt-get install -y libadwaita-1-dev libadwaita-1-0
-          pkg-config --print-variables libadwaita-1 || true
-          pkg-config --exists libadwaita-1 && echo "libadwaita-1 found" || (echo "Missing libadwaita-1.pc"; exit 1)
+          sudo add-apt-repository -y universe
+          sudo apt-get update
+          sudo apt-get install -y libalpm-dev
+          pkg-config --exists libalpm && echo "libalpm OK"
 
       - name: Build monarch-helper
-        env:
-          PKG_CONFIG_PATH: /usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
         run: |
           cd src-tauri
           cargo build --release -p monarch-helper
 
       - name: Build monarch-gtk
-        env:
-          PKG_CONFIG_PATH: /usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
         run: |
           cd src-tauri
           cargo build --release -p monarch-gtk
