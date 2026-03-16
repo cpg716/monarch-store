@@ -26,16 +26,28 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          set -e
           apt-get update
-          apt-get install -y xdg-utils librsvg2-dev libwebkit2gtk-4.1-dev libgtk-4-dev libadwaita-1-dev
+          apt-get install -y --no-install-recommends \
+            xdg-utils \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-4-dev \
+            libadwaita-1-dev
+          # Ensure pkg-config can find libs (for this step and later steps)
           echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
+          pkg-config --exists libadwaita-1 || (echo "libadwaita-1.pc not found after install:"; find /usr -name 'libadwaita*.pc' 2>/dev/null; exit 1)
 
       - name: Build monarch-helper
+        env:
+          PKG_CONFIG_PATH: /usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
         run: |
           cd src-tauri
           cargo build --release -p monarch-helper
 
       - name: Build monarch-gtk
+        env:
+          PKG_CONFIG_PATH: /usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
         run: |
           cd src-tauri
           cargo build --release -p monarch-gtk
