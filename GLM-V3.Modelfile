@@ -1,4 +1,0 @@
-FROM glm-4.7-flash
-PARAMETER num_gpu 39
-PARAMETER num_ctx 4096
-SYSTEM "You are an expert Arch Linux developer on a Minisforum V3."

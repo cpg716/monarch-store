@@ -56,3 +56,12 @@ node_modules
 
 # Legacy / external repo clone (not part of MonARCH build)
 flathub-website-clone/
+
+# Removed v0.1/v0.2-era cruft (not used by GTK build)
+icons.txt
+images.txt
+urls.txt
+odrs_debug_plan.txt
+release_v0.*.sh
+User_Demands_*.mp4
+GLM-V3.Modelfile
