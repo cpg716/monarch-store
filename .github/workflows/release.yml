@@ -29,7 +29,6 @@ jobs:
             base-devel \
             rustup \
             pkgconf \
-            wget \
             libadwaita \
             gtk4 \
             webkit2gtk-4.1 \
@@ -108,28 +107,6 @@ jobs:
           tar czf "${PREFIX}.tar.gz" "$PREFIX"
           echo "tarball=${PREFIX}.tar.gz" >> $GITHUB_ENV
 
-      - name: Build AppImage
-        run: |
-          TAG="${{ github.ref_name }}"
-          PREFIX="monarch-store-${TAG}-linux-x86_64"
-          APPDIR="${PREFIX}.AppDir"
-          cp -r "$PREFIX" "$APPDIR"
-          # appimagetool expects .desktop and AppRun at AppDir root (not only under usr/).
-          install -m644 src-tauri/monarch-store.desktop "$APPDIR/monarch-store.desktop"
-          install -m644 src-tauri/monarch-gui/icons/128x128.png "$APPDIR/monarch-store.png" 2>/dev/null || install -m644 src-tauri/monarch-gui/icons/icon.png "$APPDIR/monarch-store.png" 2>/dev/null || true
-          cat > "$APPDIR/AppRun" << 'EOF'
-          #!/bin/sh
-          SELF="$(readlink -f "$0")"
-          APP="$(dirname "$SELF")"
-          exec "$APP/usr/bin/monarch-store" "$@"
-          EOF
-          chmod +x "$APPDIR/AppRun"
-          sed -i 's|^Exec=.*|Exec=monarch-store|' "$APPDIR/monarch-store.desktop"
-          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
-          chmod +x appimagetool
-          APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool "$APPDIR" "MonARCH_Store_${TAG}_x86_64.AppImage"
-          echo "appimage=MonARCH_Store_${TAG}_x86_64.AppImage" >> $GITHUB_ENV
-
       - name: Create draft release and upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -137,11 +114,7 @@ jobs:
         run: |
           TAG="${{ github.ref_name }}"
           tarball="${{ env.tarball }}"
-          appimage="${{ env.appimage }}"
           echo "$RELEASE_BODY" > /tmp/release_notes.md
           gh release create "$TAG" --draft --title "MonARCH Store $TAG" --notes-file /tmp/release_notes.md --prerelease 2>/dev/null || true
           gh release upload "$TAG" "$tarball" --clobber
-          if [ -n "$appimage" ] && [ -f "$appimage" ]; then
-            gh release upload "$TAG" "$appimage" --clobber
-          fi
           echo "Draft release created/updated: $TAG"
