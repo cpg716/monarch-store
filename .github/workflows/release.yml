@@ -114,6 +114,12 @@ jobs:
           PREFIX="monarch-store-${TAG}-linux-x86_64"
           APPDIR="${PREFIX}.AppDir"
           cp -r "$PREFIX" "$APPDIR"
+          # appimagetool expects .desktop and AppRun at AppDir root (not only under usr/).
+          install -m644 src-tauri/monarch-store.desktop "$APPDIR/monarch-store.desktop"
+          install -m644 src-tauri/monarch-gui/icons/128x128.png "$APPDIR/monarch-store.png" 2>/dev/null || install -m644 src-tauri/monarch-gui/icons/icon.png "$APPDIR/monarch-store.png" 2>/dev/null || true
+          printf '%s\n' '#!/bin/sh' 'SELF="$(readlink -f "$0")"'; 'APP="$(dirname "$SELF")"'; 'exec "$APP/usr/bin/monarch-store" "$@"' > "$APPDIR/AppRun"
+          chmod +x "$APPDIR/AppRun"
+          sed -i 's|^Exec=.*|Exec=monarch-store|' "$APPDIR/monarch-store.desktop"
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
           chmod +x appimagetool
           APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool "$APPDIR" "MonARCH_Store_${TAG}_x86_64.AppImage"
