@@ -118,11 +118,11 @@ jobs:
           install -m644 src-tauri/monarch-store.desktop "$APPDIR/monarch-store.desktop"
           install -m644 src-tauri/monarch-gui/icons/128x128.png "$APPDIR/monarch-store.png" 2>/dev/null || install -m644 src-tauri/monarch-gui/icons/icon.png "$APPDIR/monarch-store.png" 2>/dev/null || true
           cat > "$APPDIR/AppRun" << 'EOF'
-#!/bin/sh
-SELF="$(readlink -f "$0")"
-APP="$(dirname "$SELF")"
-exec "$APP/usr/bin/monarch-store" "$@"
-EOF
+          #!/bin/sh
+          SELF="$(readlink -f "$0")"
+          APP="$(dirname "$SELF")"
+          exec "$APP/usr/bin/monarch-store" "$@"
+          EOF
           chmod +x "$APPDIR/AppRun"
           sed -i 's|^Exec=.*|Exec=monarch-store|' "$APPDIR/monarch-store.desktop"
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
