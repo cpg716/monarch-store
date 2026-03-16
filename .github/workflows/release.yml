@@ -47,11 +47,20 @@ jobs:
           set -euo pipefail
           # ubuntu-24.04 runner already has universe enabled; avoid add-apt-repository flakiness.
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libalpm-dev
+          # `pkg-config --exists libalpm` validates transitive `Requires:` too.
+          # On Ubuntu, `libalpm.pc` commonly pulls in these deps.
+          sudo apt-get install -y --no-install-recommends \
+            libalpm-dev \
+            libarchive-dev \
+            libcurl4-openssl-dev \
+            libgpgme-dev
           export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
           echo "libalpm pc dir: $(pkg-config --variable=pcfiledir libalpm 2>/dev/null || echo 'unknown')"
           echo "libalpm version: $(pkg-config --modversion libalpm || true)"
-          pkg-config --exists libalpm || (echo "pkg-config cannot resolve libalpm; dumping errors:"; pkg-config --print-errors libalpm; exit 1)
+          echo "libalpm requires: $(pkg-config --print-requires libalpm 2>/dev/null || echo 'unknown')"
+          pkg-config --print-errors --exists libalpm || (echo "pkg-config cannot resolve libalpm; dumping errors:"; pkg-config --print-errors libalpm; exit 1)
+          echo "libalpm cflags: $(pkg-config --cflags libalpm)"
+          echo "libalpm libs: $(pkg-config --libs libalpm)"
           echo "libalpm OK"
 
       - name: Build monarch-helper
